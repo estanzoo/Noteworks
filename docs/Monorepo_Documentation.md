@@ -88,7 +88,7 @@ packages/supabase/
 
 | File | Purpose |
 |------|---------|
-| `sync-types.yml` | Workflow for type generation and validation (when configured). |
+| `sync-types.yml` | Validates migrations apply and types generate. Runs on PRs/push when Supabase or shared-types change. Fails if the schema is broken or type generation errors. |
 
 ---
 
@@ -266,6 +266,30 @@ These ports are configured in `packages/supabase/supabase/config.toml` (changed 
 | Studio | 64323 | http://localhost:64323 |
 | Inbucket (email) | 64324 | http://localhost:64324 |
 | Analytics | 64327 | — |
+
+---
+
+## sync-types Workflow
+
+**File:** `.github/workflows/sync-types.yml`
+
+**Purpose:** Ensures migrations apply cleanly and TypeScript types can be generated from the schema. Catches broken migrations or type errors before they reach main.
+
+**When it runs:** On pull requests and pushes to `main`/`master`, but only when files in `packages/supabase/` or `packages/shared-types/` change.
+
+**What it does:**
+1. Installs dependencies
+2. Starts local Supabase (Docker)
+3. Generates `database.types.ts` from the schema
+4. Stops Supabase
+5. Verifies `shared-types` builds with `tsc --noEmit`
+
+**Why it can fail:**
+- Migration SQL errors
+- Schema changes that break type generation
+- TypeScript errors in `shared-types` (e.g. `api.types.ts` references a table that no longer exists)
+
+**Note:** `database.types.ts` is gitignored, so the workflow does not check for uncommitted type changes. It only validates that type generation succeeds. Run `pnpm types:generate` locally after pulling migrations.
 
 ---
 

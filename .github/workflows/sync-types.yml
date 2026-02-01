@@ -1,0 +1,58 @@
+# Sync Types — validates migrations apply and types generate successfully
+# Runs on PRs and pushes to main to catch schema/type issues early
+#
+# Purpose: Ensures the Supabase schema is valid and TypeScript types can be
+# generated. Since database.types.ts is gitignored, this is a smoke test
+# (not a diff check). Run `pnpm types:generate` locally after pulling migrations.
+
+name: Sync Types
+
+on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'packages/supabase/**'
+      - 'packages/shared-types/**'
+      - '.github/workflows/sync-types.yml'
+  push:
+    branches: [main, master]
+    paths:
+      - 'packages/supabase/**'
+      - 'packages/shared-types/**'
+      - '.github/workflows/sync-types.yml'
+
+jobs:
+  validate-types:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 8
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Start Supabase and generate types
+        run: |
+          cd packages/supabase
+          supabase start
+          supabase gen types typescript --local > ../shared-types/database.types.ts
+          supabase stop
+
+      - name: Verify shared-types builds
+        run: pnpm exec tsc --noEmit -p packages/shared-types
