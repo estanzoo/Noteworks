@@ -1,0 +1,68 @@
+# packages/supabase/supabase/config.toml
+# https://supabase.com/docs/guides/local-development/cli/config
+
+project_id = "supabase"
+
+[api]
+enabled = true
+port = 64321
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 64322
+shadow_port = 64320
+major_version = 15
+
+[db.pooler]
+enabled = false
+port = 64329
+pool_mode = "transaction"
+default_pool_size = 20
+max_client_conn = 100
+
+[realtime]
+enabled = true
+ip_version = "IPv4"
+
+[studio]
+enabled = true
+port = 64323
+api_url = "http://127.0.0.1"
+
+[inbucket]
+enabled = true
+port = 64324
+smtp_port = 64325
+pop3_port = 64326
+
+[storage]
+enabled = true
+file_size_limit = "50MiB"
+
+[auth]
+enabled = true
+site_url = "http://127.0.0.1:3000"
+additional_redirect_urls = ["https://127.0.0.1:3000"]
+jwt_expiry = 3600
+enable_refresh_token_rotation = true
+refresh_token_reuse_interval = 10
+enable_signup = true
+
+[auth.external.apple]
+enabled = true
+client_id = "env(APPLE_CLIENT_ID)"
+secret = "env(APPLE_SECRET)"
+
+[auth.external.google]
+enabled = true
+client_id = "env(GOOGLE_CLIENT_ID)"
+secret = "env(GOOGLE_SECRET)"
+
+[edge_runtime]
+enabled = true
+
+[analytics]
+enabled = true
+port = 64327

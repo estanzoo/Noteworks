@@ -1,0 +1,30 @@
+{
+  "name": "noteworks-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "db:start": "cd packages/supabase && npx supabase start",
+    "db:stop": "cd packages/supabase && npx supabase stop",
+    "db:reset": "cd packages/supabase && npx supabase db reset",
+    "db:migrate": "cd packages/supabase && npx supabase db push",
+    "types:generate": "cd packages/supabase && npx supabase gen types typescript --local > ../shared-types/database.types.ts",
+    "types:swift": "tsx scripts/swift-codegen.ts",
+    "types:sync": "pnpm types:generate && pnpm types:swift",
+    "studio": "cd packages/supabase && npx supabase studio",
+    "lint": "turbo lint",
+    "test": "turbo test"
+  },
+  "devDependencies": {
+    "turbo": "^1.11.3",
+    "supabase": "^1.142.2",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3",
+    "prettier": "^3.1.1",
+    "eslint": "^8.56.0",
+    "@typescript-eslint/eslint-plugin": "^6.19.0",
+    "@typescript-eslint/parser": "^6.19.0"
+  },
+  "packageManager": "pnpm@8.15.1"
+}

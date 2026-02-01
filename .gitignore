@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+.turbo/
+
+# Environment files
+.env
+.env*.local
+!.env.example
+
+# Supabase
+.branches/
+.temp/
+
+# iOS
+apps/ios/.build/
+apps/ios/DerivedData/
+apps/ios/*.xcodeproj/xcuserdata/
+apps/ios/*.xcworkspace/xcuserdata/
+apps/ios/Pods/
+
+# Generated files
+packages/shared-types/database.types.ts
+apps/ios/Noteworks/Models/Generated/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
