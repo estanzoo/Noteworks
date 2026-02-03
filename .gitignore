@@ -19,8 +19,7 @@ build/
 # iOS
 apps/ios/.build/
 apps/ios/DerivedData/
-apps/ios/*.xcodeproj/xcuserdata/
-apps/ios/*.xcworkspace/xcuserdata/
+apps/ios/**/xcuserdata/
 apps/ios/Pods/
 
 # Generated files
