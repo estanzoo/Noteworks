@@ -33,6 +33,10 @@ apps/ios/Noteworks/Models/Generated/
 *.swo
 *~
 
+# Local plans and documents (personal, not for git)
+apps/ios/IOS_DEVELOPMENT_PLAN.md
+others/
+
 # OS
 .DS_Store
 Thumbs.db
