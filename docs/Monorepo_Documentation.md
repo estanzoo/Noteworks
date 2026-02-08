@@ -11,7 +11,9 @@ A pnpm + Turborepo monorepo for the Noteworks app (iOS + Supabase backend). This
 3. [Types System](#types-system)
 4. [Getting Started (Collaborators)](#getting-started-collaborators)
 5. [Workflows](#workflows)
-6. [Ports & Local URLs](#ports--local-urls)
+6. [Supabase Cloud (Link, Push, Pull)](#supabase-cloud-link-push-pull)
+7. [Ports & Local URLs](#ports--local-urls)
+8. [Secrets & Vault](#secrets--vault)
 
 ---
 
@@ -255,6 +257,78 @@ pnpm types:generate
 
 ---
 
+## Supabase Cloud (Link, Push, Pull)
+
+Once you create a project at [supabase.com](https://supabase.com), link it to your local setup and sync migrations.
+
+### Link to a Cloud Project
+
+```bash
+cd packages/supabase
+npx supabase login
+npx supabase link --project-ref <your-project-ref>
+```
+
+- **Project ref:** Dashboard → Project Settings → General → Reference ID
+
+### Push Migrations (Local → Cloud)
+
+Apply your local migrations to the linked cloud project:
+
+```bash
+cd packages/supabase
+npx supabase db push
+```
+
+Or from the repo root:
+
+```bash
+pnpm db:migrate
+```
+
+### Pull Migrations (Cloud → Local)
+
+If schema changes were made in the Supabase dashboard or elsewhere, pull them into your repo:
+
+```bash
+cd packages/supabase
+npx supabase db pull
+```
+
+Creates a new migration file from the remote schema. Review it, then commit.
+
+### Migration Scripts Summary
+
+| Direction | Command | When to use |
+|-----------|---------|-------------|
+| Local → Cloud | `npx supabase db push` | After creating/editing migrations locally |
+| Cloud → Local | `npx supabase db pull` | After schema changes in the dashboard or another environment |
+
+### Generate Types from Cloud
+
+```bash
+cd packages/supabase
+npx supabase gen types typescript --project-id <project-ref> > ../shared-types/database.types.ts
+```
+
+### Other Useful Commands
+
+| Command | Purpose |
+|---------|---------|
+| `npx supabase db diff` | Show schema differences between local and remote |
+| `npx supabase migration list` | List applied migrations on the linked project |
+| `npx supabase db remote commit` | Create a migration from remote schema changes |
+
+### Recommended Migration Flow
+
+1. Create migrations locally: `npx supabase migration new <name>`
+2. Edit the SQL file in `supabase/migrations/`
+3. Test locally: `pnpm db:reset`
+4. Push to cloud: `npx supabase db push`
+5. Regenerate types: `pnpm types:generate` (local) or the cloud command above
+
+---
+
 ## Ports & Local URLs
 
 These ports are configured in `packages/supabase/supabase/config.toml` (changed from defaults to avoid conflicts on Windows):
@@ -266,6 +340,17 @@ These ports are configured in `packages/supabase/supabase/config.toml` (changed 
 | Studio | 64323 | http://localhost:64323 |
 | Inbucket (email) | 64324 | http://localhost:64324 |
 | Analytics | 64327 | — |
+
+---
+
+## Secrets & Vault
+
+Secrets are split by where they are used:
+
+- **Supabase Vault:** For secrets used **inside Postgres** (functions, triggers, webhooks). Enabled via migration; add/rotate via Dashboard or SQL; access is restricted to selected roles. Vault is available on **Supabase Cloud** only, not in local Supabase.
+- **Project / env vars:** For **Auth** (Apple/Google OAuth) and **Edge Function** env vars — configured in Project Settings and/or `.env` for local (see [config.toml](packages/supabase/supabase/config.toml) `env(...)`). Not stored in Vault.
+
+See [docs/backend/Secrets.md](backend/Secrets.md) for details and verification steps.
 
 ---
 
