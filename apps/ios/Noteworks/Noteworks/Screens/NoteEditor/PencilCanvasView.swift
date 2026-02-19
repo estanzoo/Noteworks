@@ -64,8 +64,6 @@ struct PencilCanvasView: UIViewRepresentable {
         // - Color picker
         // - Stroke width slider
         // 
-        // IMPORTANT: Use shared tool picker to avoid multiple instances
-        // This prevents gesture conflicts and the "gesture gate timed out" warning
         // Note: Window might be nil initially, so we'll set it up in updateUIView
         setupToolPicker(for: canvasView, coordinator: context.coordinator)
         
@@ -107,27 +105,14 @@ struct PencilCanvasView: UIViewRepresentable {
             return
         }
         
-        // Use shared tool picker to avoid multiple instances
-        // This prevents gesture conflicts
-        // PKToolPicker.shared(for:) returns an optional, so we need to unwrap it
-        guard let window = canvasView.window,
-              let toolPicker = PKToolPicker.shared(for: window) else {
-            // If shared picker is not available, create a new one
-            // This shouldn't happen normally, but provides a fallback
-            let fallbackPicker = PKToolPicker()
-            fallbackPicker.setVisible(true, forFirstResponder: canvasView)
-            fallbackPicker.addObserver(canvasView)
-            coordinator.toolPicker = fallbackPicker
-            DispatchQueue.main.async {
-                canvasView.becomeFirstResponder()
-            }
-            return
-        }
-        
+        // Create individual tool picker instance (recommended since iOS 14.0)
+        // PKToolPicker.shared(for:) was deprecated - create new instances instead
+        // This prevents gesture conflicts and follows Apple's current best practices
+        let toolPicker = PKToolPicker()
         toolPicker.setVisible(true, forFirstResponder: canvasView)
         toolPicker.addObserver(canvasView)
         
-        // Store tool picker reference in coordinator
+        // Store tool picker reference in coordinator to avoid recreation
         coordinator.toolPicker = toolPicker
         
         // Make canvas first responder so tool picker shows

@@ -34,7 +34,7 @@ apps/ios/Noteworks/Models/Generated/
 *~
 
 # Local plans and documents (personal, not for git)
-apps/ios/IOS_DEVELOPMENT_PLAN.md
+apps/ios/**/*.md
 others/
 
 # OS

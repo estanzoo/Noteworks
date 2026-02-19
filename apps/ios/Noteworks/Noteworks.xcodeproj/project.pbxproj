@@ -29,9 +29,32 @@
 		4B3C3C202F3016E000580888 /* NoteworksUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NoteworksUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		4B75D1D42F46A2ED000AE96D /* Exceptions for "Noteworks" folder in "Noteworks" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				App/.gitkeep,
+				Core/.gitkeep,
+				Core/Auth/.gitkeep,
+				Core/Networking/.gitkeep,
+				Core/Storage/.gitkeep,
+				Features/.gitkeep,
+				Resources/.gitkeep,
+				Shared/.gitkeep,
+				Shared/Extensions/.gitkeep,
+				Shared/Models/.gitkeep,
+				Shared/Utilities/.gitkeep,
+			);
+			target = 4B3C3C042F3016DC00580888 /* Noteworks */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		4B3C3C072F3016DC00580888 /* Noteworks */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				4B75D1D42F46A2ED000AE96D /* Exceptions for "Noteworks" folder in "Noteworks" target */,
+			);
 			path = Noteworks;
 			sourceTree = "<group>";
 		};
@@ -412,8 +435,8 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.haotai.Noteworks;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = auto;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator xros xrsimulator";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
@@ -450,8 +473,8 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.haotai.Noteworks;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = auto;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator xros xrsimulator";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
