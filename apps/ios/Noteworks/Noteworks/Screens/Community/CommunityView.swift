@@ -30,7 +30,6 @@ struct CommunityView: View {
                 .foregroundColor(.secondary)
         }
         .padding()
-        .navigationTitle("Community")
     }
 }
 

@@ -13,7 +13,7 @@ struct CourseSpaceView: View {
             Text("CourseNote Page")
                 .font(.largeTitle)
         }
-        .navigationTitle("Course Space")
+        
     }
 }
 

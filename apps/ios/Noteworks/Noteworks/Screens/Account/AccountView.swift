@@ -22,13 +22,11 @@ struct AccountView: View {
             .buttonStyle(.borderedProminent)
             .tint(.red)
             .padding()
-            
             Text("This is a placeholder. Add account settings here.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
         .padding()
-        .navigationTitle("Account")
     }
 }
 

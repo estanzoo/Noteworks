@@ -13,7 +13,6 @@ struct NoteEditorView: View {
             Text("Notetaking Page")
                 .font(.largeTitle)
         }
-        .navigationTitle("Note Editor")
     }
 }
 

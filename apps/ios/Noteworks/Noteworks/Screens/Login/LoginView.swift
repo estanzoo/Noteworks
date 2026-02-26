@@ -27,7 +27,7 @@ struct LoginView: View {
                 .foregroundColor(.secondary)
         }
         .padding()
-        .navigationTitle("Login")
+        
     }
 }
 
