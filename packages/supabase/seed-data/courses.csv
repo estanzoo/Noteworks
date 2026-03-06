@@ -1,0 +1,6 @@
+id,name,code,description,image
+c0000000-0000-0000-0000-000000000001,Introduction to Computer Science,CS101,Basics of computing and programming,
+c0000000-0000-0000-0000-000000000002,Linear Algebra,MATH201,Vectors matrices and linear transformations,
+c0000000-0000-0000-0000-000000000003,Organic Chemistry,CHEM301,Structure and reactions of organic compounds,
+c0000000-0000-0000-0000-000000000004,Data Structures,CS201,Trees graphs and algorithms,
+c0000000-0000-0000-0000-000000000005,Calculus I,MATH101,Limits derivatives and integrals,
