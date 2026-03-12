@@ -24,37 +24,39 @@ This plan compares the [6-Week Backend Plan](docs/backend/Noteworks_Backend_6Wee
 ### Days 1–2: Project setup (mostly done)
 
 
-| Item                              | Status | Evidence                                                                                                                                                                                                                                               |
-| --------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Supabase project / local setup    | Done   | [config.toml](packages/supabase/supabase/config.toml) with API, DB, Auth, Storage, Realtime; PostgreSQL 15                                                                                                                                             |
-| Git repo + branching              | Done   | Repo exists; doc mentions main/develop/feature (assumed in use)                                                                                                                                                                                        |
-| Supabase CLI + migration workflow | Done   | Root [package.json](package.json): `db:start`, `db:stop`, `db:reset`, `db:migrate`, `types:generate`; [packages/supabase](packages/supabase) has `migrate:new`, `migrate:up`                                                                           |
-| Version-controlled migrations     | Done   | Single migration [20260201155932_initial_schema.sql](packages/supabase/supabase/migrations/20260201155932_initial_schema.sql)                                                                                                                          |
-| CI/CD (schema + types validation) | Done   | [.github/workflows/sync-types.yml](.github/workflows/sync-types.yml): Supabase start, gen types, verify shared-types build on PR/push for `packages/supabase/**`, `packages/shared-types/**`                                                           |
-| Shared TypeScript types           | Done   | [packages/shared-types](packages/shared-types): [database.types.ts](packages/shared-types/database.types.ts) (placeholder aligned to current schema), [api.types.ts](packages/shared-types/api.types.ts), [models.ts](packages/shared-types/models.ts) |
+| Item                              | Status | Evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| --------------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Supabase project / local setup    | Done   | [config.toml](packages/supabase/supabase/config.toml) with API, DB, Auth, Storage, Realtime; PostgreSQL 15                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Git repo + branching              | Done   | Repo exists; doc mentions main/develop/feature (assumed in use)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Supabase CLI + migration workflow | Done   | Root [package.json](package.json): `db:start`, `db:stop`, `db:reset`, `db:migrate`, `types:generate`; [packages/supabase](packages/supabase) has `migrate:new`, `migrate:up`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Version-controlled migrations     | Done   | Six migrations: [20260201155932_initial_schema.sql](packages/supabase/supabase/migrations/20260201155932_initial_schema.sql), [20260201160000_enable_vault.sql](packages/supabase/supabase/migrations/20260201160000_enable_vault.sql), [20260203100000_enable_rls_users.sql](packages/supabase/supabase/migrations/20260203100000_enable_rls_users.sql), [20260203100001_schools_courses.sql](packages/supabase/supabase/migrations/20260203100001_schools_courses.sql), [20260203100002_courses_enrollments_notes.sql](packages/supabase/supabase/migrations/20260203100002_courses_enrollments_notes.sql), [20260203100003_enable_rls_rest.sql](packages/supabase/supabase/migrations/20260203100003_enable_rls_rest.sql) |
+| CI/CD (schema + types validation) | Done   | [.github/workflows/sync-types.yml](.github/workflows/sync-types.yml): Supabase start, gen types, verify shared-types build on PR/push for `packages/supabase/**`, `packages/shared-types/**`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Supabase Vault (secrets)          | Done   | [20260201160000_enable_vault.sql](packages/supabase/supabase/migrations/20260201160000_enable_vault.sql) enables Vault extension where available (cloud)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Shared TypeScript types           | Done   | [packages/shared-types](packages/shared-types): [database.types.ts](packages/shared-types/database.types.ts) (placeholder aligned to current schema), [api.types.ts](packages/shared-types/api.types.ts), [models.ts](packages/shared-types/models.ts)                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 
 
-### Days 3–4: Core schema (partially done)
+### Days 3–4: Core schema (done except optional credits)
 
 
-| Item                 | Status   | Evidence                                                                                                                             |
-| -------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `users` table        | Partial  | Exists with `id`, `email`, `name`, `created_at`, `updated_at` and `REFERENCES auth.users`. **Missing:** `credits` (integer) per plan |
-| `schools` table      | Not done | Not in migration                                                                                                                     |
-| `courses` table      | Not done | Not in migration                                                                                                                     |
-| `user_courses` table | Not done | Not in migration                                                                                                                     |
+| Item                | Status  | Evidence                                                                                                                                                                                                                                                                                                                                                |
+| ------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `users` table       | Partial | Exists with `id`, `email`, `name`, `created_at`, `updated_at` and `REFERENCES auth.users`. **Missing:** `credits` (integer) per plan — add in a migration if needed.                                                                                                                                                                                    |
+| `schools` table     | Done    | [20260203100001_schools_courses.sql](packages/supabase/supabase/migrations/20260203100001_schools_courses.sql): `id`, `name`, `location`, `image`, `created_at`, `updated_at`                                                                                                                                                                           |
+| `courses` table     | Done    | Same migration: `id`, `name`, `code`, `description`, `image`, `created_at`, `updated_at`; [20260203100002](packages/supabase/supabase/migrations/20260203100002_courses_enrollments_notes.sql) adds `code`/`image` if not present                                                                                                                       |
+| User–course linkage | Done    | [school_enrollments](packages/supabase/supabase/migrations/20260203100001_schools_courses.sql) (school_id, user_id) and [course_enrollments](packages/supabase/supabase/migrations/20260203100002_courses_enrollments_notes.sql) (course_id, user_id, enrolled_at). **Note:** Plan’s `user_courses` year/role not yet columns; can add later if needed. |
 
 
-### Day 5: Authentication (partially done)
+### Day 5: Authentication (RLS done; onboarding flow pending)
 
 
-| Item                                    | Status               | Evidence                                                                                                                                                    |
-| --------------------------------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Apple OAuth config (dashboard/local)    | Configured in config | [config.toml](packages/supabase/supabase/config.toml) has `[auth.external.apple]` with `client_id = "env(APPLE_CLIENT_ID)"`, `secret = "env(APPLE_SECRET)"` |
-| Google OAuth config                     | Configured in config | Same file has `[auth.external.google]` with env-based client_id/secret                                                                                      |
-| RLS on `users`                          | Not done             | No `ENABLE ROW LEVEL SECURITY` or `CREATE POLICY` in repo                                                                                                   |
-| Onboarding flow (school, courses, year) | Not done             | No backend implementation                                                                                                                                   |
-| Session / token refresh                 | Not done             | Plan item; typically client + Supabase Auth; no explicit backend work found                                                                                 |
+| Item                                    | Status               | Evidence                                                                                                                                                                                                                         |
+| --------------------------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Apple OAuth config (dashboard/local)    | Configured in config | [config.toml](packages/supabase/supabase/config.toml) has `[auth.external.apple]` with `client_id = "env(APPLE_CLIENT_ID)"`, `secret = "env(APPLE_SECRET)"`                                                                      |
+| Google OAuth config                     | Configured in config | Same file has `[auth.external.google]` with env-based client_id/secret                                                                                                                                                           |
+| RLS on `users`                          | Done                 | [20260203100000_enable_rls_users.sql](packages/supabase/supabase/migrations/20260203100000_enable_rls_users.sql): SELECT/UPDATE/INSERT own row                                                                                   |
+| RLS on schools, courses, enrollments    | Done                 | [20260203100003_enable_rls_rest.sql](packages/supabase/supabase/migrations/20260203100003_enable_rls_rest.sql): read for schools/courses/school_courses; own-row CRUD for school_enrollments, course_enrollments; notes policies |
+| Onboarding flow (school, courses, year) | Not done             | No backend implementation (client can use enrollments tables via RLS; no dedicated onboarding API)                                                                                                                               |
+| Session / token refresh                 | Not done             | Plan item; typically client + Supabase Auth; no explicit backend work found                                                                                                                                                      |
 
 
 ---
@@ -68,28 +70,15 @@ This plan compares the [6-Week Backend Plan](docs/backend/Noteworks_Backend_6Wee
   - Optionally add a small “Secrets & env” section to the repo or backend doc (what to set for Apple/Google, no values committed).
 - **Production + staging:** Plan mentions “production + staging environments.” Confirm you have (or will create) two Supabase projects and document which env vars go where.
 
-### 2. Core database schema (Days 3–4)
+### 2. Core database schema (Days 3–4) — mostly done
 
-Add to migrations (new migration(s) or extend the initial one; prefer new for clarity):
+- **Optional:** Add column `credits INTEGER` to `public.users` (default 0 or NOT NULL) in a new migration if required by product. All other Week 1 schema is in place: `schools`, `courses`, `school_courses`, `school_enrollments`, `course_enrollments` (and `notes` from Week 2 scope).
+- After any schema change, run `pnpm types:generate` and commit updated [database.types.ts](packages/shared-types/database.types.ts) or rely on CI.
 
-- `**users`:** Add column `credits INTEGER` (default 0 or NOT NULL as per product need).
-- `**schools`:**  
-`id UUID PRIMARY KEY`, `name TEXT`, `country TEXT`, `created_at TIMESTAMPTZ DEFAULT NOW()` (and indexes if you have a pattern).
-- `**courses`:**  
-`id UUID PRIMARY KEY`, `school_id UUID REFERENCES schools(id)`, `code TEXT`, `name TEXT`, `description TEXT`, `created_at TIMESTAMPTZ DEFAULT NOW()`, plus indexes (e.g. `school_id`, `code`).
-- `**user_courses`:**  
-`user_id UUID REFERENCES users(id)`, `course_id UUID REFERENCES courses(id)`, `year INTEGER` (or TEXT), `role TEXT` (e.g. student/instructor), `joined_at TIMESTAMPTZ`, composite primary key `(user_id, course_id)` and indexes for common lookups (e.g. `course_id`, `user_id`).
+### 3. Row Level Security — RLS (Day 5) — done
 
-After changing schema, run `pnpm types:generate` (and commit updated [database.types.ts](packages/shared-types/database.types.ts) or rely on CI; your workflow already validates type generation).
-
-### 3. Row Level Security — RLS (Day 5)
-
-- Enable RLS on `public.users`:  
-`ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;`
-- Add policies so that:
-  - Users can read/update their own row (e.g. `auth.uid() = id`).
-  - Optionally: only the service role or auth hooks can insert a row for the new user (to align with “extends auth.users”).
-- Decide RLS for `schools`, `courses`, `user_courses` (e.g. schools/courses readable by authenticated users; user_courses scoped by `auth.uid()`). Add `ENABLE ROW LEVEL SECURITY` and `CREATE POLICY` statements in a migration.
+- RLS is enabled on `public.users` with read/update/insert own row ([20260203100000_enable_rls_users.sql](packages/supabase/supabase/migrations/20260203100000_enable_rls_users.sql)).
+- RLS is enabled on `schools`, `courses`, `school_courses`, `school_enrollments`, `course_enrollments`, `notes` with appropriate policies ([20260203100003_enable_rls_rest.sql](packages/supabase/supabase/migrations/20260203100003_enable_rls_rest.sql)).
 
 ### 4. Authentication and onboarding (Day 5)
 
@@ -110,23 +99,22 @@ After changing schema, run `pnpm types:generate` (and commit updated [database.t
 ## Suggested order of work
 
 1. **Secrets & env:** Document and set Apple/Google OAuth env vars (and Vault if using hosted Supabase).
-2. **Schema:** Add `credits` to `users`; add `schools`, `courses`, `user_courses` in a new migration; run `pnpm types:generate` and commit type changes if desired.
-3. **RLS:** Add RLS and policies for `users`, then for `schools`/`courses`/`user_courses` in a migration.
-4. **Onboarding:** Implement backend for “school, courses, year” (e.g. Edge Function or secured mutations) and document the client flow.
-5. **Verification:** Test Apple/Google sign-in and onboarding on iOS; confirm RLS by testing as different users.
+2. **Optional schema:** Add `credits` to `users` in a migration if needed; run `pnpm types:generate`. (Core schema and RLS are already in place.)
+3. **Onboarding:** Implement or document the “school, courses, year” flow (client can use `school_enrollments`/`course_enrollments` via RLS; add Edge Function or doc as needed).
+4. **Verification:** Test Apple/Google sign-in and onboarding on iOS; confirm RLS by testing as different users.
 
 ---
 
 ## Week 1 deliverables checklist (from doc)
 
 
-| Deliverable                                                | Status                                                                         |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| Database Schema v1.0 (core tables, relationships, indexes) | In progress — users exists; schools, courses, user_courses and credits missing |
-| Authentication (Apple + Google OAuth end-to-end)           | Config ready; env/Vault and iOS testing pending                                |
-| RLS policies (user data access control)                    | Not started                                                                    |
-| Migration scripts (version-controlled)                     | Done                                                                           |
-| Development environment (staging + production ready)       | Local ready; staging/prod Supabase projects to confirm/document                |
+| Deliverable                                                | Status                                                                                                                                   |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| Database Schema v1.0 (core tables, relationships, indexes) | Nearly complete — users, schools, courses, school_courses, school_enrollments, course_enrollments in place; optional: `credits` on users |
+| Authentication (Apple + Google OAuth end-to-end)           | Config ready; env/Vault and iOS testing pending                                                                                          |
+| RLS policies (user data access control)                    | Done — users and all core tables have RLS and policies                                                                                   |
+| Migration scripts (version-controlled)                     | Done — six migrations including Vault and RLS                                                                                            |
+| Development environment (staging + production ready)       | Local ready; staging/prod Supabase projects to confirm/document                                                                          |
 
 
-Once the schema and RLS migrations are in place and onboarding is implemented, you can mark Week 1 complete and move on to Week 2 (Notes & Storage).
+Once secrets/env are documented, optional `credits` is added if needed, and onboarding flow is implemented and tested, you can mark Week 1 complete and move on to Week 2 (Notes & Storage).

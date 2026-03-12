@@ -63,6 +63,39 @@ secret = "env(GOOGLE_SECRET)"
 [edge_runtime]
 enabled = true
 
+[functions.submit-onboarding]
+verify_jwt = false
+
+[functions.get-courses]
+verify_jwt = false
+
+[functions.get-notes]
+verify_jwt = false
+
+[functions.create-note]
+verify_jwt = false
+
+[functions.update-note]
+verify_jwt = false
+
+[functions.delete-note]
+verify_jwt = false
+
+[functions.upload-note-pdf]
+verify_jwt = false
+
+[functions.get-note-pdf-url]
+verify_jwt = false
+
+[functions.get-school-courses]
+verify_jwt = false
+
+[functions.get-user-profile]
+verify_jwt = false
+
+[functions.get-schools]
+verify_jwt = false
+
 [analytics]
 enabled = true
 port = 64327

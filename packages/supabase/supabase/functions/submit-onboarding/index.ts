@@ -1,19 +1,19 @@
-// Submit onboarding: school, year of study, course codes; update users and create enrollments
 import { requireAuth } from '../_shared/auth.ts'
 import { corsResponse, json, errorResponse } from '../_shared/cors.ts'
 
 const MAX_NAME = 255
-const MAX_YEAR = 100
 const MAX_SCHOOL = 255
 const MAX_EMAIL = 255
 const MAX_COURSE_CODE = 50
 const MAX_COURSE_CODES = 50
+const MIN_GRADUATION_YEAR = 2000
+const MAX_GRADUATION_YEAR = 2100
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 type ValidBody = {
   name: string
-  year_of_study: string
+  year_of_graduation: number
   school_affiliation: string
   school_email: string
   course_codes: string[]
@@ -24,13 +24,13 @@ function validate(body: unknown): ValidBody | { errors: Record<string, string> }
     return {
       errors: {
         body:
-          'JSON body with name, year_of_study, school_affiliation, school_email, course_codes required',
+          'JSON body with name, year_of_graduation, school_affiliation, school_email, course_codes required',
       },
     }
   }
   const o = body as Record<string, unknown>
   const name = typeof o.name === 'string' ? o.name.trim() : ''
-  const year_of_study = typeof o.year_of_study === 'string' ? o.year_of_study.trim() : ''
+  const year_of_graduation = typeof o.year_of_graduation === 'number' ? o.year_of_graduation : NaN
   const school_affiliation =
     typeof o.school_affiliation === 'string' ? o.school_affiliation.trim() : ''
   const school_email = typeof o.school_email === 'string' ? o.school_email.trim() : ''
@@ -48,9 +48,10 @@ function validate(body: unknown): ValidBody | { errors: Record<string, string> }
   if (name.length === 0) errors.name = 'Name is required'
   else if (name.length > MAX_NAME) errors.name = `Name must be at most ${MAX_NAME} characters`
 
-  if (year_of_study.length === 0) errors.year_of_study = 'Year of study is required'
-  else if (year_of_study.length > MAX_YEAR)
-    errors.year_of_study = `Year of study must be at most ${MAX_YEAR} characters`
+  if (isNaN(year_of_graduation) || !Number.isInteger(year_of_graduation))
+    errors.year_of_graduation = 'Year of graduation is required and must be an integer'
+  else if (year_of_graduation < MIN_GRADUATION_YEAR || year_of_graduation > MAX_GRADUATION_YEAR)
+    errors.year_of_graduation = `Year of graduation must be between ${MIN_GRADUATION_YEAR} and ${MAX_GRADUATION_YEAR}`
 
   if (school_affiliation.length === 0) errors.school_affiliation = 'School is required'
   else if (school_affiliation.length > MAX_SCHOOL)
@@ -71,7 +72,7 @@ function validate(body: unknown): ValidBody | { errors: Record<string, string> }
   }
 
   if (Object.keys(errors).length > 0) return { errors }
-  return { name, year_of_study, school_affiliation, school_email, course_codes }
+  return { name, year_of_graduation, school_affiliation, school_email, course_codes }
 }
 
 Deno.serve(async (req) => {
@@ -102,7 +103,7 @@ Deno.serve(async (req) => {
     .from('users')
     .update({
       name: validated.name,
-      year_of_study: validated.year_of_study,
+      year_of_graduation: validated.year_of_graduation,
       school_affiliation: validated.school_affiliation,
       school_email: validated.school_email,
       course_codes: validated.course_codes,

@@ -22,11 +22,13 @@ export async function requireAuth(req: Request): Promise<AuthContext | Response>
     return errorResponse('Server error', 'Server configuration error', 500)
   }
 
+  const token = authHeader.replace('Bearer ', '')
+
   const supabase = createClient(url, anonKey, {
     global: { headers: { Authorization: authHeader } },
   })
 
-  const { data: { user }, error } = await supabase.auth.getUser()
+  const { data: { user }, error } = await supabase.auth.getUser(token)
   if (error || !user) {
     return errorResponse('Unauthorized', 'Invalid or expired token', 401)
   }

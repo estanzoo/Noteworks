@@ -1,0 +1,2 @@
+add schools list
+add courses_offered list by school
