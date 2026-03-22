@@ -34,6 +34,14 @@ export interface UpdateNoteRequest {
 export interface UploadNotePdfParams {
   note_id: string
   filename?: string
+  /** Required when the note_id is new (first upload creates the note row) */
+  course_id?: string
+  /** Defaults to filename without .pdf extension */
+  title?: string
+}
+
+export interface UploadNotePdfResponse {
+  success: boolean
 }
 
 export interface GetNotePdfUrlParams {
@@ -87,10 +95,13 @@ export interface GetNotesParams {
 
 // PDF storage (stored in notes.metadata when a note has an attached PDF)
 export interface NotePdfMetadata {
-  pdf_path: string // e.g. "{user_id}/{note_id}.pdf"
+  pdf_path: string // e.g. "{user_id}/{note_id}/v_1.pdf"
   pdf_size_bytes: number
   pdf_filename: string
   pdf_uploaded_at: string // ISO 8601 timestamp
+  version: number
+  /** Storage paths of all previous versions (oldest first) */
+  version_history: string[]
 }
 
 // Onboarding
@@ -121,6 +132,192 @@ export interface PaginatedResponse<T> {
     totalPages: number
     hasMore: boolean
   }
+}
+
+// ---------------------
+// Community types
+// ---------------------
+
+// These will resolve to Tables<'...'> after regenerating database.types.ts.
+// Until then they are defined as standalone interfaces matching the migration.
+
+export interface Post {
+  id: string
+  user_id: string
+  title: string
+  body: string
+  course_id: string | null
+  visibility: string
+  deleted_at: string | null
+  likes_count: number
+  comments_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface PostAttachment {
+  post_id: string
+  note_id: string
+  created_at: string
+}
+
+export interface Hashtag {
+  id: string
+  name: string
+  post_count: number
+  created_at: string
+}
+
+export interface PostHashtag {
+  post_id: string
+  hashtag_id: string
+}
+
+export interface PostLike {
+  post_id: string
+  user_id: string
+  created_at: string
+}
+
+export interface Comment {
+  id: string
+  post_id: string
+  user_id: string
+  parent_comment_id: string | null
+  body: string
+  likes_count: number
+  visibility: string
+  created_at: string
+  updated_at: string
+}
+
+// Cursor-based pagination
+export interface CursorPaginatedResponse<T> {
+  data: T[]
+  next_cursor: string | null
+}
+
+// Posts
+export interface CreatePostRequest {
+  title: string
+  body: string
+  visibility?: 'public' | 'private'
+  course_id?: string
+  attachment_note_ids?: string[]
+  hashtags?: string[]
+}
+
+export interface UpdatePostRequest {
+  post_id: string
+  title?: string
+  body?: string
+  visibility?: 'public' | 'private'
+  course_id?: string | null
+  attachment_note_ids?: string[]
+  hashtags?: string[]
+}
+
+export interface GetPostsParams {
+  cursor?: string
+  limit?: number
+  user_id?: string
+  hashtag?: string
+  course_id?: string
+  liked_by_me?: boolean
+  include_own_private?: boolean
+}
+
+export interface AuthorInfo {
+  id: string
+  name: string | null
+}
+
+export interface AttachmentInfo {
+  note_id: string
+  title: string
+}
+
+export interface PostResponse {
+  id: string
+  user_id: string
+  author: AuthorInfo
+  title: string
+  body: string
+  visibility: string
+  course_id: string | null
+  likes_count: number
+  comments_count: number
+  has_liked: boolean
+  hashtags: string[]
+  attachments: AttachmentInfo[]
+  created_at: string
+  updated_at: string
+}
+
+export interface GetPostsResponse extends CursorPaginatedResponse<PostResponse> {
+  data: PostResponse[]
+}
+
+export interface DeletePostResponse {
+  message: string
+  post_id: string
+}
+
+export interface LikePostRequest {
+  post_id: string
+}
+
+export interface LikePostResponse {
+  liked: boolean
+  likes_count: number
+}
+
+// Comments
+export interface CreateCommentRequest {
+  post_id: string
+  body: string
+  parent_comment_id?: string
+}
+
+export interface GetCommentsParams {
+  post_id: string
+  cursor?: string
+  limit?: number
+}
+
+export interface CommentResponse {
+  id: string
+  post_id: string
+  user_id: string
+  author: AuthorInfo
+  parent_comment_id: string | null
+  body: string
+  likes_count: number
+  visibility: string
+  created_at: string
+  updated_at: string
+  replies: CommentResponse[]
+}
+
+export interface GetCommentsResponse extends CursorPaginatedResponse<CommentResponse> {
+  data: CommentResponse[]
+}
+
+export interface DeleteCommentResponse {
+  message: string
+  comment_id: string
+}
+
+// Hashtags
+export interface SearchHashtagsParams {
+  q: string
+  limit?: number
+}
+
+export interface HashtagResponse {
+  id: string
+  name: string
+  post_count: number
 }
 
 // Error types

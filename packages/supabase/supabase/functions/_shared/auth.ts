@@ -1,6 +1,10 @@
 import { createClient, SupabaseClient, User } from 'https://esm.sh/@supabase/supabase-js@2'
 import { errorResponse } from './cors.ts'
 
+const SUPABASE_URL = 'https://canhewvuprjwmpopcloj.supabase.co'
+const SUPABASE_ANON_KEY =
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNhbmhld3Z1cHJqd21wb3BjbG9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk5NjI1NDgsImV4cCI6MjA4NTUzODU0OH0.jp-RcV0gxHHozwgL4pOlNkwUsjUbzoZTJ6MRJH4Oo8Y'
+
 export interface AuthContext {
   supabase: SupabaseClient
   user: User
@@ -16,15 +20,9 @@ export async function requireAuth(req: Request): Promise<AuthContext | Response>
     return errorResponse('Unauthorized', 'Missing or invalid Authorization header', 401)
   }
 
-  const url = Deno.env.get('SUPABASE_URL')
-  const anonKey = Deno.env.get('SUPABASE_ANON_KEY')
-  if (!url || !anonKey) {
-    return errorResponse('Server error', 'Server configuration error', 500)
-  }
-
   const token = authHeader.replace('Bearer ', '')
 
-  const supabase = createClient(url, anonKey, {
+  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     global: { headers: { Authorization: authHeader } },
   })
 

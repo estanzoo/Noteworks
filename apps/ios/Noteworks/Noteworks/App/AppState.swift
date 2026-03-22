@@ -11,15 +11,24 @@ import Combine
 class AppState: ObservableObject {
     @Published var isAuthenticated = false
     @Published var currentUser: User?
+
+    /// The Supabase access token for the current session.
+    /// Set after sign-in; cleared on sign-out.
+    @Published var accessToken: String?
     
     init() {
-        // TODO: Check if user is already logged in (from Keychain)
         checkAuthStatus()
     }
     
     func checkAuthStatus() {
-        // TODO: Load from Keychain/AuthService
-        // For now, default to false
+        // TODO: Load token from Keychain/AuthService
+        isAuthenticated = false
+        accessToken = nil
+    }
+
+    func signOut() {
+        accessToken = nil
+        currentUser = nil
         isAuthenticated = false
     }
 }

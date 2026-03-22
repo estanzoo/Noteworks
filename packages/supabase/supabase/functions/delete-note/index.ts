@@ -28,12 +28,23 @@ Deno.serve(async (req) => {
   if (fetchErr) return errorResponse('Query failed', fetchErr.message, 500)
   if (!note) return errorResponse('Not found', 'Note not found or you do not own it', 404)
 
-  // Clean up associated PDF from storage if it exists
+  // Clean up all PDF versions from storage (current + history)
   const metadata = note.metadata as Record<string, unknown> | null
+  const pathsToRemove: string[] = []
+
   if (metadata?.pdf_path && typeof metadata.pdf_path === 'string') {
+    pathsToRemove.push(metadata.pdf_path)
+  }
+  if (Array.isArray(metadata?.version_history)) {
+    for (const p of metadata.version_history as unknown[]) {
+      if (typeof p === 'string') pathsToRemove.push(p)
+    }
+  }
+
+  if (pathsToRemove.length > 0) {
     const { error: storageErr } = await supabase.storage
       .from('notes-pdfs')
-      .remove([metadata.pdf_path])
+      .remove(pathsToRemove)
 
     if (storageErr) {
       console.error('PDF cleanup failed (non-blocking):', storageErr.message)

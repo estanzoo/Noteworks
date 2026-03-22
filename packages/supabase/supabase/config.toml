@@ -96,6 +96,36 @@ verify_jwt = false
 [functions.get-schools]
 verify_jwt = false
 
+[functions.create-post]
+verify_jwt = false
+
+[functions.get-posts]
+verify_jwt = false
+
+[functions.get-post]
+verify_jwt = false
+
+[functions.update-post]
+verify_jwt = false
+
+[functions.delete-post]
+verify_jwt = false
+
+[functions.like-post]
+verify_jwt = false
+
+[functions.create-comment]
+verify_jwt = false
+
+[functions.get-comments]
+verify_jwt = false
+
+[functions.delete-comment]
+verify_jwt = false
+
+[functions.search-hashtags]
+verify_jwt = false
+
 [analytics]
 enabled = true
 port = 64327
