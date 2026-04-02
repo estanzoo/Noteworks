@@ -50,4 +50,4 @@ pnpm-debug.log*
 
 #Backend Docs
 docs/backend/
-cursor/plans/
+.cursor/plans/
