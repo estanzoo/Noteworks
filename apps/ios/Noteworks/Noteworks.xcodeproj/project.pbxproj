@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		4BC4EC842F7F8C5800F02C9D /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = 4BC4EBF12F7E4E3800F02C9E /* Supabase */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		4B3C3C172F3016E000580888 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -76,6 +80,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4BC4EC842F7F8C5800F02C9D /* Supabase in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -136,6 +141,7 @@
 			);
 			name = Noteworks;
 			packageProductDependencies = (
+				4BC4EBF12F7E4E3800F02C9E /* Supabase */,
 			);
 			productName = Noteworks;
 			productReference = 4B3C3C052F3016DC00580888 /* Noteworks.app */;
@@ -219,6 +225,9 @@
 			);
 			mainGroup = 4B3C3BFC2F3016DC00580888;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				4BC4EBF02F7E4E3800F02C9D /* XCRemoteSwiftPackageReference "supabase-swift" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 4B3C3C062F3016DC00580888 /* Products */;
 			projectDirPath = "";
@@ -619,6 +628,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		4BC4EBF02F7E4E3800F02C9D /* XCRemoteSwiftPackageReference "supabase-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/supabase/supabase-swift";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.5.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		4BC4EBF12F7E4E3800F02C9E /* Supabase */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4BC4EBF02F7E4E3800F02C9D /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Supabase;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 4B3C3BFD2F3016DC00580888 /* Project object */;
 }

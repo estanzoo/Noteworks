@@ -21,6 +21,7 @@ struct CourseBubble: Identifiable {
 // MARK: - HomeView
 
 struct HomeView: View {
+    @Binding var selectedTab: AppTab
     @StateObject private var viewModel = HomeViewModel()
 
     // Sample data — replace with real data later
@@ -46,7 +47,11 @@ struct HomeView: View {
                 GeometryReader { geo in
                     ZStack {
                         ForEach(courses) { course in
-                            NavigationLink(destination: CourseSpaceView()) {
+                            Button {
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                    selectedTab = .notebook
+                                }
+                            } label: {
                                 BubbleView(course: course)
                             }
                             .buttonStyle(.plain)
@@ -195,6 +200,6 @@ struct BubbleView: View {
 
 #Preview {
     NavigationStack {
-        HomeView()
+        HomeView(selectedTab: .constant(.home))
     }
 }

@@ -9,20 +9,17 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var appState = AppState()
-    
+
     var body: some View {
         Group {
             if appState.isAuthenticated {
-                // User is logged in → show main app with tabs
                 MainTabView()
             } else {
-                // User not logged in → show login screen
-                NavigationStack {
-                    LoginView()
-                }
+                OnboardingFlow()
             }
         }
         .environmentObject(appState)
+        .preferredColorScheme(.light)
     }
 }
 

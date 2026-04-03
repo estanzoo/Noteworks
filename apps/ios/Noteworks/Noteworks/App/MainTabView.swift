@@ -26,15 +26,13 @@ struct MainTabView: View {
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            // Page content
-            NavigationStack {
-                Group {
-                    switch selectedTab {
-                    case .home:     HomeView()
-                    case .notebook: CourseSpaceView()
-                    case .people:   AccountView()
-                    }
-                }
+            switch selectedTab {
+            case .home:
+                NavigationStack { HomeView(selectedTab: $selectedTab) }
+            case .notebook:
+                NavigationStack { CourseSpaceView() }
+            case .people:
+                NavigationStack { AccountView() }
             }
 
             FloatingTabBar(selectedTab: $selectedTab)

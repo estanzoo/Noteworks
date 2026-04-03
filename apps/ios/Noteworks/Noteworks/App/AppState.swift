@@ -15,15 +15,21 @@ class AppState: ObservableObject {
     /// The Supabase access token for the current session.
     /// Set after sign-in; cleared on sign-out.
     @Published var accessToken: String?
-    
+
+    let authService: AuthServiceProtocol = SupabaseAuthService()
+
     init() {
         checkAuthStatus()
     }
-    
+
     func checkAuthStatus() {
-        // TODO: Load token from Keychain/AuthService
         isAuthenticated = false
         accessToken = nil
+    }
+
+    func handleAuthResult(_ result: AuthResult) {
+        accessToken = result.accessToken
+        currentUser = User(id: result.userId, email: result.email)
     }
 
     func signOut() {

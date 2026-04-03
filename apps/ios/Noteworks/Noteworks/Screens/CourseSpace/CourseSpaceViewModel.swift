@@ -6,8 +6,44 @@
 //
 
 import Foundation
+import PencilKit
 
-class CourseSpaceViewModel: ObservableObject {
-    // TODO: Add course space logic here
+struct NoteItem: Identifiable {
+    let id: String
+    var title: String
+    var drawing: PKDrawing
+    var createdAt: Date
+
+    var formattedDate: String {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        return f.string(from: createdAt)
+    }
 }
 
+@MainActor
+class CourseSpaceViewModel: ObservableObject {
+    @Published var notes: [NoteItem] = []
+
+    init() {
+        notes = [
+            NoteItem(
+                id: UUID().uuidString,
+                title: "Untitled Note",
+                drawing: PKDrawing(),
+                createdAt: Date()
+            )
+        ]
+    }
+
+    func createNote() {
+        let note = NoteItem(
+            id: UUID().uuidString,
+            title: "Note \(notes.count + 1)",
+            drawing: PKDrawing(),
+            createdAt: Date()
+        )
+        notes.insert(note, at: 0)
+    }
+}

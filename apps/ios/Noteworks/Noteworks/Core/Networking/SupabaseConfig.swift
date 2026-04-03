@@ -13,6 +13,10 @@ enum SupabaseConfig {
 
     static let functionsBase = "\(baseURL)/functions/v1"
 
+    static var submitOnboardingURL: URL {
+        URL(string: "\(functionsBase)/submit-onboarding")!
+    }
+
     static func uploadNotePDFURL(noteId: String, filename: String? = nil) -> URL {
         var components = URLComponents(string: "\(functionsBase)/upload-note-pdf")!
         var items = [URLQueryItem(name: "note_id", value: noteId)]
