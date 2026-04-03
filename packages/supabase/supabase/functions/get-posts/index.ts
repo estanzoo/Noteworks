@@ -122,19 +122,22 @@ Deno.serve(async (req) => {
     }
   }
 
-  // Batch-fetch attachments
+  // Batch-fetch attachments with PDF metadata
   const { data: attRows } = await supabase
     .from('post_attachments')
-    .select('post_id, note_id, note:notes(title)')
+    .select('post_id, note_id, note:notes(title, metadata)')
     .in('post_id', postIds)
 
-  const attachmentsByPost: Record<string, { note_id: string; title: string }[]> = {}
+  const attachmentsByPost: Record<string, { note_id: string; title: string; has_pdf: boolean; pdf_filename: string | null }[]> = {}
   for (const row of attRows ?? []) {
-    const note = row.note as unknown as { title: string } | null
+    const note = row.note as unknown as { title: string; metadata: Record<string, unknown> | null } | null
+    const meta = note?.metadata
     if (!attachmentsByPost[row.post_id]) attachmentsByPost[row.post_id] = []
     attachmentsByPost[row.post_id].push({
       note_id: row.note_id,
       title: note?.title ?? 'Untitled',
+      has_pdf: !!(meta?.pdf_path),
+      pdf_filename: (meta?.pdf_filename as string) ?? null,
     })
   }
 

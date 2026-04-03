@@ -235,6 +235,8 @@ export interface AuthorInfo {
 export interface AttachmentInfo {
   note_id: string
   title: string
+  has_pdf: boolean
+  pdf_filename: string | null
 }
 
 export interface PostResponse {

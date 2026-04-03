@@ -159,12 +159,23 @@ Deno.serve(async (req) => {
 
   const { data: attRows } = await supabase
     .from('post_attachments')
-    .select('note_id')
+    .select('note_id, note:notes(title, metadata)')
     .eq('post_id', postId)
+
+  const attachments = (attRows ?? []).map(r => {
+    const note = r.note as unknown as { title: string; metadata: Record<string, unknown> | null } | null
+    const meta = note?.metadata
+    return {
+      note_id: r.note_id,
+      title: note?.title ?? 'Untitled',
+      has_pdf: !!(meta?.pdf_path),
+      pdf_filename: (meta?.pdf_filename as string) ?? null,
+    }
+  })
 
   return json({
     ...updated,
     hashtags,
-    attachments: (attRows ?? []).map(a => a.note_id),
+    attachments,
   })
 })
