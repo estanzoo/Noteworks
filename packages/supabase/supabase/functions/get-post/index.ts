@@ -47,16 +47,22 @@ Deno.serve(async (req) => {
     .map(r => (r.hashtag as unknown as { name: string } | null)?.name)
     .filter((n): n is string => !!n)
 
-  // Fetch attachments
+  // Fetch attachments with PDF metadata
   const { data: attRows } = await supabase
     .from('post_attachments')
-    .select('note_id, note:notes(title)')
+    .select('note_id, note:notes(title, metadata)')
     .eq('post_id', postId)
 
-  const attachments = (attRows ?? []).map(r => ({
-    note_id: r.note_id,
-    title: (r.note as unknown as { title: string } | null)?.title ?? 'Untitled',
-  }))
+  const attachments = (attRows ?? []).map(r => {
+    const note = r.note as unknown as { title: string; metadata: Record<string, unknown> | null } | null
+    const meta = note?.metadata
+    return {
+      note_id: r.note_id,
+      title: note?.title ?? 'Untitled',
+      has_pdf: !!(meta?.pdf_path),
+      pdf_filename: (meta?.pdf_filename as string) ?? null,
+    }
+  })
 
   // Check if current user liked
   const { data: likeRow } = await supabase

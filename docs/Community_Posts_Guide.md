@@ -8,6 +8,7 @@ This guide explains how the iOS app should interact with the community feature. 
 
 The community feature adds a posts system where users can:
 - Create posts with text, optional note attachments, and hashtags
+- Attach PDF notes to posts (linked via the `post_attachments` join table → `notes` table)
 - Browse a public feed with infinite scroll
 - Like and unlike posts
 - Comment on posts (with threaded replies)
@@ -41,7 +42,10 @@ All community endpoints live under `/functions/v1/` and require authentication (
        │
        ├── User taps heart ──► POST /like-post  { post_id }
        │
-       └── User taps "New Post" ──► POST /create-post  { title, body, ... }
+       └── User taps "New Post" ──► upload PDFs first via /upload-note-pdf
+                                        │
+                                        ▼
+                                   POST /create-post  { title, body, attachment_note_ids, ... }
 ```
 
 ---
@@ -217,7 +221,9 @@ GET .../get-posts?hashtag=studytips&course_id=COURSE_UUID&limit=20
       "attachments": [
         {
           "note_id": "note-uuid-1",
-          "title": "Chapter 5 Notes"
+          "title": "Chapter 5 Notes",
+          "has_pdf": true,
+          "pdf_filename": "chapter5.pdf"
         }
       ],
       "created_at": "2026-03-22T14:30:00Z",
@@ -231,7 +237,11 @@ GET .../get-posts?hashtag=studytips&course_id=COURSE_UUID&limit=20
 Key fields to note:
 - `has_liked` — boolean indicating whether the **current user** has liked this post. Use this to show a filled vs. empty heart icon.
 - `author` — nested object with the post creator's name and ID.
-- `attachments` — includes the note ID and its title for display.
+- `attachments` — each attachment includes:
+  - `note_id` — the linked note's UUID (use with `get-note-pdf-url` to get a download link)
+  - `title` — the note's title for display
+  - `has_pdf` — whether this note has a PDF file attached
+  - `pdf_filename` — the original filename of the PDF (or `null` if no PDF)
 - `next_cursor` — `null` when there are no more posts to load.
 
 ---
@@ -269,11 +279,15 @@ Headers:
   "attachments": [
     {
       "note_id": "note-uuid-1",
-      "title": "Chapter 5 Notes"
+      "title": "Chapter 5 Notes",
+      "has_pdf": true,
+      "pdf_filename": "chapter5.pdf"
     },
     {
       "note_id": "note-uuid-2",
-      "title": "Lecture Slides Summary"
+      "title": "Lecture Slides Summary",
+      "has_pdf": true,
+      "pdf_filename": "lecture_slides.pdf"
     }
   ],
   "created_at": "2026-03-22T14:30:00Z",
@@ -336,6 +350,25 @@ Only include the fields you want to change. All fields except `post_id` are opti
 | 401 | Not authenticated | Refresh token or show login |
 | 403 | Not the post owner | "You can only edit your own posts" |
 | 404 | Post not found or deleted | "This post is no longer available" |
+
+---
+
+## PDF attachments on posts
+
+Posts link to notes via the `post_attachments` join table. Notes that have a PDF uploaded (via `upload-note-pdf`) will show `has_pdf: true` and `pdf_filename` in the attachment response.
+
+**Creating a post with a PDF attachment (two calls):**
+1. Upload the PDF first: `POST /upload-note-pdf?note_id=<client-generated-uuid>&course_id=COURSE_ID&filename=file.pdf` with raw PDF body
+2. Create the post: `POST /create-post` with `attachment_note_ids: ["<that note_id>"]`
+
+**Updating a post's attachments:**
+- Upload any new PDFs via `upload-note-pdf` to get note IDs
+- `PATCH /update-post` with `attachment_note_ids: [...]` — this **replaces** the full list
+
+**Downloading a PDF from a post attachment:**
+- Each attachment in the response has `note_id`, `has_pdf`, and `pdf_filename`
+- If `has_pdf` is `true`, call `GET /get-note-pdf-url?note_id=NOTE_ID` to get a signed download URL
+- The signed URL expires after 1 hour by default
 
 ---
 
@@ -628,16 +661,28 @@ Results are sorted by `post_count` (most popular first) — so the most relevant
 4. When user scrolls near bottom → GET /get-posts?cursor=NEXT_CURSOR&limit=20
 ```
 
-### Scenario 2: User creates a post with notes attached
+### Scenario 2: User creates a post with a PDF attached
 ```
-1. User writes title + body
-2. User taps "Attach Notes" → show picker with their uploaded notes
-3. User types hashtags → autocomplete via GET /search-hashtags?q=...
-4. User taps "Post" → POST /create-post with all fields
-5. On success → insert the new post at the top of the feed
+1. User taps "New Post"
+2. User writes title + body
+3. User taps "Attach PDF" → opens file picker → selects a PDF
+4. Client generates a UUID for the note
+5. POST /upload-note-pdf?note_id=UUID&course_id=...&filename=file.pdf (raw PDF body)
+6. On success → client holds onto the note UUID
+7. User types hashtags → autocomplete via GET /search-hashtags?q=...
+8. User taps "Post" → POST /create-post with attachment_note_ids: [UUID]
+9. On success → insert the new post at the top of the feed
 ```
 
-### Scenario 3: User views a post and comments
+### Scenario 3: Viewing/downloading a PDF attachment on a post
+```
+1. Post detail shows attachments with has_pdf: true and pdf_filename
+2. User taps the PDF attachment
+3. GET /get-note-pdf-url?note_id=NOTE_ID → get signed_url
+4. Open signed_url in PDF viewer / web view
+```
+
+### Scenario 4: User views a post and comments
 ```
 1. GET /get-post?post_id=ID     → display full post
 2. GET /get-comments?post_id=ID → display threaded comments
@@ -645,7 +690,7 @@ Results are sorted by `post_count` (most popular first) — so the most relevant
 4. On success → insert the new comment at the top of the list
 ```
 
-### Scenario 4: User likes/unlikes a post from the feed
+### Scenario 5: User likes/unlikes a post from the feed
 ```
 1. User taps heart icon → POST /like-post { post_id }
 2. Response: { liked: true, likes_count: 13 }
@@ -655,13 +700,13 @@ Results are sorted by `post_count` (most popular first) — so the most relevant
 6. Toggle heart to empty, update count to 12
 ```
 
-### Scenario 5: User views their liked posts
+### Scenario 6: User views their liked posts
 ```
 1. GET /get-posts?liked_by_me=true&limit=20
 2. Display in same list format as main feed
 ```
 
-### Scenario 6: User taps a hashtag chip
+### Scenario 7: User taps a hashtag chip
 ```
 1. GET /get-posts?hashtag=cs101&limit=20
 2. Show a filtered feed with a header like "#cs101"
@@ -678,6 +723,8 @@ Results are sorted by `post_count` (most popular first) — so the most relevant
 | Get single post | GET | `/functions/v1/get-post?post_id=ID` | Yes |
 | Update post | PATCH | `/functions/v1/update-post` | Yes |
 | Delete post | DELETE | `/functions/v1/delete-post?post_id=ID` | Yes |
+| Upload PDF (as note) | POST | `/functions/v1/upload-note-pdf?note_id=ID` | Yes |
+| Get PDF download URL | GET | `/functions/v1/get-note-pdf-url?note_id=ID` | Yes |
 | Like/unlike post | POST | `/functions/v1/like-post` | Yes |
 | Create comment | POST | `/functions/v1/create-comment` | Yes |
 | Get comments | GET | `/functions/v1/get-comments?post_id=ID` | Yes |
