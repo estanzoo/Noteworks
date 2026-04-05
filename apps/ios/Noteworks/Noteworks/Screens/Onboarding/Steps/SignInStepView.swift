@@ -12,6 +12,7 @@ struct SignInStepView: View {
     @Binding var password: String
     let onSignIn: () -> Void
     let onBack: () -> Void
+    let onForgotPassword: () -> Void
 
     @State private var visible = false
 
@@ -50,15 +51,24 @@ struct SignInStepView: View {
                             )
                         }
 
-                        HStack(spacing: 4) {
-                            Text("Don't have an account?")
-                                .foregroundStyle(Color(red: 60/255, green: 60/255, blue: 67/255).opacity(0.4))
-                            Button("Sign up") { onBack() }
+                        HStack {
+                            HStack(spacing: 4) {
+                                Text("Don't have an account?")
+                                    .foregroundStyle(Color(red: 60/255, green: 60/255, blue: 67/255).opacity(0.4))
+                                Button("Sign up") { onBack() }
+                                    .foregroundStyle(OnboardingTheme.accent)
+                                    .fontWeight(.semibold)
+                            }
+
+                            Spacer()
+
+                            Button("Forgot password?", action: onForgotPassword)
                                 .foregroundStyle(OnboardingTheme.accent)
-                                .fontWeight(.semibold)
+                                .fontWeight(.medium)
+                                .buttonStyle(.plain)
                         }
-                        .font(.system(size: 15))
-                        .padding(.top, 20)
+                        .font(.system(size: 14))
+                        .padding(.top, 16)
                     }
                 }
                 .padding(.horizontal, 28)

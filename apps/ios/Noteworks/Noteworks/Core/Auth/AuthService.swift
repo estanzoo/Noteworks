@@ -53,6 +53,8 @@ protocol AuthServiceProtocol: AnyObject {
     func verifyEmail(code: String, email: String) async throws -> AuthResult
     func resendSignupConfirmation(email: String) async throws
     func submitOnboarding(_ payload: OnboardingPayload, accessToken: String) async throws
+    func resetPassword(email: String) async throws
+    func confirmPasswordReset(email: String, code: String, newPassword: String) async throws
 }
 
 // MARK: - Supabase
@@ -120,6 +122,26 @@ final class SupabaseAuthService: AuthServiceProtocol {
             body: payload,
             accessToken: accessToken
         )
+    }
+
+    func resetPassword(email: String) async throws {
+        try await client.auth.resetPasswordForEmail(email)
+    }
+
+    func confirmPasswordReset(email: String, code: String, newPassword: String) async throws {
+        let token = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else {
+            throw APIError.badRequest("Enter the verification code.")
+        }
+        let response = try await client.auth.verifyOTP(
+            email: email,
+            token: token,
+            type: .recovery
+        )
+        guard response.session != nil else {
+            throw APIError.badRequest("Invalid or expired code. Please try again.")
+        }
+        try await client.auth.update(user: UserAttributes(password: newPassword))
     }
 
     private func authResult(from session: Session, fallbackEmail: String) -> AuthResult {

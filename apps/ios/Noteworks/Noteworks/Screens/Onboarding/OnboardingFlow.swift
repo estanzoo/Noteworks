@@ -18,6 +18,8 @@ enum OnboardingStep: Int, CaseIterable {
     case interests = 7
     case done = 8
     case skipped = 9
+    case forgotPassword = 10
+    case resetPassword = 11
 }
 
 struct OnboardingFlow: View {
@@ -28,6 +30,10 @@ struct OnboardingFlow: View {
     @State private var errorMessage: String?
     @State private var signInEmail = ""
     @State private var signInPassword = ""
+    @State private var resetEmail = ""
+    @State private var resetCode = ["", "", "", "", "", ""]
+    @State private var resetNewPassword = ""
+    @State private var resetConfirmPassword = ""
 
     var body: some View {
         ZStack {
@@ -62,7 +68,11 @@ struct OnboardingFlow: View {
                         email: $signInEmail,
                         password: $signInPassword,
                         onSignIn: { handleSignIn() },
-                        onBack: { step = .welcome }
+                        onBack: { step = .welcome },
+                        onForgotPassword: {
+                            resetEmail = signInEmail
+                            step = .forgotPassword
+                        }
                     )
                 case .signInDone:
                     SignInDoneView(
@@ -88,6 +98,22 @@ struct OnboardingFlow: View {
                     DoneView(name: data.name, onExplore: { appState.isAuthenticated = true })
                 case .skipped:
                     SkippedView(onComplete: { appState.isAuthenticated = true })
+                case .forgotPassword:
+                    ForgotPasswordView(
+                        email: $resetEmail,
+                        onSendCode: { handleSendResetCode() },
+                        onBack: { step = .signIn }
+                    )
+                case .resetPassword:
+                    ResetPasswordView(
+                        code: $resetCode,
+                        newPassword: $resetNewPassword,
+                        confirmPassword: $resetConfirmPassword,
+                        email: resetEmail,
+                        onReset: { handleConfirmReset() },
+                        onBack: { step = .forgotPassword },
+                        onResend: { handleResendResetCode() }
+                    )
                 }
             }
             .transition(.asymmetric(
@@ -205,6 +231,62 @@ struct OnboardingFlow: View {
                     accessToken: appState.accessToken ?? ""
                 )
                 step = .done
+            } catch {
+                errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
+            isLoading = false
+        }
+    }
+
+    // MARK: - Forgot / Reset password
+
+    private func handleSendResetCode() {
+        guard !resetEmail.isEmpty else {
+            errorMessage = "Enter your email address."
+            return
+        }
+        isLoading = true
+        Task {
+            do {
+                try await appState.authService.resetPassword(email: resetEmail)
+                step = .resetPassword
+            } catch {
+                errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
+            isLoading = false
+        }
+    }
+
+    private func handleConfirmReset() {
+        isLoading = true
+        Task {
+            do {
+                let code = resetCode.joined()
+                try await appState.authService.confirmPasswordReset(
+                    email: resetEmail,
+                    code: code,
+                    newPassword: resetNewPassword
+                )
+                resetCode = ["", "", "", "", "", ""]
+                resetNewPassword = ""
+                resetConfirmPassword = ""
+                step = .signIn
+            } catch {
+                errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
+            isLoading = false
+        }
+    }
+
+    private func handleResendResetCode() {
+        guard !resetEmail.isEmpty else {
+            errorMessage = "Go back and enter your email first."
+            return
+        }
+        isLoading = true
+        Task {
+            do {
+                try await appState.authService.resetPassword(email: resetEmail)
             } catch {
                 errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }
