@@ -41,6 +41,9 @@ others/
 .DS_Store
 Thumbs.db
 
+# Data files (downloaded datasets for seed scripts)
+data/
+
 # Logs
 *.log
 npm-debug.log*

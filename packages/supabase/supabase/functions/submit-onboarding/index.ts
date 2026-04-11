@@ -15,6 +15,7 @@ type ValidBody = {
   name: string
   year_of_graduation: number
   school_affiliation: string
+  school_id: string | null
   school_email: string
   course_codes: string[]
 }
@@ -33,6 +34,8 @@ function validate(body: unknown): ValidBody | { errors: Record<string, string> }
   const year_of_graduation = typeof o.year_of_graduation === 'number' ? o.year_of_graduation : NaN
   const school_affiliation =
     typeof o.school_affiliation === 'string' ? o.school_affiliation.trim() : ''
+  const school_id =
+    typeof o.school_id === 'string' && /^[0-9a-f-]{36}$/i.test(o.school_id) ? o.school_id : null
   const school_email = typeof o.school_email === 'string' ? o.school_email.trim() : ''
 
   let course_codes: string[] = []
@@ -72,7 +75,7 @@ function validate(body: unknown): ValidBody | { errors: Record<string, string> }
   }
 
   if (Object.keys(errors).length > 0) return { errors }
-  return { name, year_of_graduation, school_affiliation, school_email, course_codes }
+  return { name, year_of_graduation, school_affiliation, school_id, school_email, course_codes }
 }
 
 Deno.serve(async (req) => {
@@ -121,31 +124,33 @@ Deno.serve(async (req) => {
     return errorResponse('Update failed', updateError.message, 500)
   }
 
-  // Resolve school by name and create school enrollment if found
-  const { data: schoolRow } = await supabase
-    .from('schools')
-    .select('id')
-    .ilike('name', validated.school_affiliation)
-    .limit(1)
-    .maybeSingle()
+  // Resolve school and create enrollment — prefer explicit school_id, fall back to name match
+  let resolvedSchoolId = validated.school_id
+  if (!resolvedSchoolId) {
+    const { data: schoolRow } = await supabase
+      .from('schools')
+      .select('id')
+      .ilike('name', validated.school_affiliation)
+      .limit(1)
+      .maybeSingle()
+    resolvedSchoolId = schoolRow?.id ?? null
+  }
 
-  if (schoolRow?.id) {
+  if (resolvedSchoolId) {
     await supabase.from('school_enrollments').upsert(
-      { school_id: schoolRow.id, user_id: user.id, enrolled_at: now },
+      { school_id: resolvedSchoolId, user_id: user.id, enrolled_at: now },
       { onConflict: 'school_id,user_id', ignoreDuplicates: true }
     )
   }
 
-  // Resolve each course by code and create course enrollments
+  // Resolve all courses by code in a single query
   const courseIds: string[] = []
-  for (const code of validated.course_codes) {
-    const { data: courseRow } = await supabase
+  if (validated.course_codes.length > 0) {
+    const { data: courseRows } = await supabase
       .from('courses')
       .select('id')
-      .eq('code', code)
-      .limit(1)
-      .maybeSingle()
-    if (courseRow?.id) courseIds.push(courseRow.id)
+      .in('code', validated.course_codes)
+    if (courseRows) courseIds.push(...courseRows.map(r => r.id))
   }
 
   if (courseIds.length > 0) {

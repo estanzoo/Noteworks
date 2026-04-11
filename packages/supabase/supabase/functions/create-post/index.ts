@@ -115,34 +115,21 @@ Deno.serve(async (req) => {
     }
   }
 
-  // Upsert hashtags and link
+  // Upsert hashtags and link (batched — 2 queries instead of N*3)
   const hashtagNames: string[] = []
   if (validated.hashtags.length > 0) {
-    for (const name of validated.hashtags) {
-      const { data: existing } = await supabase
-        .from('hashtags')
-        .select('id')
-        .eq('name', name)
-        .maybeSingle()
+    const { data: tags, error: upsertErr } = await supabase
+      .from('hashtags')
+      .upsert(
+        validated.hashtags.map(name => ({ name })),
+        { onConflict: 'name', ignoreDuplicates: false }
+      )
+      .select('id, name')
 
-      if (existing) {
-        const { error: linkErr } = await supabase
-          .from('post_hashtags')
-          .insert({ post_id: post.id, hashtag_id: existing.id })
-        if (!linkErr) hashtagNames.push(name)
-      } else {
-        const { data: newTag, error: tagErr } = await supabase
-          .from('hashtags')
-          .insert({ name })
-          .select('id')
-          .single()
-        if (!tagErr && newTag) {
-          const { error: linkErr } = await supabase
-            .from('post_hashtags')
-            .insert({ post_id: post.id, hashtag_id: newTag.id })
-          if (!linkErr) hashtagNames.push(name)
-        }
-      }
+    if (!upsertErr && tags && tags.length > 0) {
+      const links = tags.map(t => ({ post_id: post.id, hashtag_id: t.id }))
+      const { error: linkErr } = await supabase.from('post_hashtags').insert(links)
+      if (!linkErr) hashtagNames.push(...tags.map(t => t.name))
     }
   }
 

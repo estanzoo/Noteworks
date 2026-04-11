@@ -100,7 +100,7 @@ Deno.serve(async (req) => {
     }
   }
 
-  // Sync hashtags if provided (full replacement)
+  // Sync hashtags if provided (full replacement, batched)
   if (Array.isArray(body.hashtags)) {
     const names = (body.hashtags as unknown[])
       .filter((v): v is string => typeof v === 'string')
@@ -112,26 +112,19 @@ Deno.serve(async (req) => {
 
     await supabase.from('post_hashtags').delete().eq('post_id', postId)
 
-    for (const name of names) {
-      const { data: existing } = await supabase
+    if (names.length > 0) {
+      const { data: tags } = await supabase
         .from('hashtags')
-        .select('id')
-        .eq('name', name)
-        .maybeSingle()
+        .upsert(
+          names.map(name => ({ name })),
+          { onConflict: 'name', ignoreDuplicates: false }
+        )
+        .select('id, name')
 
-      let tagId: string
-      if (existing) {
-        tagId = existing.id
-      } else {
-        const { data: newTag, error: tagErr } = await supabase
-          .from('hashtags')
-          .insert({ name })
-          .select('id')
-          .single()
-        if (tagErr || !newTag) continue
-        tagId = newTag.id
+      if (tags && tags.length > 0) {
+        const links = tags.map(t => ({ post_id: postId, hashtag_id: t.id }))
+        await supabase.from('post_hashtags').insert(links)
       }
-      await supabase.from('post_hashtags').insert({ post_id: postId, hashtag_id: tagId })
     }
   }
 
