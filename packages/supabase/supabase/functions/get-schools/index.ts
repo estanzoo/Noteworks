@@ -15,6 +15,7 @@ Deno.serve(async (req) => {
   const page = Math.max(1, Number(url.searchParams.get('page') ?? 1))
   const pageSize = Math.min(100, Math.max(1, Number(url.searchParams.get('pageSize') ?? 20)))
   const search = url.searchParams.get('search')?.trim()
+  const country = url.searchParams.get('country')?.trim().toUpperCase()
 
   let query = supabase
     .from('schools')
@@ -22,6 +23,9 @@ Deno.serve(async (req) => {
 
   if (search) {
     query = query.or(`name.ilike.%${search}%,location.ilike.%${search}%`)
+  }
+  if (country) {
+    query = query.eq('country', country)
   }
 
   const from = (page - 1) * pageSize
