@@ -9,8 +9,8 @@ import SwiftUI
 
 enum AppTab: String, CaseIterable {
     case home = "Home"
-    case notebook = "Note"
-    case people = "Public"
+    case notebook = "Library"
+    case people = "Community"
 
     var icon: String {
         switch self {
@@ -32,7 +32,7 @@ struct MainTabView: View {
             case .notebook:
                 NavigationStack { CourseSpaceView() }
             case .people:
-                NavigationStack { AccountView() }
+                NavigationStack { CommunityView() }
             }
 
             FloatingTabBar(selectedTab: $selectedTab)

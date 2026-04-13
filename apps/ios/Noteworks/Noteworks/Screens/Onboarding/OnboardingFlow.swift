@@ -61,7 +61,9 @@ struct OnboardingFlow: View {
                     WelcomeView(
                         onSignUp: { step = .signUp },
                         onSignIn: { step = .signIn },
-                        onSkip: { step = .skipped }
+                        onSkip: { step = .skipped },
+                        onGoogleSignIn: { handleGoogleSignIn() },
+                        onAppleSignIn: { handleAppleSignIn() }
                     )
                 case .signIn:
                     SignInStepView(
@@ -89,7 +91,9 @@ struct OnboardingFlow: View {
                         onResend: { handleResendVerification() }
                     )
                 case .college:
-                    CollegeStepView(data: data, onNext: { step = .major }, onBack: { step = .verifyEmail })
+                    CollegeStepView(data: data, onNext: { step = .major }, onBack: {
+                        step = data.isOAuthUser ? .welcome : .verifyEmail
+                    })
                 case .major:
                     MajorStepView(data: data, onNext: { step = .interests }, onBack: { step = .college })
                 case .interests:
@@ -160,6 +164,40 @@ struct OnboardingFlow: View {
         }
     }
 
+    private func handleGoogleSignIn() {
+        isLoading = true
+        Task {
+            do {
+                let result = try await appState.authService.signInWithGoogle()
+                appState.handleAuthResult(result)
+                data.isOAuthUser = true
+                data.email = result.email
+                step = .college
+            } catch {
+                errorMessage = (error as? LocalizedError)?.errorDescription
+                    ?? error.localizedDescription
+            }
+            isLoading = false
+        }
+    }
+
+    private func handleAppleSignIn() {
+        isLoading = true
+        Task {
+            do {
+                let result = try await appState.authService.signInWithApple()
+                appState.handleAuthResult(result)
+                data.isOAuthUser = true
+                data.email = result.email
+                step = .college
+            } catch {
+                errorMessage = (error as? LocalizedError)?.errorDescription
+                    ?? error.localizedDescription
+            }
+            isLoading = false
+        }
+    }
+
     private func handleSignUp() {
         isLoading = true
         Task {
@@ -219,11 +257,25 @@ struct OnboardingFlow: View {
         isLoading = true
         Task {
             do {
+                let resolvedSchoolEmail: String
+                if data.isOAuthUser && !data.schoolEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    resolvedSchoolEmail = data.schoolEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+                } else {
+                    resolvedSchoolEmail = data.email.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+
+                let resolvedName: String
+                if data.isOAuthUser && data.name.isEmpty {
+                    resolvedName = appState.currentUser?.email ?? ""
+                } else {
+                    resolvedName = data.name
+                }
+
                 let payload = OnboardingPayload(
-                    name: data.name,
+                    name: resolvedName,
                     yearOfGraduation: data.resolvedYearOfGraduation,
                     schoolAffiliation: data.schoolAffiliationForSubmit,
-                    schoolEmail: data.email.trimmingCharacters(in: .whitespacesAndNewlines),
+                    schoolEmail: resolvedSchoolEmail,
                     courseCodes: []
                 )
                 try await appState.authService.submitOnboarding(

@@ -11,6 +11,8 @@ struct WelcomeView: View {
     let onSignUp: () -> Void
     let onSignIn: () -> Void
     let onSkip: () -> Void
+    let onGoogleSignIn: () -> Void
+    let onAppleSignIn: () -> Void
     @State private var visible = false
 
     var body: some View {
@@ -78,7 +80,7 @@ struct WelcomeView: View {
                         .buttonStyle(.plain)
 
                         // Google button
-                        Button(action: onSignUp) {
+                        Button(action: onGoogleSignIn) {
                             HStack(spacing: 10) {
                                 Image(systemName: "g.circle.fill")
                                     .font(.system(size: 18))
@@ -97,7 +99,7 @@ struct WelcomeView: View {
                         .buttonStyle(.plain)
 
                         // Apple button
-                        Button(action: onSignUp) {
+                        Button(action: onAppleSignIn) {
                             HStack(spacing: 10) {
                                 Image(systemName: "apple.logo")
                                     .font(.system(size: 16))

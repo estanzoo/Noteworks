@@ -8,7 +8,7 @@
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var appState = AppState()
+    @EnvironmentObject var appState: AppState
 
     var body: some View {
         Group {
@@ -18,11 +18,11 @@ struct ContentView: View {
                 OnboardingFlow()
             }
         }
-        .environmentObject(appState)
         .preferredColorScheme(.light)
     }
 }
 
 #Preview {
     ContentView()
+        .environmentObject(AppState())
 }

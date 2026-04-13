@@ -7,6 +7,7 @@
 
 import SwiftUI
 import Combine
+import Supabase
 
 class AppState: ObservableObject {
     @Published var isAuthenticated = false
@@ -17,6 +18,11 @@ class AppState: ObservableObject {
     @Published var accessToken: String?
 
     let authService: AuthServiceProtocol = SupabaseAuthService()
+
+    /// Exposes the underlying Supabase client for `.onOpenURL` (Google OAuth redirect).
+    var supabaseClient: SupabaseClient {
+        (authService as! SupabaseAuthService).client
+    }
 
     init() {
         checkAuthStatus()

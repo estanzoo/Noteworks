@@ -8,6 +8,10 @@
 import Foundation
 
 class OnboardingData: ObservableObject {
+    // OAuth
+    @Published var isOAuthUser = false
+    @Published var schoolEmail = ""
+
     // Step 1: Sign Up
     @Published var name = ""
     @Published var email = ""

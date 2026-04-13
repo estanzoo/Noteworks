@@ -31,6 +31,15 @@ struct CollegeStepView: View {
                                 .lineSpacing(4)
                                 .padding(.bottom, 24)
 
+                            if data.isOAuthUser {
+                                OnboardingField(
+                                    label: "School Email",
+                                    placeholder: "you@university.edu",
+                                    disabled: false,
+                                    text: $data.schoolEmail
+                                )
+                            }
+
                             OnboardingField(
                                 label: "College Name",
                                 placeholder: "e.g. Royal Academy of Arts",

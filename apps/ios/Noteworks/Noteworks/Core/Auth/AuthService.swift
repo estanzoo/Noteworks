@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import AuthenticationServices
 import Supabase
 
 // MARK: - Auth models
@@ -50,6 +51,8 @@ private struct SubmitOnboardingResponse: Decodable, Sendable {
 protocol AuthServiceProtocol: AnyObject {
     func signUp(name: String, email: String, password: String) async throws -> SignUpOutcome
     func signIn(email: String, password: String) async throws -> AuthResult
+    func signInWithGoogle() async throws -> AuthResult
+    func signInWithApple() async throws -> AuthResult
     func verifyEmail(code: String, email: String) async throws -> AuthResult
     func resendSignupConfirmation(email: String) async throws
     func submitOnboarding(_ payload: OnboardingPayload, accessToken: String) async throws
@@ -60,17 +63,17 @@ protocol AuthServiceProtocol: AnyObject {
 // MARK: - Supabase
 
 final class SupabaseAuthService: AuthServiceProtocol {
-    private let client: SupabaseClient
+    let client: SupabaseClient
 
     init() {
-        // Opt into forthcoming default: emit stored session immediately instead of only after a refresh attempt.
-        // See https://github.com/supabase/supabase-swift/pull/822 — if you use the initial session to log users in,
-        // also check `session.isExpired` (and expect possible `tokenRefreshed` right after).
         client = SupabaseClient(
             supabaseURL: URL(string: SupabaseConfig.baseURL)!,
             supabaseKey: SupabaseConfig.anonKey,
             options: SupabaseClientOptions(
-                auth: .init(emitLocalSessionAsInitialSession: true)
+                auth: .init(
+                    redirectToURL: URL(string: "noteworks://auth-callback")!,
+                    emitLocalSessionAsInitialSession: true
+                )
             )
         )
     }
@@ -93,6 +96,27 @@ final class SupabaseAuthService: AuthServiceProtocol {
     func signIn(email: String, password: String) async throws -> AuthResult {
         let session = try await client.auth.signIn(email: email, password: password)
         return authResult(from: session, fallbackEmail: email)
+    }
+
+    func signInWithGoogle() async throws -> AuthResult {
+        let session = try await client.auth.signInWithOAuth(
+            provider: .google,
+            scopes: "email profile"
+        )
+        return authResult(from: session, fallbackEmail: session.user.email ?? "")
+    }
+
+    func signInWithApple() async throws -> AuthResult {
+        let helper = AppleSignInHelper()
+        let credential = try await helper.performSignIn()
+        let session = try await client.auth.signInWithIdToken(
+            credentials: .init(
+                provider: .apple,
+                idToken: credential.idToken,
+                nonce: credential.rawNonce
+            )
+        )
+        return authResult(from: session, fallbackEmail: session.user.email ?? "")
     }
 
     func verifyEmail(code: String, email: String) async throws -> AuthResult {
