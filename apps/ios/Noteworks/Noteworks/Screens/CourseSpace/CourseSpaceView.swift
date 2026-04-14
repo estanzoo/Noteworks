@@ -26,6 +26,9 @@ struct CourseSpaceView: View {
     @State private var navigateToNewNote = false
     @State private var newNoteId: String?
     @State private var showAccountView = false
+    @State private var showSearch = false
+    @State private var showNotifications = false
+    @State private var notifications = HomeNotification.samples
 
     private var subjects: [String] {
         let raw = viewModel.notes.compactMap { $0.subject }.filter { !$0.isEmpty }
@@ -72,8 +75,32 @@ struct CourseSpaceView: View {
                         Spacer()
 
                         HStack(spacing: 10) {
-                            LibraryGlassIconButton(icon: "Icons/fluent_search-24-regular")
-                            LibraryGlassIconButton(icon: "Icons/fluent_alert-24-regular")
+                            LibraryGlassIconButton(icon: "Icons/fluent_search-24-regular") {
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                                    showSearch = true
+                                }
+                            }
+
+                            ZStack(alignment: .topTrailing) {
+                                LibraryGlassIconButton(icon: "Icons/fluent_alert-24-regular") {
+                                    withAnimation(.easeInOut(duration: 0.2)) {
+                                        showNotifications.toggle()
+                                    }
+                                }
+                                if notifications.filter(\.unread).count > 0 && !showNotifications {
+                                    Text("\(notifications.filter(\.unread).count)")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundStyle(.white)
+                                        .frame(width: 18, height: 18)
+                                        .background(accent)
+                                        .clipShape(Circle())
+                                        .overlay { Circle().strokeBorder(Color.white.opacity(0.6), lineWidth: 2) }
+                                        .offset(x: 4, y: -4)
+                                        .allowsHitTesting(false)
+                                        .transition(.scale.combined(with: .opacity))
+                                }
+                            }
+
                             LibraryGlassIconButton(icon: "Icons/fluent_person-24-regular") {
                                 showAccountView = true
                             }
@@ -208,6 +235,38 @@ struct CourseSpaceView: View {
                     Spacer()
                 }
                 .zIndex(100)
+            }
+        }
+        .overlay {
+            if showNotifications {
+                Color.black.opacity(0.001)
+                    .ignoresSafeArea()
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.2)) { showNotifications = false }
+                    }
+                VStack {
+                    HStack {
+                        Spacer()
+                        NotificationDropdown(
+                            notifications: $notifications,
+                            onClose: {
+                                withAnimation(.easeInOut(duration: 0.2)) { showNotifications = false }
+                            }
+                        )
+                    }
+                    .padding(.top, 130)
+                    .padding(.trailing, 32)
+                    Spacer()
+                }
+                .transition(.opacity)
+                .zIndex(50)
+            }
+        }
+        .overlay {
+            if showSearch {
+                SearchPopupView(isPresented: $showSearch)
+                    .transition(.opacity)
+                    .zIndex(60)
             }
         }
         .navigationDestination(for: String.self) { noteId in

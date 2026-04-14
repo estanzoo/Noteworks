@@ -21,6 +21,10 @@ struct CommunityView: View {
     @StateObject private var viewModel = CommunityViewModel()
     @State private var activeTab: CommunityTab = .post
     @State private var showAccountView = false
+    @State private var showPostEditor = false
+    @State private var showSearch = false
+    @State private var showNotifications = false
+    @State private var notifications = HomeNotification.samples
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -45,8 +49,32 @@ struct CommunityView: View {
                         Spacer()
 
                         HStack(spacing: 10) {
-                            CommunityGlassIconButton(icon: "Icons/fluent_search-24-regular")
-                            CommunityGlassIconButton(icon: "Icons/fluent_alert-24-regular")
+                            CommunityGlassIconButton(icon: "Icons/fluent_search-24-regular") {
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                                    showSearch = true
+                                }
+                            }
+
+                            ZStack(alignment: .topTrailing) {
+                                CommunityGlassIconButton(icon: "Icons/fluent_alert-24-regular") {
+                                    withAnimation(.easeInOut(duration: 0.2)) {
+                                        showNotifications.toggle()
+                                    }
+                                }
+                                if notifications.filter(\.unread).count > 0 && !showNotifications {
+                                    Text("\(notifications.filter(\.unread).count)")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundStyle(.white)
+                                        .frame(width: 18, height: 18)
+                                        .background(accent)
+                                        .clipShape(Circle())
+                                        .overlay { Circle().strokeBorder(Color.white.opacity(0.6), lineWidth: 2) }
+                                        .offset(x: 4, y: -4)
+                                        .allowsHitTesting(false)
+                                        .transition(.scale.combined(with: .opacity))
+                                }
+                            }
+
                             CommunityGlassIconButton(icon: "Icons/fluent_person-24-regular") {
                                 showAccountView = true
                             }
@@ -83,6 +111,51 @@ struct CommunityView: View {
                 }
             }
         }
+        .overlay {
+            if showNotifications {
+                Color.black.opacity(0.001)
+                    .ignoresSafeArea()
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.2)) { showNotifications = false }
+                    }
+                VStack {
+                    HStack {
+                        Spacer()
+                        NotificationDropdown(
+                            notifications: $notifications,
+                            onClose: {
+                                withAnimation(.easeInOut(duration: 0.2)) { showNotifications = false }
+                            }
+                        )
+                    }
+                    .padding(.top, 130)
+                    .padding(.trailing, 32)
+                    Spacer()
+                }
+                .transition(.opacity)
+                .zIndex(50)
+            }
+        }
+        .overlay {
+            if showSearch {
+                SearchPopupView(isPresented: $showSearch)
+                    .transition(.opacity)
+                    .zIndex(60)
+            }
+        }
+        .overlay {
+            if showPostEditor {
+                PostEditorPopup(isPresented: $showPostEditor) { payload in
+                    viewModel.addPost(
+                        title: payload.title,
+                        body: payload.body,
+                        tags: payload.tags
+                    )
+                }
+                .transition(.opacity)
+                .zIndex(100)
+            }
+        }
         .navigationDestination(isPresented: $showAccountView) {
             AccountView()
         }
@@ -96,10 +169,12 @@ struct CommunityView: View {
             columns: Array(repeating: GridItem(.flexible(), spacing: 20), count: 3),
             spacing: 20
         ) {
-            // New post card
-            PostNewCardView()
+            PostNewCardView {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                    showPostEditor = true
+                }
+            }
 
-            // Post cards
             ForEach(viewModel.posts) { post in
                 PostCardView(post: post)
             }
@@ -207,7 +282,10 @@ private struct CommunityTabButton: View {
 // MARK: - Post New Card (React PostNewCard)
 
 private struct PostNewCardView: View {
+    var onTap: (() -> Void)? = nil
+
     var body: some View {
+        Button { onTap?() } label: {
         VStack(alignment: .leading, spacing: 0) {
             // User row
             HStack(spacing: 12) {
@@ -264,6 +342,8 @@ private struct PostNewCardView: View {
         .padding(24)
         .frame(minHeight: 280, alignment: .topLeading)
         .modifier(GlassCardModifier())
+        }
+        .buttonStyle(CommunityCardPressStyle())
     }
 }
 

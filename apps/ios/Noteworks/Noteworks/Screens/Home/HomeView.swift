@@ -7,31 +7,21 @@
 
 import SwiftUI
 
-// MARK: - Theme (matches React TEXT_PRIMARY, TEXT_MUTED, GLASS_BORDER, ACCENT)
-
-private let textPrimary = Color(red: 0x1C/255, green: 0x1C/255, blue: 0x1E/255)
-private let textMuted = Color(red: 60/255, green: 60/255, blue: 67/255).opacity(0.3)
-private let glassBorder = Color.white.opacity(0.5)
-private let accent = Color(red: 0x5E/255, green: 0xAD/255, blue: 0xD3/255)
-
-// MARK: - Model
-
-struct CourseBubble: Identifiable {
-    let id = UUID()
-    let name: String
-    let noteCount: Int
-    let size: CGFloat
-    let offsetX: CGFloat
-    let offsetY: CGFloat
-}
-
 // MARK: - HomeView
 
 struct HomeView: View {
     @Binding var selectedTab: AppTab
     @StateObject private var viewModel = HomeViewModel()
+
     @State private var bubblesVisible = false
     @State private var showAccountView = false
+    @State private var showSearch = false
+    @State private var showNotifications = false
+    @State private var notifications = HomeNotification.samples
+
+    private var unreadCount: Int {
+        notifications.filter(\.unread).count
+    }
 
     private let courses: [CourseBubble] = [
         CourseBubble(name: "Biology",     noteCount: 4,  size: 160, offsetX: -0.25, offsetY: -0.25),
@@ -48,72 +38,21 @@ struct HomeView: View {
                 .ignoresSafeArea()
 
             VStack(alignment: .leading, spacing: 0) {
-                // Badge
-                BadgePill()
+                HomeBadgePill()
                     .padding(.top, 24)
                     .padding(.leading, 32)
                     .padding(.bottom, 12)
 
-                // Title row
-                HStack(alignment: .center) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("NoteWorks")
-                            .font(.custom("Inter_24pt-Medium", size: 40).weight(.bold))
-                            .tracking(-0.02 * 40)
-                            .foregroundStyle(textPrimary)
-                        Text("BUBBLES OF THOUGHT")
-                            .font(.custom("Inter_24pt-Medium", size: 13).weight(.semibold))
-                            .tracking(0.15 * 13)
-                            .textCase(.uppercase)
-                            .foregroundStyle(textMuted)
-                    }
-
-                    Spacer()
-
-                    HStack(spacing: 10) {
-                        GlassIconButton(icon: "Icons/fluent_search-24-regular")
-                        GlassIconButton(icon: "Icons/fluent_alert-24-regular")
-                        GlassIconButton(icon: "Icons/fluent_person-24-regular") {
-                            showAccountView = true
-                        }
-                    }
-                }
-                .padding(.horizontal, 32)
-                .padding(.bottom, 24)
-
-                // Bubble field
-                GeometryReader { geo in
-                    ZStack {
-                        ForEach(Array(courses.enumerated()), id: \.element.id) { index, course in
-                            Button {
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                    selectedTab = .notebook
-                                }
-                            } label: {
-                                BubbleView(course: course)
-                            }
-                            .buttonStyle(BubblePressStyle())
-                            .position(
-                                x: geo.size.width / 2 + course.offsetX * geo.size.width,
-                                y: geo.size.height / 2 + course.offsetY * geo.size.height
-                            )
-                            .scaleEffect(bubblesVisible ? 1 : 0.6)
-                            .opacity(bubblesVisible ? 1 : 0)
-                            .animation(
-                                .spring(response: 0.5, dampingFraction: 0.6)
-                                    .delay(Double(index) * 0.08),
-                                value: bubblesVisible
-                            )
-                        }
-                    }
-                }
+                titleRow
+                bubbleField
             }
 
-            // FAB
-            GlassIconButton(icon: "Icons/fluent_add-32-filled")
+            HomeGlassIconButton(icon: "Icons/fluent_add-32-filled")
                 .padding(.trailing, 32)
                 .padding(.bottom, 100)
         }
+        .overlay { notificationOverlay }
+        .overlay { searchOverlay }
         .navigationBarHidden(true)
         .navigationDestination(isPresented: $showAccountView) {
             AccountView()
@@ -124,130 +63,139 @@ struct HomeView: View {
             }
         }
     }
-}
 
-// MARK: - Badge pill (React: Badge component)
+    // MARK: - Title Row
 
-private struct BadgePill: View {
-    var body: some View {
-        Text("BETA")
-            .font(.system(size: 11, weight: .bold))
-            .tracking(0.06 * 11)
-            .foregroundStyle(Color(red: 0x7A/255, green: 0x8A/255, blue: 0x96/255))
-            .padding(.horizontal, 14)
-            .padding(.vertical, 4)
-            .background(Color.white.opacity(0.45))
-            .background(.ultraThinMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: 14))
-            .overlay {
-                RoundedRectangle(cornerRadius: 14)
-                    .strokeBorder(glassBorder, lineWidth: 1)
+    private var titleRow: some View {
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("NoteWorks")
+                    .font(.custom("Inter_24pt-Medium", size: 40).weight(.bold))
+                    .tracking(-0.02 * 40)
+                    .foregroundStyle(HomeTheme.textPrimary)
+                Text("BUBBLES OF THOUGHT")
+                    .font(.custom("Inter_24pt-Medium", size: 13).weight(.semibold))
+                    .tracking(0.15 * 13)
+                    .textCase(.uppercase)
+                    .foregroundStyle(HomeTheme.textMuted)
             }
-            .shadow(color: .black.opacity(0.04), radius: 2, x: 0, y: 1)
-    }
-}
 
-// MARK: - Glass icon button (React: GlassIconBtn — 44×44, circle, glass)
+            Spacer()
 
-private struct GlassIconButton: View {
-    let icon: String
-    var action: (() -> Void)? = nil
-
-    var body: some View {
-        Button {
-            action?()
-        } label: {
-            Image(icon)
-                .resizable()
-                .renderingMode(.template)
-                .aspectRatio(contentMode: .fit)
-                .frame(width: 20, height: 20)
-                .foregroundStyle(textPrimary)
-                .frame(width: 44, height: 44)
-                .background(Color.white.opacity(0.35))
-                .background(.ultraThinMaterial)
-                .clipShape(Circle())
-                .overlay {
-                    Circle().strokeBorder(glassBorder, lineWidth: 1)
+            HStack(spacing: 10) {
+                HomeGlassIconButton(icon: "Icons/fluent_search-24-regular") {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                        showSearch = true
+                    }
                 }
-                .shadow(color: .black.opacity(0.04), radius: 2, x: 0, y: 1)
+
+                ZStack(alignment: .topTrailing) {
+                    HomeGlassIconButton(
+                        icon: "Icons/fluent_alert-24-regular",
+                        isActive: showNotifications
+                    ) {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showNotifications.toggle()
+                        }
+                    }
+
+                    if unreadCount > 0 && !showNotifications {
+                        Text("\(unreadCount)")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 18, height: 18)
+                            .background(HomeTheme.accent)
+                            .clipShape(Circle())
+                            .overlay {
+                                Circle().strokeBorder(Color.white.opacity(0.6), lineWidth: 2)
+                            }
+                            .offset(x: 4, y: -4)
+                            .allowsHitTesting(false)
+                            .transition(.scale.combined(with: .opacity))
+                    }
+                }
+
+                HomeGlassIconButton(icon: "Icons/fluent_person-24-regular") {
+                    showAccountView = true
+                }
+            }
         }
-        .buttonStyle(.plain)
-    }
-}
-
-// MARK: - Bubble press style (React: scale 0.95 on press)
-
-private struct BubblePressStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .scaleEffect(configuration.isPressed ? 0.95 : 1)
-            .animation(.easeInOut(duration: 0.15), value: configuration.isPressed)
-    }
-}
-
-// MARK: - Bubble (React: BubbleItem — glass circle with gradient + backdrop blur)
-
-struct BubbleView: View {
-    let course: CourseBubble
-
-    private var titleSize: CGFloat {
-        max(16, course.size * 0.09)
+        .padding(.horizontal, 32)
+        .padding(.bottom, 24)
     }
 
-    var body: some View {
-        ZStack {
-            // Glass circle (React: linear-gradient 145deg, backdrop-filter blur(30) saturate(1.5))
-            Circle()
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color.white.opacity(0.45),
-                            Color.white.opacity(0.15)
-                        ],
-                        startPoint: UnitPoint(x: 0.15, y: 0),
-                        endPoint: UnitPoint(x: 0.85, y: 1)
+    // MARK: - Bubble Field
+
+    private var bubbleField: some View {
+        GeometryReader { geo in
+            ZStack {
+                ForEach(Array(courses.enumerated()), id: \.element.id) { index, course in
+                    Button {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                            selectedTab = .notebook
+                        }
+                    } label: {
+                        BubbleView(course: course)
+                    }
+                    .buttonStyle(BubblePressStyle())
+                    .position(
+                        x: geo.size.width / 2 + course.offsetX * geo.size.width,
+                        y: geo.size.height / 2 + course.offsetY * geo.size.height
                     )
-                )
-                .frame(width: course.size, height: course.size)
-                .background(
-                    Circle()
-                        .fill(.ultraThinMaterial)
-                        .frame(width: course.size, height: course.size)
-                )
-                .overlay {
-                    Circle()
-                        .strokeBorder(Color.white.opacity(0.6), lineWidth: 1.5)
-                }
-                // React: inset 0 0.5px 0 rgba(255,255,255,0.7)
-                .shadow(color: Color.white.opacity(0.7), radius: 0, x: 0, y: -0.5)
-                // React: 0 0 0 0.5px rgba(255,255,255,0.3)
-                .shadow(color: Color.white.opacity(0.3), radius: 0.25)
-                // React: 0 8px 32px rgba(0,0,0,0.05)
-                .shadow(color: .black.opacity(0.05), radius: 16, x: 0, y: 8)
-
-            // Content
-            VStack(spacing: 4) {
-                Text(course.name)
-                    .font(.system(size: titleSize, weight: .semibold))
-                    .foregroundStyle(textPrimary)
-                    .multilineTextAlignment(.center)
-
-                HStack(spacing: 4) {
-                    Image("Icons/fluent_notebook-24-regular")
-                        .resizable()
-                        .renderingMode(.template)
-                        .aspectRatio(contentMode: .fit)
-                        .frame(width: 12, height: 12)
-                        .foregroundStyle(textMuted)
-
-                    Text("\(course.noteCount) \(course.noteCount == 1 ? "Note" : "Notes")")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(textMuted)
+                    .scaleEffect(bubblesVisible ? 1 : 0.6)
+                    .opacity(bubblesVisible ? 1 : 0)
+                    .animation(
+                        .spring(response: 0.5, dampingFraction: 0.6)
+                            .delay(Double(index) * 0.08),
+                        value: bubblesVisible
+                    )
                 }
             }
-            .padding(12)
-            .frame(width: course.size)
+        }
+    }
+
+    // MARK: - Search Overlay
+
+    @ViewBuilder
+    private var searchOverlay: some View {
+        if showSearch {
+            SearchPopupView(isPresented: $showSearch)
+                .transition(.opacity)
+                .zIndex(100)
+        }
+    }
+
+    // MARK: - Notification Overlay
+
+    @ViewBuilder
+    private var notificationOverlay: some View {
+        if showNotifications {
+            Color.black.opacity(0.001)
+                .ignoresSafeArea()
+                .onTapGesture {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showNotifications = false
+                    }
+                }
+
+            VStack {
+                HStack {
+                    Spacer()
+                    NotificationDropdown(
+                        notifications: $notifications,
+                        onClose: {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                showNotifications = false
+                            }
+                        }
+                    )
+                }
+                .padding(.top, 130)
+                .padding(.trailing, 32)
+                Spacer()
+            }
+            .transition(.opacity)
+            .zIndex(50)
         }
     }
 }
