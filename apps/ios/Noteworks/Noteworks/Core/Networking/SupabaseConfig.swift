@@ -17,6 +17,20 @@ enum SupabaseConfig {
         URL(string: "\(functionsBase)/submit-onboarding")!
     }
 
+    static func getSchoolsURL(search: String, page: Int = 1, pageSize: Int = 10) -> URL {
+        var components = URLComponents(string: "\(functionsBase)/get-schools")!
+        var items = [
+            URLQueryItem(name: "page", value: "\(page)"),
+            URLQueryItem(name: "pageSize", value: "\(pageSize)"),
+        ]
+        let trimmed = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            items.append(URLQueryItem(name: "search", value: trimmed))
+        }
+        components.queryItems = items
+        return components.url!
+    }
+
     static func uploadNotePDFURL(noteId: String, filename: String? = nil) -> URL {
         var components = URLComponents(string: "\(functionsBase)/upload-note-pdf")!
         var items = [URLQueryItem(name: "note_id", value: noteId)]

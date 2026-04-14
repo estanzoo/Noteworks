@@ -26,7 +26,7 @@ struct MajorStepView: View {
 
                         OnboardingRow(disabled: !data.isMajorValid, onNext: onNext) {
                             OnboardingField(
-                                label: "School Name",
+                                label: "Faculty Name",
                                 placeholder: "e.g. School of Engineering",
                                 disabled: data.undeclared,
                                 text: $data.school
@@ -54,3 +54,12 @@ struct MajorStepView: View {
         }
     }
 }
+
+#Preview {
+    ZStack {
+        OnboardingBackground()
+            .ignoresSafeArea()
+        MajorStepView(data: OnboardingData(), onNext: {}, onBack: {})
+    }
+}
+

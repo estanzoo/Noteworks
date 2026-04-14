@@ -174,12 +174,13 @@ struct OnboardingField: View {
     }
 }
 
-// MARK: - Year of study (dropdown)
+// MARK: - Year of study (inline dropdown)
 
 struct OnboardingYearOfStudyPicker: View {
     let label: String
     var disabled: Bool = false
     @Binding var selection: String?
+    @State private var isOpen = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -187,12 +188,8 @@ struct OnboardingYearOfStudyPicker: View {
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(OnboardingTheme.textLabel)
 
-            Menu {
-                ForEach(OnboardingData.yearOfStudyOptions, id: \.self) { option in
-                    Button(option) {
-                        selection = option
-                    }
-                }
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { isOpen.toggle() }
             } label: {
                 HStack {
                     Text(selection ?? "Select year")
@@ -204,6 +201,8 @@ struct OnboardingYearOfStudyPicker: View {
                     Image(systemName: "chevron.down")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(OnboardingTheme.textSecondary.opacity(0.8))
+                        .rotationEffect(.degrees(isOpen ? 180 : 0))
+                        .animation(.easeInOut(duration: 0.2), value: isOpen)
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 14)
@@ -211,10 +210,67 @@ struct OnboardingYearOfStudyPicker: View {
                 .clipShape(RoundedRectangle(cornerRadius: 14))
                 .overlay {
                     RoundedRectangle(cornerRadius: 14)
-                        .strokeBorder(OnboardingTheme.glassBorder, lineWidth: 1.5)
+                        .strokeBorder(
+                            isOpen && !disabled
+                                ? OnboardingTheme.accent.opacity(0.6)
+                                : OnboardingTheme.glassBorder,
+                            lineWidth: 1.5
+                        )
                 }
+                .shadow(color: isOpen && !disabled ? OnboardingTheme.accent.opacity(0.12) : .clear, radius: 6)
             }
+            .buttonStyle(.plain)
             .disabled(disabled)
+
+            if isOpen && !disabled {
+                VStack(spacing: 0) {
+                    ForEach(OnboardingData.yearOfStudyOptions, id: \.self) { option in
+                        Button {
+                            selection = option
+                            withAnimation(.easeInOut(duration: 0.2)) { isOpen = false }
+                        } label: {
+                            HStack(spacing: 12) {
+                                if selection == option {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 13, weight: .bold))
+                                        .foregroundStyle(OnboardingTheme.accent)
+                                        .frame(width: 18)
+                                } else {
+                                    Spacer().frame(width: 18)
+                                }
+
+                                Text(option)
+                                    .font(.system(size: 16, weight: selection == option ? .semibold : .regular))
+                                    .foregroundStyle(
+                                        selection == option
+                                            ? OnboardingTheme.accent
+                                            : OnboardingTheme.textPrimary
+                                    )
+
+                                Spacer()
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 12)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+
+                        if option != OnboardingData.yearOfStudyOptions.last {
+                            Divider()
+                                .padding(.leading, 46)
+                        }
+                    }
+                }
+                .background(.ultraThinMaterial)
+                .background(Color.white.opacity(0.85))
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14)
+                        .strokeBorder(OnboardingTheme.glassBorder, lineWidth: 1)
+                }
+                .shadow(color: .black.opacity(0.08), radius: 12, y: 4)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
         .opacity(disabled ? 0.35 : 1)
         .animation(.easeOut(duration: 0.3), value: disabled)

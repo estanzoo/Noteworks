@@ -42,7 +42,8 @@ struct VerifyEmailStepView: View {
                             HStack(spacing: 8) {
                                 ForEach(0..<6, id: \.self) { i in
                                     TextField("", text: $data.verificationCode[i])
-                                        .keyboardType(.numberPad)
+                                        .textInputAutocapitalization(.never)
+                                        .autocorrectionDisabled()
                                         .multilineTextAlignment(.center)
                                         .font(.system(size: 24, weight: .semibold))
                                         .foregroundStyle(OnboardingTheme.textPrimary)
@@ -59,17 +60,14 @@ struct VerifyEmailStepView: View {
                                                 )
                                         }
                                         .focused($focusedIndex, equals: i)
-                                        .onChange(of: data.verificationCode[i]) { _, newVal in
-                                            let filtered = newVal.filter { $0.isNumber }
-                                            if filtered != newVal {
-                                                data.verificationCode[i] = filtered
-                                                return
-                                            }
+                                        .onChange(of: data.verificationCode[i]) { oldVal, newVal in
                                             if newVal.count > 1 {
                                                 data.verificationCode[i] = String(newVal.suffix(1))
                                             }
                                             if !data.verificationCode[i].isEmpty && i < 5 {
                                                 focusedIndex = i + 1
+                                            } else if data.verificationCode[i].isEmpty && !oldVal.isEmpty && i > 0 {
+                                                focusedIndex = i - 1
                                             }
                                         }
                                 }

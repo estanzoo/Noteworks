@@ -38,7 +38,7 @@ struct SignInStepView: View {
                         OnboardingRow(disabled: !isValid, onNext: onSignIn) {
                             OnboardingField(
                                 label: "Email",
-                                placeholder: "you@example.com",
+                                placeholder: "name@university.edu",
                                 isEmail: true,
                                 text: $email
                             )

@@ -34,7 +34,7 @@ struct SignUpStepView: View {
 
                         OnboardingRow(disabled: !data.isSignUpValid, onNext: onNext) {
                             OnboardingField(label: "Name", placeholder: "Your name", text: $data.name)
-                            OnboardingField(label: "Email", placeholder: "you@example.com", isEmail: true, text: $data.email)
+                            OnboardingField(label: "Email", placeholder: "name@university.edu", isEmail: true, text: $data.email)
                             OnboardingField(label: "Password", placeholder: "Min. 8 characters", isSecure: true, text: $data.password)
                             OnboardingError(show: pwTooShort, text: "Password must be at least 8 characters")
                             OnboardingField(label: "Verify Password", placeholder: "Re-enter password", isSecure: true, text: $data.verifyPassword)

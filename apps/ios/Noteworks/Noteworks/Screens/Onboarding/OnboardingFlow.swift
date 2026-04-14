@@ -174,8 +174,10 @@ struct OnboardingFlow: View {
                 data.email = result.email
                 step = .college
             } catch {
-                errorMessage = (error as? LocalizedError)?.errorDescription
-                    ?? error.localizedDescription
+                if !isUserCancellation(error) {
+                    errorMessage = (error as? LocalizedError)?.errorDescription
+                        ?? error.localizedDescription
+                }
             }
             isLoading = false
         }
@@ -191,11 +193,24 @@ struct OnboardingFlow: View {
                 data.email = result.email
                 step = .college
             } catch {
-                errorMessage = (error as? LocalizedError)?.errorDescription
-                    ?? error.localizedDescription
+                if !isUserCancellation(error) {
+                    errorMessage = (error as? LocalizedError)?.errorDescription
+                        ?? error.localizedDescription
+                }
             }
             isLoading = false
         }
+    }
+
+    private func isUserCancellation(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        // ASWebAuthenticationSessionError.canceledLogin (code 1)
+        if nsError.domain == "com.apple.AuthenticationServices.WebAuthenticationSession",
+           nsError.code == 1 { return true }
+        // ASAuthorizationError.canceled (code 1001)
+        if nsError.domain == "com.apple.AuthenticationServices.AuthorizationError",
+           nsError.code == 1001 { return true }
+        return false
     }
 
     private func handleSignUp() {
