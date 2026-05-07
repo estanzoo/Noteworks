@@ -2,29 +2,27 @@
 //  CommunityView.swift
 //  Noteworks
 //
-//  Created on 2026-02-03.
+//  Mirrors CommunityPage from others/noteworks-library(2).jsx L4848–L5041.
 //
 
 import SwiftUI
 
-// MARK: - Theme
-
-private let textPrimary = Color(red: 0x1C/255, green: 0x1C/255, blue: 0x1E/255)
-private let textSecondary = Color(red: 60/255, green: 60/255, blue: 67/255).opacity(0.5)
-private let textMuted = Color(red: 60/255, green: 60/255, blue: 67/255).opacity(0.3)
-private let glassBorder = Color.white.opacity(0.5)
-private let accent = Color(red: 0x5E/255, green: 0xAD/255, blue: 0xD3/255)
-
-// MARK: - Community View (matches React CommunityPage)
+// MARK: - Community View
 
 struct CommunityView: View {
+    @Binding var selectedTab: AppTab?
     @StateObject private var viewModel = CommunityViewModel()
     @State private var activeTab: CommunityTab = .post
-    @State private var showAccountView = false
     @State private var showPostEditor = false
     @State private var showSearch = false
     @State private var showNotifications = false
     @State private var notifications = HomeNotification.samples
+    @State private var activePostId: Int? = nil
+
+    private var activePost: CommunityPost? {
+        guard let id = activePostId else { return nil }
+        return viewModel.posts.first(where: { $0.id == id })
+    }
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -33,76 +31,14 @@ struct CommunityView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    // Beta badge
                     CommunityBadgePill()
                         .padding(.top, 24)
                         .padding(.leading, 32)
                         .padding(.bottom, 12)
 
-                    // Title row + top bar icons
-                    HStack(alignment: .center) {
-                        Text("Community")
-                            .font(.system(size: 40, weight: .bold))
-                            .tracking(-0.02 * 40)
-                            .foregroundStyle(textPrimary)
+                    titleRow
+                    tabSwitcher
 
-                        Spacer()
-
-                        HStack(spacing: 10) {
-                            CommunityGlassIconButton(icon: "Icons/fluent_search-24-regular") {
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                                    showSearch = true
-                                }
-                            }
-
-                            ZStack(alignment: .topTrailing) {
-                                CommunityGlassIconButton(icon: "Icons/fluent_alert-24-regular") {
-                                    withAnimation(.easeInOut(duration: 0.2)) {
-                                        showNotifications.toggle()
-                                    }
-                                }
-                                if notifications.filter(\.unread).count > 0 && !showNotifications {
-                                    Text("\(notifications.filter(\.unread).count)")
-                                        .font(.system(size: 10, weight: .bold))
-                                        .foregroundStyle(.white)
-                                        .frame(width: 18, height: 18)
-                                        .background(accent)
-                                        .clipShape(Circle())
-                                        .overlay { Circle().strokeBorder(Color.white.opacity(0.6), lineWidth: 2) }
-                                        .offset(x: 4, y: -4)
-                                        .allowsHitTesting(false)
-                                        .transition(.scale.combined(with: .opacity))
-                                }
-                            }
-
-                            CommunityGlassIconButton(icon: "Icons/fluent_person-24-regular") {
-                                showAccountView = true
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 32)
-                    .padding(.bottom, 16)
-
-                    // Post / Note tab switcher
-                    HStack(spacing: 0) {
-                        CommunityTabButton(label: "POST", isActive: activeTab == .post) {
-                            withAnimation(.easeInOut(duration: 0.2)) { activeTab = .post }
-                        }
-                        CommunityTabButton(label: "NOTE", isActive: activeTab == .note) {
-                            withAnimation(.easeInOut(duration: 0.2)) { activeTab = .note }
-                        }
-                    }
-                    .padding(3)
-                    .background(Color.white.opacity(0.2))
-                    .background(.ultraThinMaterial.opacity(0.3))
-                    .clipShape(Capsule())
-                    .overlay {
-                        Capsule().strokeBorder(glassBorder, lineWidth: 1)
-                    }
-                    .padding(.horizontal, 32)
-                    .padding(.bottom, 24)
-
-                    // Content
                     if activeTab == .post {
                         postContent
                     } else {
@@ -111,58 +47,83 @@ struct CommunityView: View {
                 }
             }
         }
-        .overlay {
-            if showNotifications {
-                Color.black.opacity(0.001)
-                    .ignoresSafeArea()
-                    .onTapGesture {
-                        withAnimation(.easeInOut(duration: 0.2)) { showNotifications = false }
-                    }
-                VStack {
-                    HStack {
-                        Spacer()
-                        NotificationDropdown(
-                            notifications: $notifications,
-                            onClose: {
-                                withAnimation(.easeInOut(duration: 0.2)) { showNotifications = false }
-                            }
-                        )
-                    }
-                    .padding(.top, 130)
-                    .padding(.trailing, 32)
-                    Spacer()
-                }
-                .transition(.opacity)
-                .zIndex(50)
-            }
-        }
-        .overlay {
-            if showSearch {
-                SearchPopupView(isPresented: $showSearch)
-                    .transition(.opacity)
-                    .zIndex(60)
-            }
-        }
-        .overlay {
-            if showPostEditor {
-                PostEditorPopup(isPresented: $showPostEditor) { payload in
-                    viewModel.addPost(
-                        title: payload.title,
-                        body: payload.body,
-                        tags: payload.tags
-                    )
-                }
-                .transition(.opacity)
-                .zIndex(100)
-            }
-        }
-        .navigationDestination(isPresented: $showAccountView) {
-            AccountView()
-        }
+        .overlay { notificationsOverlay }
+        .overlay { searchOverlay }
+        .overlay { postEditorOverlay }
+        .overlay { postDetailOverlay }
         .navigationBarHidden(true)
     }
 
-    // MARK: - Post content (masonry-style with 3 columns)
+    // MARK: - Header
+
+    private var titleRow: some View {
+        HStack(alignment: .center) {
+            Text("Community")
+                .font(.system(size: 40, weight: .bold))
+                .tracking(-0.02 * 40)
+                .foregroundStyle(CommunityTheme.textPrimary)
+
+            Spacer()
+
+            HStack(spacing: 10) {
+                CommunityGlassIconButton(icon: "Icons/fluent_search-24-regular") {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                        showSearch = true
+                    }
+                }
+
+                ZStack(alignment: .topTrailing) {
+                    CommunityGlassIconButton(icon: "Icons/fluent_alert-24-regular") {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showNotifications.toggle()
+                        }
+                    }
+                    if notifications.filter(\.unread).count > 0 && !showNotifications {
+                        Text("\(notifications.filter(\.unread).count)")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 18, height: 18)
+                            .background(CommunityTheme.accent)
+                            .clipShape(Circle())
+                            .overlay { Circle().strokeBorder(Color.white.opacity(0.6), lineWidth: 2) }
+                            .offset(x: 4, y: -4)
+                            .allowsHitTesting(false)
+                            .transition(.scale.combined(with: .opacity))
+                    }
+                }
+
+                CommunityGlassIconButton(icon: "Icons/fluent_person-24-regular") {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                        selectedTab = nil
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 32)
+        .padding(.bottom, 16)
+    }
+
+    private var tabSwitcher: some View {
+        HStack(spacing: 0) {
+            CommunityTabButton(label: "POST", isActive: activeTab == .post) {
+                withAnimation(.easeInOut(duration: 0.2)) { activeTab = .post }
+            }
+            CommunityTabButton(label: "NOTE", isActive: activeTab == .note) {
+                withAnimation(.easeInOut(duration: 0.2)) { activeTab = .note }
+            }
+        }
+        .padding(3)
+        .background(Color.white.opacity(0.2))
+        .background(.ultraThinMaterial.opacity(0.3))
+        .clipShape(Capsule())
+        .overlay {
+            Capsule().strokeBorder(CommunityTheme.glassBorder, lineWidth: 1)
+        }
+        .padding(.horizontal, 32)
+        .padding(.bottom, 24)
+    }
+
+    // MARK: - Post grid
 
     private var postContent: some View {
         LazyVGrid(
@@ -176,30 +137,120 @@ struct CommunityView: View {
             }
 
             ForEach(viewModel.posts) { post in
-                PostCardView(post: post)
+                PostCardView(
+                    post: post,
+                    onOpen: {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                            activePostId = post.id
+                        }
+                    },
+                    onToggleReaction: { reaction in
+                        viewModel.togglePostReaction(postId: post.id, reaction: reaction)
+                    }
+                )
             }
         }
         .padding(.horizontal, 32)
         .padding(.bottom, 120)
     }
 
-    // MARK: - Note placeholder
-
     private var notePlaceholder: some View {
         VStack {
             Spacer(minLength: 100)
             Text("Shared notes coming soon.")
                 .font(.system(size: 17))
-                .foregroundStyle(textMuted)
+                .foregroundStyle(CommunityTheme.textMuted)
             Spacer(minLength: 100)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    // MARK: - Overlays
+
+    @ViewBuilder
+    private var notificationsOverlay: some View {
+        if showNotifications {
+            Color.black.opacity(0.001)
+                .ignoresSafeArea()
+                .onTapGesture {
+                    withAnimation(.easeInOut(duration: 0.2)) { showNotifications = false }
+                }
+            VStack {
+                HStack {
+                    Spacer()
+                    NotificationDropdown(
+                        notifications: $notifications,
+                        onClose: {
+                            withAnimation(.easeInOut(duration: 0.2)) { showNotifications = false }
+                        }
+                    )
+                }
+                .padding(.top, 130)
+                .padding(.trailing, 32)
+                Spacer()
+            }
+            .transition(.opacity)
+            .zIndex(50)
+        }
+    }
+
+    @ViewBuilder
+    private var searchOverlay: some View {
+        if showSearch {
+            SearchPopupView(isPresented: $showSearch)
+                .transition(.opacity)
+                .zIndex(60)
+        }
+    }
+
+    @ViewBuilder
+    private var postEditorOverlay: some View {
+        if showPostEditor {
+            PostEditorPopup(isPresented: $showPostEditor) { payload in
+                viewModel.addPost(
+                    title: payload.title,
+                    body: payload.body,
+                    tags: payload.tags
+                )
+            }
+            .transition(.opacity)
+            .zIndex(100)
+        }
+    }
+
+    @ViewBuilder
+    private var postDetailOverlay: some View {
+        if let post = activePost {
+            CommunityPostDetailPopup(
+                post: post,
+                onClose: {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
+                        activePostId = nil
+                    }
+                },
+                onToggleConnect: { viewModel.toggleConnect(postId: post.id) },
+                onToggleReaction: { reaction in
+                    viewModel.togglePostReaction(postId: post.id, reaction: reaction)
+                },
+                onToggleCommentReaction: { targetId, reaction in
+                    viewModel.toggleCommentReaction(postId: post.id, targetId: targetId, reaction: reaction)
+                },
+                onAddComment: { text in
+                    viewModel.addComment(postId: post.id, text: text)
+                },
+                onAddReply: { commentId, text in
+                    viewModel.addReply(postId: post.id, commentId: commentId, text: text)
+                }
+            )
+            .transition(.opacity)
+            .zIndex(120)
+        }
     }
 }
 
 // MARK: - Tab Enum
 
-private enum CommunityTab {
+enum CommunityTab {
     case post, note
 }
 
@@ -218,13 +269,13 @@ private struct CommunityBadgePill: View {
             .clipShape(RoundedRectangle(cornerRadius: 14))
             .overlay {
                 RoundedRectangle(cornerRadius: 14)
-                    .strokeBorder(glassBorder, lineWidth: 1)
+                    .strokeBorder(CommunityTheme.glassBorder, lineWidth: 1)
             }
             .shadow(color: .black.opacity(0.04), radius: 2, x: 0, y: 1)
     }
 }
 
-// MARK: - Glass Icon Button (with optional action)
+// MARK: - Glass Icon Button
 
 private struct CommunityGlassIconButton: View {
     let icon: String
@@ -239,13 +290,13 @@ private struct CommunityGlassIconButton: View {
                 .renderingMode(.template)
                 .aspectRatio(contentMode: .fit)
                 .frame(width: 20, height: 20)
-                .foregroundStyle(textPrimary)
+                .foregroundStyle(CommunityTheme.textPrimary)
                 .frame(width: 44, height: 44)
                 .background(Color.white.opacity(0.35))
                 .background(.ultraThinMaterial)
                 .clipShape(Circle())
                 .overlay {
-                    Circle().strokeBorder(glassBorder, lineWidth: 1)
+                    Circle().strokeBorder(CommunityTheme.glassBorder, lineWidth: 1)
                 }
                 .shadow(color: .black.opacity(0.04), radius: 2, x: 0, y: 1)
         }
@@ -265,7 +316,7 @@ private struct CommunityTabButton: View {
             Text(label)
                 .font(.system(size: 14, weight: .semibold))
                 .tracking(0.02 * 14)
-                .foregroundStyle(isActive ? textPrimary : textMuted)
+                .foregroundStyle(isActive ? CommunityTheme.textPrimary : CommunityTheme.textMuted)
                 .padding(.horizontal, 24)
                 .padding(.vertical, 8)
                 .background(isActive ? Color.white.opacity(0.6) : Color.clear)
@@ -286,62 +337,59 @@ private struct PostNewCardView: View {
 
     var body: some View {
         Button { onTap?() } label: {
-        VStack(alignment: .leading, spacing: 0) {
-            // User row
-            HStack(spacing: 12) {
-                Circle()
-                    .fill(Color.black.opacity(0.06))
-                    .frame(width: 40, height: 40)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("User name")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(textPrimary)
-                    Text("Your school\nYour major")
-                        .font(.system(size: 12))
-                        .foregroundStyle(textMuted)
-                        .lineSpacing(2)
-                }
-            }
-            .padding(.bottom, 20)
-
-            // Placeholder fields
-            Text("Please enter the title...")
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(accent)
-                .padding(.bottom, 12)
-
-            Text("Type the text here...")
-                .font(.system(size: 14))
-                .foregroundStyle(textMuted)
-
-            Spacer(minLength: 40)
-
-            // Bottom row
-            HStack {
-                Text("# topic")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(textMuted)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(Color.black.opacity(0.04))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-
-                Spacer()
-
+            VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 12) {
-                    Image(systemName: "bubble.right")
-                        .font(.system(size: 16))
-                        .foregroundStyle(textMuted)
-                    Image(systemName: "heart")
-                        .font(.system(size: 16))
-                        .foregroundStyle(textMuted)
+                    Circle()
+                        .fill(Color.black.opacity(0.06))
+                        .frame(width: 40, height: 40)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("User name")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(CommunityTheme.textPrimary)
+                        Text("Your school\nYour major")
+                            .font(.system(size: 12))
+                            .foregroundStyle(CommunityTheme.textMuted)
+                            .lineSpacing(2)
+                    }
+                }
+                .padding(.bottom, 20)
+
+                Text("Please enter the title...")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(CommunityTheme.accent)
+                    .padding(.bottom, 12)
+
+                Text("Type the text here...")
+                    .font(.system(size: 14))
+                    .foregroundStyle(CommunityTheme.textMuted)
+
+                Spacer(minLength: 40)
+
+                HStack {
+                    Text("# topic")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(CommunityTheme.textMuted)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(Color.black.opacity(0.04))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                    Spacer()
+
+                    HStack(spacing: 12) {
+                        Image(systemName: "bubble.right")
+                            .font(.system(size: 16))
+                            .foregroundStyle(CommunityTheme.textMuted)
+                        Image(systemName: "heart")
+                            .font(.system(size: 16))
+                            .foregroundStyle(CommunityTheme.textMuted)
+                    }
                 }
             }
-        }
-        .padding(24)
-        .frame(minHeight: 280, alignment: .topLeading)
-        .modifier(GlassCardModifier())
+            .padding(24)
+            .frame(minHeight: 280, alignment: .topLeading)
+            .modifier(CommunityGlassCardModifier())
         }
         .buttonStyle(CommunityCardPressStyle())
     }
@@ -351,94 +399,109 @@ private struct PostNewCardView: View {
 
 private struct PostCardView: View {
     let post: CommunityPost
+    let onOpen: () -> Void
+    let onToggleReaction: (ReactionKind) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // User row
-            HStack(spacing: 12) {
-                Circle()
-                    .fill(Color.black.opacity(0.06))
-                    .frame(width: 40, height: 40)
+        Button(action: onOpen) {
+            VStack(alignment: .leading, spacing: 0) {
+                // User row
+                HStack(spacing: 12) {
+                    CommunityAvatar(name: post.user, size: 40)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(post.user)
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(textPrimary)
-                    Text("\(post.school)\n\(post.major)")
-                        .font(.system(size: 12))
-                        .foregroundStyle(textMuted)
-                        .lineSpacing(2)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .padding(.bottom, 16)
-
-            // Title
-            Text(post.title)
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(textPrimary)
-                .lineLimit(3)
-                .padding(.bottom, post.body != nil ? 8 : 0)
-
-            // Body
-            if let body = post.body {
-                Text(body)
-                    .font(.system(size: 14))
-                    .foregroundStyle(textSecondary)
-                    .lineLimit(4)
-                    .lineSpacing(3)
-            }
-
-            Spacer(minLength: 16)
-
-            // Bottom row: tags + stats
-            HStack(alignment: .center) {
-                // Tags
-                HStack(spacing: 6) {
-                    ForEach(Array(Set(post.tags)), id: \.self) { tag in
-                        Text(tag)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(textMuted)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(Color.black.opacity(0.04))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(post.user)
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(CommunityTheme.textPrimary)
+                        Text("\(post.school)\n\(post.major)")
+                            .font(.system(size: 12))
+                            .foregroundStyle(CommunityTheme.textMuted)
+                            .lineSpacing(2)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.bottom, 16)
+
+                // Title
+                Text(post.title)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(CommunityTheme.textPrimary)
+                    .lineLimit(3)
+                    .lineSpacing(2)
+                    .padding(.bottom, post.body != nil ? 8 : 0)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                // Body
+                if let body = post.body {
+                    Text(body)
+                        .font(.system(size: 14))
+                        .foregroundStyle(CommunityTheme.textSecondary)
+                        .lineLimit(4)
+                        .lineSpacing(3)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
-                Spacer()
+                // Attachments
+                PostAttachmentStack(post: post, detail: false)
 
-                // Stats
-                HStack(spacing: 14) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "bubble.right")
-                            .font(.system(size: 14))
-                            .foregroundStyle(textMuted)
-                        Text("\(post.comments)")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(textMuted)
+                Spacer(minLength: 16)
+
+                // Tags + stats row
+                HStack(alignment: .center) {
+                    HStack(spacing: 6) {
+                        ForEach(Array(post.tags.enumerated()), id: \.offset) { _, tag in
+                            Text(tag)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(CommunityTheme.textMuted)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
+                                .background(Color.black.opacity(0.04))
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
                     }
 
-                    HStack(spacing: 4) {
-                        Image(systemName: "heart")
-                            .font(.system(size: 14))
-                            .foregroundStyle(textMuted)
-                        Text("\(post.likes)")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(textMuted)
+                    Spacer()
+
+                    HStack(spacing: 6) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "bubble.right")
+                                .font(.system(size: 14))
+                                .foregroundStyle(CommunityTheme.textMuted)
+                            Text("\(post.commentCount)")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(CommunityTheme.textMuted)
+                        }
+                        .padding(.horizontal, 6)
+
+                        CommunityCardReactionButton(
+                            kind: .like,
+                            count: post.likes,
+                            active: post.userReaction == .like
+                        ) {
+                            onToggleReaction(.like)
+                        }
+
+                        CommunityCardReactionButton(
+                            kind: .dislike,
+                            count: post.dislikes,
+                            active: post.userReaction == .dislike
+                        ) {
+                            onToggleReaction(.dislike)
+                        }
                     }
                 }
             }
+            .padding(24)
+            .frame(minHeight: 200, alignment: .topLeading)
+            .modifier(CommunityGlassCardModifier())
         }
-        .padding(24)
-        .frame(minHeight: 200, alignment: .topLeading)
-        .modifier(GlassCardModifier())
+        .buttonStyle(CommunityCardPressStyle())
     }
 }
 
-// MARK: - Reusable glass card modifier
+// MARK: - Glass card modifier
 
-private struct GlassCardModifier: ViewModifier {
+struct CommunityGlassCardModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .background {
@@ -477,7 +540,7 @@ private struct GlassCardModifier: ViewModifier {
             .clipShape(RoundedRectangle(cornerRadius: 24))
             .overlay {
                 RoundedRectangle(cornerRadius: 24)
-                    .strokeBorder(glassBorder, lineWidth: 1)
+                    .strokeBorder(CommunityTheme.glassBorder, lineWidth: 1)
             }
             .shadow(color: .white.opacity(0.6), radius: 0, x: 0, y: -0.5)
             .shadow(color: .black.opacity(0.04), radius: 10, y: 4)
@@ -486,7 +549,7 @@ private struct GlassCardModifier: ViewModifier {
 
 // MARK: - Card Press Style
 
-private struct CommunityCardPressStyle: ButtonStyle {
+struct CommunityCardPressStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.98 : 1)
@@ -496,6 +559,6 @@ private struct CommunityCardPressStyle: ButtonStyle {
 
 #Preview {
     NavigationStack {
-        CommunityView()
+        CommunityView(selectedTab: .constant(AppTab.people))
     }
 }

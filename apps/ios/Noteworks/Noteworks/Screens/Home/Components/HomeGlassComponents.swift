@@ -84,12 +84,16 @@ struct BubblePressStyle: ButtonStyle {
 // MARK: - Course Bubble Model
 
 struct CourseBubble: Identifiable {
-    let id = UUID()
     let name: String
     let noteCount: Int
     let size: CGFloat
     let offsetX: CGFloat
     let offsetY: CGFloat
+
+    /// Stable id keyed off the (case-folded) name so SwiftUI tracks the
+    /// same bubble across re-renders and animates renames as a fade
+    /// crossover rather than wiping the whole field.
+    var id: String { name.lowercased() }
 }
 
 // MARK: - Bubble View

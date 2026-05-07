@@ -9,28 +9,37 @@ import SwiftUI
 
 // MARK: - HomeView
 
+/// Identifiable route used to push the canvas onto the Home navigation stack
+/// when "Note" is tapped in the FAB.
+struct NewNoteRoute: Hashable, Identifiable {
+    let id: UUID
+    let noteId: String?
+
+    init(noteId: String? = nil) {
+        self.id = UUID()
+        self.noteId = noteId
+    }
+}
+
 struct HomeView: View {
-    @Binding var selectedTab: AppTab
-    @StateObject private var viewModel = HomeViewModel()
+    @Binding var selectedTab: AppTab?
+    @EnvironmentObject private var store: NotesStore
 
     @State private var bubblesVisible = false
-    @State private var showAccountView = false
     @State private var showSearch = false
     @State private var showNotifications = false
     @State private var notifications = HomeNotification.samples
+    @State private var fabOpen = false
+    @State private var bubbleEditorMode: BubbleEditorMode? = nil
+    @State private var newNoteRoute: NewNoteRoute? = nil
 
     private var unreadCount: Int {
         notifications.filter(\.unread).count
     }
 
-    private let courses: [CourseBubble] = [
-        CourseBubble(name: "Biology",     noteCount: 4,  size: 160, offsetX: -0.25, offsetY: -0.25),
-        CourseBubble(name: "Art",         noteCount: 2,  size: 140, offsetX:  0.10, offsetY: -0.28),
-        CourseBubble(name: "Physics",     noteCount: 1,  size: 130, offsetX:  0.38, offsetY: -0.20),
-        CourseBubble(name: "Chemistry",   noteCount: 4,  size: 150, offsetX:  0.05, offsetY:  0.08),
-        CourseBubble(name: "Unnamed",     noteCount: 8,  size: 170, offsetX: -0.38, offsetY:  0.12),
-        CourseBubble(name: "Mathematics", noteCount: 10, size: 165, offsetX:  0.30, offsetY:  0.15),
-    ]
+    private var bubbles: [CourseBubble] {
+        HomeBubbleLayout.bubbles(from: store)
+    }
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
@@ -47,20 +56,86 @@ struct HomeView: View {
                 bubbleField
             }
 
-            HomeGlassIconButton(icon: "Icons/fluent_add-32-filled")
-                .padding(.trailing, 32)
-                .padding(.bottom, 100)
+            // Tap-to-close backdrop while the FAB menu is open
+            // (mirrors JSX L1522: full-screen pointerdown listener).
+            if fabOpen {
+                Color.black.opacity(0.001)
+                    .ignoresSafeArea()
+                    .onTapGesture {
+                        withAnimation(.timingCurve(0.22, 0.61, 0.36, 1, duration: 0.24)) {
+                            fabOpen = false
+                        }
+                    }
+                    .transition(.opacity)
+            }
+
+            HomeFAB(
+                isOpen: $fabOpen,
+                onAddBubble: handleAddBubble,
+                onAddNote: handleAddNote
+            )
+            .padding(.trailing, 16)
+            .padding(.bottom, 84)
         }
         .overlay { notificationOverlay }
         .overlay { searchOverlay }
+        .overlay { bubbleEditorOverlay }
         .navigationBarHidden(true)
-        .navigationDestination(isPresented: $showAccountView) {
-            AccountView()
+        .navigationDestination(item: $newNoteRoute) { route in
+            NoteEditorView(noteId: route.noteId)
         }
         .onAppear {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
                 bubblesVisible = true
             }
+        }
+    }
+
+    // MARK: - FAB actions
+
+    /// Mirrors `setEditorState({ mode: "create" })` (JSX L1529) — opens the
+    /// BubbleEditorDialog so the user can name and create a new bubble. The
+    /// dialog routes the trimmed value through `store.addBubble`.
+    private func handleAddBubble() {
+        withAnimation(.easeOut(duration: 0.2)) {
+            bubbleEditorMode = .create
+        }
+    }
+
+    /// Mirrors `onCreateNote?.()` (JSX L1567) — creates a fresh draft note in
+    /// the store and pushes the canvas onto the current navigation stack.
+    private func handleAddNote() {
+        let note = store.createDraftNote(subject: nil)
+        newNoteRoute = NewNoteRoute(noteId: note.id)
+    }
+
+    // MARK: - Bubble editor overlay
+
+    @ViewBuilder
+    private var bubbleEditorOverlay: some View {
+        if let mode = bubbleEditorMode {
+            BubbleEditorDialog(
+                isPresented: Binding(
+                    get: { bubbleEditorMode != nil },
+                    set: { if !$0 { bubbleEditorMode = nil } }
+                ),
+                mode: mode,
+                onSubmit: { name in
+                    switch mode {
+                    case .create:
+                        if let error = store.addBubble(name: name) {
+                            return .failure(message: error)
+                        }
+                    case .rename(let original):
+                        if let error = store.renameBubble(from: original, to: name) {
+                            return .failure(message: error)
+                        }
+                    }
+                    return .success
+                }
+            )
+            .transition(.opacity)
+            .zIndex(110)
         }
     }
 
@@ -70,11 +145,11 @@ struct HomeView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("NoteWorks")
-                    .font(.custom("Inter_24pt-Medium", size: 40).weight(.bold))
+                    .font(.custom("Inter_24pt-Bold", size: 40))
                     .tracking(-0.02 * 40)
                     .foregroundStyle(HomeTheme.textPrimary)
                 Text("BUBBLES OF THOUGHT")
-                    .font(.custom("Inter_24pt-Medium", size: 13).weight(.semibold))
+                    .font(.custom("Inter_24pt-SemiBold", size: 13))
                     .tracking(0.15 * 13)
                     .textCase(.uppercase)
                     .foregroundStyle(HomeTheme.textMuted)
@@ -116,7 +191,9 @@ struct HomeView: View {
                 }
 
                 HomeGlassIconButton(icon: "Icons/fluent_person-24-regular") {
-                    showAccountView = true
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                        selectedTab = nil
+                    }
                 }
             }
         }
@@ -129,11 +206,16 @@ struct HomeView: View {
     private var bubbleField: some View {
         GeometryReader { geo in
             ZStack {
-                ForEach(Array(courses.enumerated()), id: \.element.id) { index, course in
+                ForEach(Array(bubbles.enumerated()), id: \.element.id) { index, course in
                     Button {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                            selectedTab = .notebook
-                        }
+                        // Set the filter first so CourseSpaceView's
+                        // `onChange(of: store.libraryFilter)` (it now
+                        // reacts even when not visible) adopts the
+                        // bubble. The tab cross-fade is owned by
+                        // MainTabView's `.animation(_, value:)` modifier
+                        // — a `withAnimation` here would conflict.
+                        store.libraryFilter = course.name
+                        selectedTab = .notebook
                     } label: {
                         BubbleView(course: course)
                     }
@@ -202,6 +284,7 @@ struct HomeView: View {
 
 #Preview {
     NavigationStack {
-        HomeView(selectedTab: .constant(.home))
+        HomeView(selectedTab: .constant(AppTab.home))
+            .environmentObject(NotesStore())
     }
 }

@@ -19,28 +19,47 @@ private let accent = Color(red: 0x5E/255, green: 0xAD/255, blue: 0xD3/255)
 // MARK: - Library View (matches React LibraryPage)
 
 struct CourseSpaceView: View {
+    @Binding var selectedTab: AppTab?
+    @EnvironmentObject private var store: NotesStore
     @StateObject private var viewModel = CourseSpaceViewModel()
     @State private var activeTab: LibraryTab = .notes
     @State private var filterSubject: String? = nil
     @State private var showFilterDropdown = false
     @State private var navigateToNewNote = false
     @State private var newNoteId: String?
-    @State private var showAccountView = false
     @State private var showSearch = false
     @State private var showNotifications = false
     @State private var notifications = HomeNotification.samples
 
     private var subjects: [String] {
-        let raw = viewModel.notes.compactMap { $0.subject }.filter { !$0.isEmpty }
-        return Array(Set(raw)).sorted()
+        // Combine stored bubble names with any subjects that exist on notes
+        // but were never explicitly added to the bubble list — keeps the
+        // dropdown comprehensive even after edge cases.
+        let stored = Set(store.bubbleNames.map { $0 })
+        let fromNotes = Set(store.notes.compactMap { $0.subject }.filter { !$0.isEmpty })
+        return stored.union(fromNotes).sorted()
     }
 
-    private var filteredNotes: [NoteItem] {
-        guard let subject = filterSubject else { return viewModel.notes }
-        if subject == "Uncategorized" {
-            return viewModel.notes.filter { $0.subject == nil || $0.subject?.isEmpty == true }
+    private var filteredNotes: [Note] {
+        let base: [Note]
+        if let subject = filterSubject {
+            if NotesStore.isReservedName(subject) {
+                base = store.notes.filter { ($0.subject ?? "").isEmpty }
+            } else {
+                base = store.notes.filter {
+                    $0.subject?.caseInsensitiveCompare(subject) == .orderedSame
+                }
+            }
+        } else {
+            base = store.notes
         }
-        return viewModel.notes.filter { $0.subject == subject }
+        // Bookmarked notes float to the top of the library, mirroring the
+        // JSX `getSortedNotes` (L211). Stable order otherwise — the array
+        // already comes back in insertion order from the store.
+        return base.sorted { lhs, rhs in
+            if lhs.bookmarked != rhs.bookmarked { return lhs.bookmarked && !rhs.bookmarked }
+            return false
+        }
     }
 
     private var title: String {
@@ -102,7 +121,9 @@ struct CourseSpaceView: View {
                             }
 
                             LibraryGlassIconButton(icon: "Icons/fluent_person-24-regular") {
-                                showAccountView = true
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                    selectedTab = nil
+                                }
                             }
                         }
                     }
@@ -275,10 +296,23 @@ struct CourseSpaceView: View {
         .navigationDestination(isPresented: $navigateToNewNote) {
             NoteEditorView(noteId: newNoteId)
         }
-        .navigationDestination(isPresented: $showAccountView) {
-            AccountView()
-        }
         .navigationBarHidden(true)
+        .onAppear { adoptHomeBubbleFilterIfNeeded() }
+        .onChange(of: store.libraryFilter) { _, _ in
+            adoptHomeBubbleFilterIfNeeded()
+        }
+    }
+
+    /// When the user taps a bubble on Home, `store.libraryFilter` is set
+    /// before the tab switch fires. Pull it into local state once on appear
+    /// (and clear the store-level filter) so subsequent in-library
+    /// dropdown changes don't fight the home-driven selection.
+    private func adoptHomeBubbleFilterIfNeeded() {
+        guard let pending = store.libraryFilter else { return }
+        withAnimation(.easeInOut(duration: 0.2)) {
+            filterSubject = pending
+        }
+        store.libraryFilter = nil
     }
 
     // MARK: - Notes grid (max 3 columns)
@@ -288,34 +322,33 @@ struct CourseSpaceView: View {
     }
 
     private var notesGrid: some View {
-        Group {
-            if filteredNotes.isEmpty {
-                VStack {
-                    Spacer(minLength: 80)
-                    Text("No notes in this category.")
-                        .font(.system(size: 17))
-                        .foregroundStyle(textMuted)
-                    Spacer(minLength: 80)
-                }
-                .frame(maxWidth: .infinity)
-            } else {
-                LazyVGrid(columns: gridColumns, spacing: 20) {
-                    // + New card
-                    LibraryNewCard {
-                        let id = viewModel.createNote()
-                        newNoteId = id
-                        navigateToNewNote = true
-                    }
+        LazyVGrid(columns: gridColumns, spacing: 20) {
+            // + New card always available so an empty bubble can grow notes.
+            LibraryNewCard {
+                let subjectForDraft: String? = {
+                    guard let subject = filterSubject else { return nil }
+                    return NotesStore.isReservedName(subject) ? nil : subject
+                }()
+                let note = store.createDraftNote(subject: subjectForDraft)
+                newNoteId = note.id
+                navigateToNewNote = true
+            }
 
-                    ForEach(filteredNotes) { note in
-                        NavigationLink(value: note.id) {
-                            LibraryNoteCard(note: note)
-                        }
-                        .buttonStyle(CardPressStyle())
-                    }
+            ForEach(filteredNotes) { note in
+                NavigationLink(value: note.id) {
+                    LibraryNoteCard(note: note)
                 }
-                .padding(.horizontal, 32)
-                .padding(.bottom, 120)
+                .buttonStyle(CardPressStyle())
+            }
+        }
+        .padding(.horizontal, 32)
+        .padding(.bottom, 120)
+        .overlay(alignment: .top) {
+            if filteredNotes.isEmpty {
+                Text("No notes in this category yet — tap + to start one.")
+                    .font(.system(size: 15))
+                    .foregroundStyle(textMuted)
+                    .padding(.top, 280)
             }
         }
     }
@@ -510,7 +543,7 @@ private struct FilterOptionRow: View {
 // MARK: - Glass Note Card (React NoteCard)
 
 private struct LibraryNoteCard: View {
-    let note: NoteItem
+    let note: Note
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -617,6 +650,18 @@ private struct LibraryNoteCard: View {
             RoundedRectangle(cornerRadius: 24)
                 .strokeBorder(glassBorder, lineWidth: 1)
         }
+        .overlay(alignment: .topLeading) {
+            if note.bookmarked {
+                Image(systemName: "bookmark.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(accent)
+                    .padding(8)
+                    .background(Color.white.opacity(0.85), in: Circle())
+                    .overlay(Circle().strokeBorder(glassBorder, lineWidth: 1))
+                    .padding(12)
+                    .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
+            }
+        }
         .shadow(color: .white.opacity(0.6), radius: 0, x: 0, y: -0.5)
         .shadow(color: .black.opacity(0.04), radius: 10, y: 4)
     }
@@ -708,6 +753,7 @@ private struct AnyShape: Shape {
 
 #Preview {
     NavigationStack {
-        CourseSpaceView()
+        CourseSpaceView(selectedTab: .constant(AppTab.notebook))
+            .environmentObject(NotesStore())
     }
 }

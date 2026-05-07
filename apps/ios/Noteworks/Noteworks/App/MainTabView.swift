@@ -22,29 +22,69 @@ enum AppTab: String, CaseIterable {
 }
 
 struct MainTabView: View {
-    @State private var selectedTab: AppTab = .home
+    @State private var selectedTab: AppTab? = .home
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            switch selectedTab {
-            case .home:
-                NavigationStack { HomeView(selectedTab: $selectedTab) }
-            case .notebook:
-                NavigationStack { CourseSpaceView() }
-            case .people:
-                NavigationStack { CommunityView() }
+            // All four navigation stacks are kept mounted simultaneously
+            // (matching the JSX `PageTransition` model at L6831) so:
+            //   • per-tab navigation state survives a tab switch
+            //   • CourseSpace's notes grid does not have to re-layout from
+            //     scratch every time a Home bubble is tapped (the source
+            //     of the perceived "lag")
+            //   • SwiftUI can cross-fade the layers cleanly via
+            //     `.opacity` + `.animation(_, value:)`, instead of
+            //     destroying one tree and building another in the same
+            //     frame.
+            //
+            // `allowsHitTesting(false)` on the inactive layers keeps
+            // touches from leaking through to hidden screens.
+            ZStack {
+                tabContainer(.home, isActive: selectedTab == .home) {
+                    NavigationStack { HomeView(selectedTab: $selectedTab) }
+                }
+                tabContainer(.notebook, isActive: selectedTab == .notebook) {
+                    NavigationStack { CourseSpaceView(selectedTab: $selectedTab) }
+                }
+                tabContainer(.people, isActive: selectedTab == .people) {
+                    NavigationStack { CommunityView(selectedTab: $selectedTab) }
+                }
+                tabContainer(nil, isActive: selectedTab == nil) {
+                    NavigationStack { ProfileView(selectedTab: $selectedTab) }
+                }
             }
+            // 0.22s mirrors the JSX `PageTransition` (L6893) which uses
+            // `transition: opacity 0.24s cubic-bezier(0.22,0.61,0.36,1)`.
+            .animation(.easeInOut(duration: 0.22), value: selectedTab)
 
             FloatingTabBar(selectedTab: $selectedTab)
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
+    }
+
+    /// Wraps one tab's view tree with cross-fade visibility + hit-testing
+    /// gating. Keeping the tree alive when inactive (just invisible)
+    /// preserves both per-tab state and child navigation history.
+    @ViewBuilder
+    private func tabContainer<Content: View>(
+        _ tab: AppTab?,
+        isActive: Bool,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        content()
+            .opacity(isActive ? 1 : 0)
+            .allowsHitTesting(isActive)
+            // A tiny rest offset on the inactive tab adds the soft "slide
+            // forward" feel of the JSX `default` transition (L6869) when
+            // it animates back to 0.
+            .offset(y: isActive ? 0 : 6)
     }
 }
 
 // MARK: - Floating Tab Bar
 
 struct FloatingTabBar: View {
-    @Binding var selectedTab: AppTab
+    @Binding var selectedTab: AppTab?
 
     // Bar background layers matching Figma color-dodge blend
     private let barLayerDark   = Color(white: 0.20)
@@ -88,7 +128,7 @@ struct FloatingTabBar: View {
 
 struct TabItemButton: View {
     let tab: AppTab
-    @Binding var selectedTab: AppTab
+    @Binding var selectedTab: AppTab?
     let highlightColor: Color
 
     private var isSelected: Bool { selectedTab == tab }
@@ -146,5 +186,7 @@ struct TabItemButton: View {
 
 #Preview {
     MainTabView()
+        .environmentObject(AppState())
+        .environmentObject(NotesStore())
 }
 
