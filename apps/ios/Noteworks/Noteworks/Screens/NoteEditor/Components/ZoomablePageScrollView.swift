@@ -10,15 +10,18 @@
 //  Gesture routing:
 //    • Single-finger touches  → PencilKit drawing recognizers (untouched
 //      because the scroll view's pan gesture requires 2 touches).
-//    • Two-finger pinch       → outer scroll view zoom.
+//    • Two-finger pinch       → outer scroll view zoom (1×–3×).
 //    • Two-finger pan         → outer scroll view content offset
 //      (only effective when the page is zoomed past 1×).
 //
-//  Crisp pencil rendering trick: after a zoom interaction ends, the
-//  embedded `PKCanvasView` has its `contentScaleFactor` bumped to
-//  `screenScale × zoomScale`, forcing PencilKit to re-rasterize strokes
-//  at the new effective resolution. Without this, the GPU rescales a
-//  fixed-resolution bitmap and the ink looks blurry at 2×–4×.
+//  Crisp-ink strategy. The outer scroll view zooms by applying a CALayer
+//  transform to the hosted content; that transform stretches a fixed-
+//  resolution PencilKit bitmap by default — exactly the blur the user
+//  was reporting. To keep ink crisp, the coordinator bumps the embedded
+//  `PKCanvasView`'s `contentScaleFactor` to `screenScale × zoomScale`
+//  on every zoom step. PencilKit re-rasterizes its drawing layer at
+//  the new effective density, so the bitmap displayed under the GPU
+//  transform always has at least 1:1 pixel coverage on screen.
 //
 
 import SwiftUI
@@ -29,7 +32,7 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
 
     let contentSize: CGSize
     var minScale: CGFloat = 1.0
-    var maxScale: CGFloat = 4.0
+    var maxScale: CGFloat = 3.0
     @ViewBuilder var content: () -> Content
 
     func makeUIView(context: Context) -> UIScrollView {
@@ -48,8 +51,9 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         scrollView.panGestureRecognizer.minimumNumberOfTouches = 2
         scrollView.panGestureRecognizer.maximumNumberOfTouches = 2
 
-        // The page card is the only content; bouncing it at edges feels
-        // jittery, especially when the user is mid-stroke.
+        // No bouncing pan when the page is at zoom 1 — there's no scroll
+        // distance to bounce against and the wobble would feel like a
+        // bug to the user.
         scrollView.bounces = false
         scrollView.alwaysBounceVertical = false
         scrollView.alwaysBounceHorizontal = false
@@ -62,8 +66,14 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
 
         context.coordinator.host = host
         context.coordinator.contentSize = contentSize
-        // Initial centering — runs after the scroll view's bounds settle.
+
+        // Pre-rasterize the embedded PencilKit canvas at the maximum
+        // zoom level so the first pinch already has a high-resolution
+        // bitmap ready. The coordinator will also re-tune this during
+        // zoom for safety; this just avoids a one-frame blur on the
+        // very first pinch.
         DispatchQueue.main.async {
+            context.coordinator.applyMaxResolution(maxScale: maxScale)
             context.coordinator.recenter(scrollView)
         }
         return scrollView
@@ -74,8 +84,8 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         context.coordinator.host?.rootView = content()
 
         // Reset zoom + content frame only when the natural page size
-        // actually changes (rotation flip, window resize). Doing this on
-        // every update would clobber a live zoom interaction.
+        // actually changes (rotation flip, window resize). Doing this
+        // on every update would clobber a live zoom interaction.
         if context.coordinator.contentSize != contentSize {
             scrollView.zoomScale = 1.0
             context.coordinator.host?.view.frame = CGRect(origin: .zero, size: contentSize)
@@ -86,8 +96,8 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
             }
         } else {
             // Re-center on every update because the scroll view's own
-            // bounds can change (e.g. chrome resize) without the content
-            // size changing.
+            // bounds can change (e.g. chrome resize) without the
+            // content size changing.
             context.coordinator.recenter(scrollView)
         }
     }
@@ -106,19 +116,9 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
             recenter(scrollView)
         }
 
-        func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) {
-            // Re-rasterize PencilKit at the new effective resolution so
-            // ink stays crisp at high zoom. We deliberately only do this
-            // at zoom-end (not on every frame) to keep mid-pinch
-            // interaction smooth — temporary blur during the pinch is
-            // imperceptible.
-            findCanvas(in: view)?.contentScaleFactor = UIScreen.main.scale * scale
-        }
-
         /// Keep the page card centered inside the scroll view when its
-        /// zoomed size is smaller than the visible bounds. At scale=1
-        /// the page is always smaller than the canvas area, so this is
-        /// what produces the "page floating with a margin" look.
+        /// zoomed size is smaller than the visible bounds (which is
+        /// always the case at scale = 1 on a wider canvas area).
         func recenter(_ scrollView: UIScrollView) {
             guard let view = host?.view else { return }
             let xOffset = max((scrollView.bounds.width - view.frame.width) * 0.5, 0)
@@ -131,11 +131,18 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
             )
         }
 
-        /// Recursive search through the hosted view tree for the
-        /// `PKCanvasView` we need to retune the content scale on. The
-        /// hosting controller flattens SwiftUI into a UIView hierarchy
-        /// where the canvas can be a couple of layers deep, so a plain
-        /// `subviews.first` won't always hit it.
+        /// Walks the hosted view tree for the embedded `PKCanvasView`
+        /// and sets its `contentScaleFactor` to a level that keeps
+        /// strokes crisp at the maximum zoom this scroll view allows.
+        /// We pre-rasterize once at view-creation rather than chase
+        /// zoom changes on every frame — re-rasterizing mid-pinch
+        /// causes visible flicker, while a one-time-high bitmap is
+        /// cheap on iPad and immediately sharp at any zoom level.
+        func applyMaxResolution(maxScale: CGFloat) {
+            guard let canvas = findCanvas(in: host?.view) else { return }
+            canvas.contentScaleFactor = UIScreen.main.scale * maxScale
+        }
+
         private func findCanvas(in view: UIView?) -> PKCanvasView? {
             guard let view else { return nil }
             if let canvas = view as? PKCanvasView { return canvas }

@@ -111,27 +111,60 @@ struct PaletteSwatchRow: View {
     let swatches: [NoteColorSwatch]
     let selectedId: String?
     let usingCustom: Bool
+    /// Maximum swatches to lay out in a single row. Once exceeded, the
+    /// palette wraps to a second row. Pen palette (9 colors) needs this
+    /// to wrap; highlighter (4 colors) fits on a single row regardless.
+    var maxPerRow: Int = 6
     let onSelect: (NoteColorSwatch) -> Void
 
+    /// Splits the palette into chunks of at most `maxPerRow` swatches so
+    /// the row layout naturally wraps inside the 240pt dropdown without
+    /// overflowing its bounds (which is what produced the original
+    /// "color is out of bounds" bug after we widened the pen palette
+    /// from 6 to 9 swatches).
+    private var rows: [[NoteColorSwatch]] {
+        guard maxPerRow > 0 else { return [swatches] }
+        var result: [[NoteColorSwatch]] = []
+        var remaining = swatches[...]
+        while !remaining.isEmpty {
+            let chunk = remaining.prefix(maxPerRow)
+            result.append(Array(chunk))
+            remaining = remaining.dropFirst(chunk.count)
+        }
+        return result
+    }
+
     var body: some View {
-        HStack(spacing: 8) {
-            ForEach(swatches) { swatch in
-                Button {
-                    onSelect(swatch)
-                } label: {
-                    Circle()
-                        .fill(swatch.color)
-                        .frame(width: 24, height: 24)
-                        .overlay(
-                            Circle().strokeBorder(
-                                (!usingCustom && swatch.id == selectedId)
-                                    ? NoteEditorTheme.accent
-                                    : Color.black.opacity(0.08),
-                                lineWidth: (!usingCustom && swatch.id == selectedId) ? 2 : 1
-                            )
-                        )
+        VStack(spacing: 8) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                HStack(spacing: 8) {
+                    ForEach(row) { swatch in
+                        Button {
+                            onSelect(swatch)
+                        } label: {
+                            Circle()
+                                .fill(swatch.color)
+                                .frame(width: 24, height: 24)
+                                .overlay(
+                                    Circle().strokeBorder(
+                                        (!usingCustom && swatch.id == selectedId)
+                                            ? NoteEditorTheme.accent
+                                            : Color.black.opacity(0.08),
+                                        lineWidth: (!usingCustom && swatch.id == selectedId) ? 2 : 1
+                                    )
+                                )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    // Pad the last row with invisible spacers so the
+                    // wrapped row aligns leading with the row above it
+                    // instead of recentering its fewer swatches.
+                    if row.count < maxPerRow {
+                        ForEach(0..<(maxPerRow - row.count), id: \.self) { _ in
+                            Color.clear.frame(width: 24, height: 24)
+                        }
+                    }
                 }
-                .buttonStyle(.plain)
             }
         }
     }

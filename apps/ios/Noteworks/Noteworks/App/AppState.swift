@@ -37,6 +37,15 @@ final class AppState: ObservableObject {
     /// without `isAuthenticated` flipping them sideways.
     @Published var resumeOnboardingAtCollege: Bool = false
 
+    /// True while the user is inside the note editor. `MainTabView`
+    /// watches this to hide the floating Home/Library/Community tab bar
+    /// — when you're writing on a page, the tab pill at the bottom of
+    /// the screen just steals canvas room (and visually clashes with the
+    /// page card). The editor flips this on `.onAppear` and back off on
+    /// `.onDisappear` so the bar slides back in when you tap the back
+    /// chevron.
+    @Published var isImmersiveEditing: Bool = false
+
     // MARK: - Dependencies
 
     let notesStore: NotesStore
