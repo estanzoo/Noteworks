@@ -18,7 +18,7 @@ struct MajorStepView: View {
             VStack(alignment: .leading, spacing: 0) {
                 Spacer().frame(height: 80)
 
-                OnboardingProgress(current: 4, total: 5)
+                OnboardingProgress(current: 4, total: 6)
 
                 GlassCard {
                     VStack(alignment: .leading, spacing: 0) {

@@ -446,6 +446,31 @@ final class NotesStore: ObservableObject {
         return nil
     }
 
+    /// Replaces the entire bubble list with `names`. Used by the
+    /// post-onboarding course-setup step to seed Home in one shot —
+    /// equivalent to the JSX `setBubbleCategories(nextBubbles)` call
+    /// in `saveCourseList` (others/NoteWorks_UI 2/noteworks-library.jsx
+    /// L9631). Trims, drops empties/reserved names, and de-duplicates
+    /// case-insensitively while preserving the caller's order. Existing
+    /// notes' `subject` strings are left untouched: course codes the
+    /// user happened to already type as a subject keep working without
+    /// any extra remap step.
+    func replaceBubbleNames(_ names: [String]) {
+        var seen = Set<String>()
+        var result: [String] = []
+        for raw in names {
+            let trimmed = NotesStore.normalizeBubbleName(raw)
+            guard !trimmed.isEmpty,
+                  !NotesStore.isReservedName(trimmed) else { continue }
+            let key = trimmed.lowercased()
+            if seen.insert(key).inserted {
+                result.append(trimmed)
+            }
+        }
+        bubbleNames = result
+        saveDebounced()
+    }
+
     /// Removes a bubble and sets matching notes' `subject` to nil so they
     /// fall into the Unnamed bucket (mirrors JSX `deleteBubble` L7026–L7030).
     func deleteBubble(name: String) {

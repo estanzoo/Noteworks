@@ -80,7 +80,48 @@ struct Invite: Identifiable, Equatable {
 // MARK: - Initial Data
 
 extension Profile {
+    /// Blank initial state — every identity field is empty so a brand-
+    /// new user never briefly sees the previous "Hao Guan Cheng"
+    /// placeholder before `ProfileViewModel.hydrate(from:)` fills in
+    /// the real values from `AppState.profile`. Subscription / credits
+    /// / referral / security objects exist (so the UI can render rows
+    /// without optional-chaining everywhere) but they're zeroed —
+    /// they'll start filling in once those backend features ship.
     static let initial = Profile(
+        name: "",
+        email: "",
+        photoData: nil,
+        bio: "",
+        school: "",
+        major: "",
+        grade: "",
+        subscription: Subscription(
+            plan: "Free",
+            status: "Active",
+            renewsOn: ""
+        ),
+        credits: Credits(
+            balance: 0,
+            history: [],
+            usage: []
+        ),
+        security: SecurityLinks(googleLinked: false, appleLinked: false, notionLinked: false),
+        referral: Referral(
+            code: "",
+            invited: 0,
+            pending: 0,
+            rewardCopy: "Earn credits for every friend who joins NoteWorks.",
+            invites: []
+        ),
+        language: "English",
+        version: "NoteWorks Beta 0.9.4 (Build 214)"
+    )
+
+    /// Preview-only seed kept around for SwiftUI canvas and design
+    /// inspection. Never reaches a real user. Mirrors the JSX
+    /// `PROFILE_INITIAL` placeholder so designers can see the layout
+    /// populated when iterating.
+    static let previewSample = Profile(
         name: "Hao Guan Cheng",
         email: "haoguan@arts.ac.uk",
         photoData: nil,

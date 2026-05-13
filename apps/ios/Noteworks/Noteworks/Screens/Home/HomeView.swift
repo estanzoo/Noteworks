@@ -28,7 +28,10 @@ struct HomeView: View {
     @State private var bubblesVisible = false
     @State private var showSearch = false
     @State private var showNotifications = false
-    @State private var notifications = HomeNotification.samples
+    // Brand-new users see an empty inbox until real notifications wire
+    // up to the server. The static `HomeNotification.samples` set still
+    // exists for SwiftUI previews and design-time tooling.
+    @State private var notifications: [HomeNotification] = []
     @State private var fabOpen = false
     @State private var bubbleEditorMode: BubbleEditorMode? = nil
     @State private var newNoteRoute: NewNoteRoute? = nil

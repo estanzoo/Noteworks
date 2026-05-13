@@ -20,7 +20,10 @@ struct ProfileView: View {
 
     @State private var showSearch: Bool = false
     @State private var showNotifications: Bool = false
-    @State private var notifications = HomeNotification.samples
+    // Brand-new users see an empty inbox until real notifications are
+    // wired to the server. `HomeNotification.samples` stays defined
+    // for SwiftUI previews only.
+    @State private var notifications: [HomeNotification] = []
 
     private var unreadCount: Int { notifications.filter(\.unread).count }
 

@@ -16,10 +16,14 @@ enum OnboardingStep: Int, CaseIterable {
     case college = 5
     case major = 6
     case interests = 7
-    case done = 8
-    case skipped = 9
-    case forgotPassword = 10
-    case resetPassword = 11
+    /// Post-submit initialization step. Mirrors the JSX
+    /// `CourseSetupInterface` first-sign-in modal — confirms the
+    /// course list and seeds Home's bubbles before the user sees it.
+    case setupCourses = 8
+    case done = 9
+    case skipped = 10
+    case forgotPassword = 11
+    case resetPassword = 12
 }
 
 struct OnboardingFlow: View {
@@ -48,7 +52,7 @@ struct OnboardingFlow: View {
                 .ignoresSafeArea()
 
             // Beta badge (visible on form steps, not sign-in or welcome)
-            if step.rawValue >= OnboardingStep.signUp.rawValue && step.rawValue <= OnboardingStep.interests.rawValue {
+            if step.rawValue >= OnboardingStep.signUp.rawValue && step.rawValue <= OnboardingStep.setupCourses.rawValue {
                 VStack {
                     HStack {
                         BetaBadge()
@@ -116,6 +120,31 @@ struct OnboardingFlow: View {
                     MajorStepView(data: data, onNext: { step = .interests }, onBack: { step = .college })
                 case .interests:
                     InterestsStepView(data: data, onNext: { handleSubmitOnboarding() }, onBack: { step = .major })
+                case .setupCourses:
+                    // Final initialization step. Confirms the courses
+                    // the user just submitted and seeds Home's bubble
+                    // field locally — equivalent to the JSX
+                    // `saveCourseList` -> `setBubbleCategories(...)`
+                    // path (noteworks-library.jsx L9629–L9631). Skip
+                    // seeds a single "Untitled Bubble" so Home isn't
+                    // blank — matching the JSX `skipCourseSetup`
+                    // behaviour (L9641–L9646) and the promise the
+                    // confirm modal makes to the user. No back
+                    // button — onboarding has already been submitted
+                    // server-side, mirroring the JSX modal which only
+                    // exposes Skip / Continue.
+                    CoursesStepView(
+                        data: data,
+                        onSave: { codes in
+                            let safe = codes.isEmpty ? ["Untitled Bubble"] : codes
+                            appState.notesStore.replaceBubbleNames(safe)
+                            step = .done
+                        },
+                        onSkip: {
+                            appState.notesStore.replaceBubbleNames(["Untitled Bubble"])
+                            step = .done
+                        }
+                    )
                 case .done:
                     // `submit-onboarding` already set `onboarding_completed_at`
                     // and `handleSubmitOnboarding` refetched the profile, so
@@ -343,11 +372,12 @@ struct OnboardingFlow: View {
                     payload,
                     accessToken: appState.accessToken ?? ""
                 )
-                // Land on `DoneView` first so the user gets the
-                // celebration screen. The Explore button refetches the
-                // profile, which flips `onboarding_completed_at` and lets
-                // `ContentView` route into `MainTabView`.
-                step = .done
+                // Submit succeeded — surface the post-submit course
+                // setup step so the user lands on Home with bubbles
+                // already seeded. The submit-onboarding payload above
+                // already wrote `course_codes` server-side; this step
+                // is local-only and feeds `NotesStore.bubbleNames`.
+                step = .setupCourses
             } catch {
                 errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }

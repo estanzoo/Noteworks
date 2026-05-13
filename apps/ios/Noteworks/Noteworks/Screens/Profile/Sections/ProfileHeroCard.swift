@@ -183,14 +183,31 @@ struct ProfileHeroCard: View {
     }
 
     private var nameBlock: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(viewModel.profile.name)
+        // Empty `Profile.initial` plus a brand-new user with no
+        // server-side name shouldn't render a blank name row or a
+        // dangling " at " subtitle — fall back to friendly defaults.
+        let displayName = viewModel.profile.name.isEmpty
+            ? "Welcome to NoteWorks"
+            : viewModel.profile.name
+        let major  = viewModel.profile.major.trimmingCharacters(in: .whitespaces)
+        let school = viewModel.profile.school.trimmingCharacters(in: .whitespaces)
+        let subtitle: String?
+        switch (major.isEmpty, school.isEmpty) {
+        case (false, false): subtitle = "\(major) at \(school)"
+        case (false, true):  subtitle = major
+        case (true,  false): subtitle = school
+        case (true,  true):  subtitle = nil
+        }
+        return VStack(alignment: .leading, spacing: 5) {
+            Text(displayName)
                 .font(.system(size: 24, weight: .bold))
                 .tracking(-0.03 * 24)
                 .foregroundStyle(ProfileTheme.textPrimary)
-            Text("\(viewModel.profile.major) at \(viewModel.profile.school)")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(ProfileTheme.textSecondary)
+            if let subtitle {
+                Text(subtitle)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(ProfileTheme.textSecondary)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

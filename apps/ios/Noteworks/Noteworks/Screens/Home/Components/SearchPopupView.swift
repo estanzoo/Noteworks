@@ -9,15 +9,10 @@ import SwiftUI
 
 struct SearchPopupView: View {
     @Binding var isPresented: Bool
+    @EnvironmentObject private var store: NotesStore
     @State private var query = ""
     @State private var searchTab: SearchTab = .yours
     @FocusState private var focused: Bool
-
-    private static let sampleNotes: [(title: String, subject: String?)] = [
-        ("Lab Report", "Chemistry"), ("Cell Biology", "Biology"), ("Organic Chem", "Chemistry"),
-        ("Grammer Rules", nil), ("Perspective Drawing", "Art"), ("Physics Lab 3", "Physics"),
-        ("Calc II Notes", "Mathematics"), ("Calc III Review", "Mathematics"),
-    ]
 
     private static let suggestions = [
         "Boolean operators",
@@ -30,13 +25,21 @@ struct SearchPopupView: View {
         case yours, community
     }
 
+    /// Search hits read live from `NotesStore.notes`. Matches title or
+    /// subject substring (case-insensitive); empty query returns no
+    /// rows so the suggestions panel shows instead. Community tab is
+    /// not wired to the server yet — returns empty for that tab so
+    /// brand-new users don't see fake hardcoded hits.
     private var results: [(title: String, subject: String?)] {
         guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return [] }
+        guard searchTab == .yours else { return [] }
         let q = query.lowercased()
-        return Self.sampleNotes.filter {
-            $0.title.lowercased().contains(q) ||
-            ($0.subject ?? "").lowercased().contains(q)
-        }
+        return store.notes
+            .filter {
+                $0.title.lowercased().contains(q) ||
+                ($0.subject ?? "").lowercased().contains(q)
+            }
+            .map { ($0.title, $0.subject) }
     }
 
     var body: some View {

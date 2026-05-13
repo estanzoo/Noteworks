@@ -16,6 +16,15 @@
 import Foundation
 import CoreGraphics
 
+/// One bubble already laid out, used by the packer to detect collisions.
+/// Lives at file scope so the helpers below can share a single nominal
+/// type instead of passing tuple arrays around (Swift won't bridge
+/// `[Placed]` and `[(center: CGPoint, radius: CGFloat)]` implicitly).
+private struct PlacedBubble {
+    let center: CGPoint
+    let radius: CGFloat
+}
+
 enum HomeBubbleLayout {
 
     // MARK: - Tuning
@@ -86,8 +95,7 @@ enum HomeBubbleLayout {
             return lhs.element.name < rhs.element.name
         }
 
-        struct Placed { let center: CGPoint; let radius: CGFloat }
-        var placed: [Placed] = []
+        var placed: [PlacedBubble] = []
         var positions: [String: CGPoint] = [:]
 
         for entry in placeOrder {
@@ -99,7 +107,7 @@ enum HomeBubbleLayout {
                 placed: placed,
                 container: containerSize
             )
-            placed.append(Placed(center: center, radius: radius))
+            placed.append(PlacedBubble(center: center, radius: radius))
             positions[bubble.name] = center
         }
 
@@ -130,7 +138,7 @@ enum HomeBubbleLayout {
     private static func findSpot(
         name: String,
         radius: CGFloat,
-        placed: [(center: CGPoint, radius: CGFloat)],
+        placed: [PlacedBubble],
         container: CGSize
     ) -> CGPoint {
         let seed = stableHash(name)
@@ -214,7 +222,7 @@ enum HomeBubbleLayout {
     private static func overlaps(
         _ center: CGPoint,
         radius: CGFloat,
-        placed: [(center: CGPoint, radius: CGFloat)]
+        placed: [PlacedBubble]
     ) -> Bool {
         for p in placed {
             let dx = p.center.x - center.x

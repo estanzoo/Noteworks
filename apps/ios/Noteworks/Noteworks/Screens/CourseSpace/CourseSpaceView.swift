@@ -29,7 +29,10 @@ struct CourseSpaceView: View {
     @State private var newNoteId: String?
     @State private var showSearch = false
     @State private var showNotifications = false
-    @State private var notifications = HomeNotification.samples
+    // Brand-new users see an empty inbox until real notifications are
+    // wired to the server. `HomeNotification.samples` stays defined
+    // for SwiftUI previews only.
+    @State private var notifications: [HomeNotification] = []
 
     private var subjects: [String] {
         // Combine stored bubble names with any subjects that exist on notes

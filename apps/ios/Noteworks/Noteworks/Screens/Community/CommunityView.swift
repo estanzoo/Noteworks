@@ -19,7 +19,10 @@ struct CommunityView: View {
     @State private var showPostEditor = false
     @State private var showSearch = false
     @State private var showNotifications = false
-    @State private var notifications = HomeNotification.samples
+    // Brand-new users see an empty inbox until real notifications are
+    // wired to the server. `HomeNotification.samples` stays defined
+    // for SwiftUI previews only.
+    @State private var notifications: [HomeNotification] = []
     @State private var activePostId: String? = nil
 
     private var activePost: CommunityPost? {
