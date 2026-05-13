@@ -155,9 +155,19 @@ struct PenDropdownPanel: View {
     var body: some View {
         ChromeDropdownPanel(width: 240) {
             VStack(alignment: .leading, spacing: 10) {
+                DropdownSectionTitle(text: "Brush")
+                HStack(spacing: 6) {
+                    ForEach(NotePenBrush.allCases) { brush in
+                        brushTile(brush)
+                    }
+                }
+                .padding(.horizontal, 12)
+
+                Divider().padding(.horizontal, 12)
+
                 DropdownSectionTitle(text: "Color")
                 PaletteSwatchRow(
-                    swatches: NoteColorSwatch.palette,
+                    swatches: NoteColorSwatch.penPalette,
                     selectedId: viewModel.penSwatchId,
                     usingCustom: viewModel.penUsesCustomColor
                 ) { swatch in
@@ -201,6 +211,43 @@ struct PenDropdownPanel: View {
             }
         }
     }
+
+    /// Single brush tile: SF Symbol over a name label, with an
+    /// accent-tinted background when this is the active brush. Tapping
+    /// activates the brush and the underlying `selectPenBrush` call also
+    /// snaps the active tool to `.pen`, so the user can switch brush
+    /// from the highlighter/eraser without first re-arming the pen.
+    @ViewBuilder
+    private func brushTile(_ brush: NotePenBrush) -> some View {
+        let isActive = viewModel.penBrush == brush
+        Button {
+            viewModel.selectPenBrush(brush)
+        } label: {
+            VStack(spacing: 3) {
+                Image(systemName: brush.symbol)
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(isActive ? NoteEditorTheme.accent : NoteEditorTheme.textPrimary)
+                Text(brush.label)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(isActive ? NoteEditorTheme.accent : NoteEditorTheme.textSecondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 9)
+                    .fill(isActive ? NoteEditorTheme.accent.opacity(0.14) : Color.white.opacity(0.5))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 9)
+                    .strokeBorder(isActive ? NoteEditorTheme.accent.opacity(0.5)
+                                            : Color.black.opacity(0.06),
+                                  lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
 }
 
 // MARK: - Highlighter panel
@@ -213,7 +260,7 @@ struct HighlighterDropdownPanel: View {
             VStack(alignment: .leading, spacing: 10) {
                 DropdownSectionTitle(text: "Color")
                 PaletteSwatchRow(
-                    swatches: NoteColorSwatch.palette,
+                    swatches: NoteColorSwatch.highlighterPalette,
                     selectedId: viewModel.highlighterSwatchId,
                     usingCustom: viewModel.highlighterUsesCustomColor
                 ) { swatch in

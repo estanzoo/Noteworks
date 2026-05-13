@@ -57,6 +57,10 @@ struct HomeView: View {
                 // sign-in (notesStore.activate) on the same device.
                 if store.isReady {
                     bubbleField
+                        // Reserve room for the FloatingTabBar (62 bar + 20
+                        // gap + 34 safe-area estimate ≈ 116pt) so bubbles
+                        // never get placed under the nav pill.
+                        .padding(.bottom, 120)
                 } else {
                     homeNotReadyPlaceholder
                 }

@@ -158,11 +158,11 @@ enum HomeBubbleLayout {
             return preferred
         }
 
-        // Spiral search anchored at the container center. Step size is a
-        // little less than the smallest bubble diameter so we don't miss
-        // gaps; angle count keeps the spiral dense enough to find a slot
-        // even on a crowded canvas.
-        let center = CGPoint(x: container.width / 2, y: container.height / 2)
+        // Spiral search anchored at the bubble's own preferred spot — NOT
+        // the container center. Anchoring at center pulled every bumped
+        // bubble inward, producing the "all squeezed in the middle" look.
+        // Spiraling around the preferred spot keeps the constellation
+        // spread across the whole canvas.
         let maxReach = hypot(maxX - minX, maxY - minY)
         let radialStep: CGFloat = max(8, minBubbleSize * 0.35)
         let anglesPerRing = 18
@@ -176,8 +176,8 @@ enum HomeBubbleLayout {
             for i in 0..<anglesPerRing {
                 let theta = angleOffset + (Double(i) / Double(anglesPerRing)) * 2 * .pi
                 var candidate = CGPoint(
-                    x: center.x + cos(theta) * currentReach,
-                    y: center.y + sin(theta) * currentReach
+                    x: preferred.x + cos(theta) * currentReach,
+                    y: preferred.y + sin(theta) * currentReach
                 )
                 candidate.x = min(max(candidate.x, minX), maxX)
                 candidate.y = min(max(candidate.y, minY), maxY)
@@ -208,11 +208,14 @@ enum HomeBubbleLayout {
         let usableWidth = max(0, maxX - minX)
         let usableHeight = max(0, maxY - minY)
 
-        // Bias toward the middle 80% of the canvas — the biggest bubble
-        // (placed first) almost always grabs a near-center spot, smaller
-        // ones radiate outward via the spiral search.
-        let fx = (Double(seed % 800) / 1000.0) + 0.10   // 0.10 – 0.90
-        let fy = (Double((seed / 800) % 800) / 1000.0) + 0.10
+        // Use the full legal region (95% of the canvas, minus the bubble's
+        // own radius which is already baked into minX/maxX). A wider span
+        // here was the second half of the "everything squeezed in the
+        // middle" bug — combined with the seed hash's natural mid-bias,
+        // the old 0.10–0.90 window left bubbles hugging the centerline on
+        // a wide iPad canvas.
+        let fx = (Double(seed % 950) / 1000.0) + 0.025  // 0.025 – 0.975
+        let fy = (Double((seed / 950) % 950) / 1000.0) + 0.025
         return CGPoint(
             x: minX + CGFloat(fx) * usableWidth,
             y: minY + CGFloat(fy) * usableHeight

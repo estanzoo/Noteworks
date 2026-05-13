@@ -13,7 +13,7 @@ import SwiftUI
 
 struct ChromeIconButton: View {
     let symbol: String
-    var size: CGFloat = 17
+    var size: CGFloat = 15
     var isActive: Bool = false
     var tint: Color = NoteEditorTheme.textPrimary
     var action: () -> Void
@@ -23,13 +23,17 @@ struct ChromeIconButton: View {
             Image(systemName: symbol)
                 .font(.system(size: size, weight: .medium))
                 .foregroundStyle(isActive ? NoteEditorTheme.accent : tint)
-                .frame(width: 38, height: 34)
+                // 36×30 keeps a comfortable 44pt slop-radius once 4pt of
+                // row padding is included, while shaving 4pt off every
+                // chrome row vs the previous 38×34. Two rows × 4pt × the
+                // two buttons-tall chrome = noticeable canvas gain.
+                .frame(width: 36, height: 30)
                 .background(
-                    RoundedRectangle(cornerRadius: 10)
+                    RoundedRectangle(cornerRadius: 9)
                         .fill(isActive ? NoteEditorTheme.accent.opacity(0.16) : Color.white.opacity(0.001))
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 10)
+                    RoundedRectangle(cornerRadius: 9)
                         .strokeBorder(isActive ? NoteEditorTheme.accent.opacity(0.45) : Color.clear, lineWidth: 1)
                 )
         }

@@ -83,12 +83,12 @@ struct NoteEditorView: View {
             VStack(spacing: 0) {
                 chromeCard
                     .padding(.horizontal, 18)
-                    .padding(.top, 6)
-                    .padding(.bottom, 12)
+                    .padding(.top, 4)
+                    .padding(.bottom, 6)
 
                 canvasArea
                     .padding(.horizontal, 18)
-                    .padding(.bottom, 14)
+                    .padding(.bottom, 8)
             }
 
             VStack {
@@ -275,44 +275,44 @@ struct NoteEditorView: View {
                     onClose: handleCloseTab,
                     onCreateNew: handleNewTab
                 )
-                .padding(.horizontal, 12)
-                .padding(.top, 8)
-                .padding(.bottom, 6)
+                .padding(.horizontal, 10)
+                .padding(.top, 5)
+                .padding(.bottom, 4)
 
                 Rectangle()
                     .fill(NoteEditorTheme.chromeBorder.opacity(0.4))
                     .frame(height: 1)
-                    .padding(.horizontal, 12)
+                    .padding(.horizontal, 10)
             }
 
             headerRow
-                .padding(.horizontal, 12)
-                .padding(.top, 8)
-                .padding(.bottom, 8)
+                .padding(.horizontal, 10)
+                .padding(.top, 5)
+                .padding(.bottom, 5)
 
             Rectangle()
                 .fill(NoteEditorTheme.chromeBorder.opacity(0.6))
                 .frame(height: 1)
-                .padding(.horizontal, 12)
+                .padding(.horizontal, 10)
 
             toolStripRow
-                .padding(.horizontal, 12)
-                .padding(.top, 8)
-                .padding(.bottom, 8)
+                .padding(.horizontal, 10)
+                .padding(.top, 5)
+                .padding(.bottom, 5)
         }
         .background(
-            RoundedRectangle(cornerRadius: 22)
+            RoundedRectangle(cornerRadius: 18)
                 .fill(NoteEditorTheme.chromeFill)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22))
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 22)
+            RoundedRectangle(cornerRadius: 18)
                 .strokeBorder(NoteEditorTheme.chromeBorder, lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.05), radius: 10, y: 3)
         .overlay(alignment: .topTrailing) {
             moreDropdownOverlay
-                .offset(x: -12, y: 56)
+                .offset(x: -10, y: 44)
                 .allowsHitTesting(openPanel == .more || openPanel == .background || openPanel == .rotate)
         }
     }
@@ -412,41 +412,47 @@ struct NoteEditorView: View {
         }
     }
 
-    /// Vertical title block: editable title above a subject / tag pill.
-    /// Tapping the pill opens the bubble picker (mirrors JSX subject pill
-    /// behaviour). The pill always shows something so the chrome doesn't
-    /// look unbalanced — falls back to "Unnamed" when no subject and no
-    /// tag are set.
+    /// Horizontally-arranged title block: editable title next to a small
+    /// subject / tag pill. Inlining the pill (instead of stacking it
+    /// below the title) lets the header row collapse to a single
+    /// icon-button-tall band, which is the single biggest contributor to
+    /// chrome vertical space. The pill always shows something so the
+    /// chrome doesn't look unbalanced — falls back to "Unnamed" when no
+    /// subject and no tag are set.
     private var titleBlock: some View {
-        VStack(spacing: 2) {
+        HStack(spacing: 8) {
+            Spacer(minLength: 0)
             TextField("Untitled Note", text: $viewModel.noteTitle)
-                .font(.system(size: 15, weight: .semibold))
+                .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(NoteEditorTheme.textPrimary)
                 .multilineTextAlignment(.center)
                 .submitLabel(.done)
                 .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
 
             Button {
                 showSubjectPicker = true
                 openPanel = nil
             } label: {
                 let label = subjectPillLabel()
-                HStack(spacing: 4) {
+                HStack(spacing: 3) {
                     Image(systemName: "circle.dashed")
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(.system(size: 8, weight: .semibold))
                     Text(label.uppercased())
-                        .font(.system(size: 10, weight: .bold))
-                        .tracking(0.06 * 10)
+                        .font(.system(size: 9, weight: .bold))
+                        .tracking(0.06 * 9)
+                        .lineLimit(1)
                     Image(systemName: "chevron.down")
-                        .font(.system(size: 8, weight: .bold))
+                        .font(.system(size: 7, weight: .bold))
                 }
                 .foregroundStyle(NoteEditorTheme.textSecondary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 3)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 2)
                 .background(Capsule().fill(Color.white.opacity(0.55)))
                 .overlay(Capsule().strokeBorder(NoteEditorTheme.chromeBorder, lineWidth: 1))
             }
             .buttonStyle(.plain)
+            Spacer(minLength: 0)
         }
     }
 
@@ -508,58 +514,23 @@ struct NoteEditorView: View {
             let rotation = viewModel.currentPageRotation
             let portraitSize = pageSize(in: geometry.size, rotation: rotation)
             ZStack(alignment: .top) {
-                ZStack {
-                    Color.white
-                    NotePageBackgroundView(background: viewModel.currentPageBackground)
-                    PencilCanvasView(
-                        drawing: $viewModel.drawing,
-                        tool: viewModel.pkTool,
-                        isDrawingEnabled: viewModel.activeTool.canDraw,
-                        onCanvasReady: { canvas in self.liveCanvas = canvas }
-                    )
-                    // Text + image stickers — rendered above PencilKit
-                    // so they sit on top of ink. The layer only
-                    // intercepts touches when an overlay is currently
-                    // selected or the user is in text/image mode, so
-                    // drawing still goes through to PencilKit by default.
-                    if let noteId = viewModel.noteId {
-                        NoteOverlayLayer(
-                            overlays: viewModel.currentPageOverlays(store: store),
-                            pageSize: portraitSize,
-                            noteId: noteId,
-                            selectedId: $selectedOverlayId,
-                            onUpdate: { updated in
-                                store.updateOverlay(updated, in: noteId)
-                            },
-                            onDelete: { overlay in
-                                store.removeOverlay(id: overlay.id, from: noteId)
-                            },
-                            onEditText: { overlay in
-                                textEditorTarget = TextEditorTarget(id: overlay.id, overlay: overlay)
-                            },
-                            imageDataProvider: { filename in
-                                store.loadOverlayImageData(for: noteId, filename: filename)
-                            }
-                        )
-                        .allowsHitTesting(
-                            !viewModel.activeTool.canDraw || selectedOverlayId != nil
-                        )
-                    }
+                // The zoomable page lives inside its own UIScrollView so
+                // the background pattern, PencilKit ink, and overlay
+                // stickers all zoom + pan together. The scroll view
+                // routes two-finger gestures to itself and lets
+                // single-finger touches fall through to PencilKit, so
+                // drawing while at any zoom level just works.
+                ZoomablePageScrollView(contentSize: portraitSize) {
+                    pageCard(portraitSize: portraitSize, rotation: rotation)
                 }
-                .frame(width: portraitSize.width, height: portraitSize.height)
-                .clipShape(RoundedRectangle(cornerRadius: 16))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16)
-                        .strokeBorder(NoteEditorTheme.chromeBorder, lineWidth: 1)
-                )
-                .shadow(color: .black.opacity(0.06), radius: 14, y: 6)
-                .rotationEffect(.degrees(Double(rotation)))
+                .frame(width: geometry.size.width, height: geometry.size.height)
 
-                // Floating color / eraser dropdown — positioned in the
-                // canvas frame so it sits visually ABOVE the page. The
-                // panel's leading x is clamped to the canvas width minus
-                // a typical panel width so it doesn't get pushed off
-                // screen by a tool button near the right edge.
+                // Floating color / eraser / AI dropdowns — kept OUTSIDE
+                // the zoomable scroll view so they stay at native size
+                // (and stay anchored to their toolbar buttons) regardless
+                // of the page's current zoom level. The panel's leading
+                // x is clamped to the canvas width minus the panel width
+                // so it never gets pushed off screen.
                 toolPanelAnchoredOverlay(canvasWidth: geometry.size.width)
                     .allowsHitTesting(
                         openPanel == .pen || openPanel == .highlighter || openPanel == .eraser
@@ -574,6 +545,61 @@ struct NoteEditorView: View {
                 if openPanel != nil { openPanel = nil }
             }
         }
+    }
+
+    /// The page card content — background, PencilKit canvas, and overlay
+    /// stickers — extracted into its own builder so it can be hosted
+    /// inside `ZoomablePageScrollView`. The card itself stays at
+    /// `portraitSize`; the scroll view's `zoomScale` is what produces
+    /// visible scale changes.
+    @ViewBuilder
+    private func pageCard(portraitSize: CGSize, rotation: Int) -> some View {
+        ZStack {
+            Color.white
+            NotePageBackgroundView(background: viewModel.currentPageBackground)
+            PencilCanvasView(
+                drawing: $viewModel.drawing,
+                tool: viewModel.pkTool,
+                isDrawingEnabled: viewModel.activeTool.canDraw,
+                onCanvasReady: { canvas in self.liveCanvas = canvas }
+            )
+            // Text + image stickers — rendered above PencilKit so they
+            // sit on top of ink. The layer only intercepts touches when
+            // an overlay is currently selected or the user is in
+            // text/image mode, so drawing still goes through to
+            // PencilKit by default.
+            if let noteId = viewModel.noteId {
+                NoteOverlayLayer(
+                    overlays: viewModel.currentPageOverlays(store: store),
+                    pageSize: portraitSize,
+                    noteId: noteId,
+                    selectedId: $selectedOverlayId,
+                    onUpdate: { updated in
+                        store.updateOverlay(updated, in: noteId)
+                    },
+                    onDelete: { overlay in
+                        store.removeOverlay(id: overlay.id, from: noteId)
+                    },
+                    onEditText: { overlay in
+                        textEditorTarget = TextEditorTarget(id: overlay.id, overlay: overlay)
+                    },
+                    imageDataProvider: { filename in
+                        store.loadOverlayImageData(for: noteId, filename: filename)
+                    }
+                )
+                .allowsHitTesting(
+                    !viewModel.activeTool.canDraw || selectedOverlayId != nil
+                )
+            }
+        }
+        .frame(width: portraitSize.width, height: portraitSize.height)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .strokeBorder(NoteEditorTheme.chromeBorder, lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.06), radius: 14, y: 6)
+        .rotationEffect(.degrees(Double(rotation)))
     }
 
     /// Pen / highlighter / eraser dropdown rendered floating just below

@@ -62,6 +62,59 @@ enum NoteEraserMode: String, Equatable {
     case object
 }
 
+/// Brush "feel" exposed under the Pen tool. Maps to a PencilKit
+/// `PKInkingTool.InkType` plus a label for the dropdown. We deliberately
+/// expose four daily-writing brushes — Pen, Pencil, Fountain Pen,
+/// Monoline — and leave the artistic brushes (watercolor, crayon) out for
+/// now; those belong behind a separate Coloring tool when we add one.
+enum NotePenBrush: String, Equatable, CaseIterable, Identifiable {
+    case pen
+    case pencil
+    case fountainPen
+    case monoline
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .pen:         return "Pen"
+        case .pencil:      return "Pencil"
+        case .fountainPen: return "Fountain"
+        case .monoline:    return "Monoline"
+        }
+    }
+
+    /// SF Symbol that visually communicates the brush feel. All four are
+    /// available from iOS 16; we don't depend on iOS 17 here so the
+    /// monoline tile keeps rendering on older OSes (the underlying
+    /// PencilKit type falls back to `.pen` there).
+    var symbol: String {
+        switch self {
+        case .pen:         return "pencil.tip"
+        case .pencil:      return "pencil"
+        case .fountainPen: return "pencil.and.outline"
+        case .monoline:    return "line.diagonal"
+        }
+    }
+
+    /// PencilKit ink type. `.monoline` and `.fountainPen` only exist on
+    /// iOS 17+; we degrade gracefully to `.pen` on earlier OSes so the
+    /// brush selection survives but renders as a plain pen until the
+    /// device updates.
+    var pkInkType: PKInkingTool.InkType {
+        switch self {
+        case .pen:    return .pen
+        case .pencil: return .pencil
+        case .fountainPen:
+            if #available(iOS 17.0, *) { return .fountainPen }
+            return .pen
+        case .monoline:
+            if #available(iOS 17.0, *) { return .monoline }
+            return .pen
+        }
+    }
+}
+
 // MARK: - AI Enhancements
 
 /// State of a single AI enhancement job. Both Gap Detection and Smart
@@ -110,14 +163,35 @@ struct NoteColorSwatch: Identifiable, Equatable {
 }
 
 extension NoteColorSwatch {
-    /// JSX palette — kept name-for-name so the status strings line up.
+    /// Full palette — black/graphite/red/blue/green for the pen, plus the
+    /// bright pastel set the highlighter actually wants. The JSX names are
+    /// preserved where they existed so existing status strings still line
+    /// up; new entries fill the gaps you expect from a real notes app
+    /// (black/red/blue were noticeably missing).
     static let palette: [NoteColorSwatch] = [
+        NoteColorSwatch(id: "black",    label: "Black",    color: Color(red: 0x18/255, green: 0x18/255, blue: 0x1F/255)),
         NoteColorSwatch(id: "graphite", label: "Graphite", color: Color(red: 0x4D/255, green: 0x4D/255, blue: 0x52/255)),
-        NoteColorSwatch(id: "charcoal", label: "Charcoal", color: Color(red: 0x6B/255, green: 0x74/255, blue: 0x81/255)),
+        NoteColorSwatch(id: "red",      label: "Red",      color: Color(red: 0xE5/255, green: 0x3E/255, blue: 0x3E/255)),
+        NoteColorSwatch(id: "blue",     label: "Blue",     color: Color(red: 0x3E/255, green: 0x7A/255, blue: 0xE5/255)),
+        NoteColorSwatch(id: "green",    label: "Green",    color: Color(red: 0x2E/255, green: 0xA5/255, blue: 0x5B/255)),
         NoteColorSwatch(id: "yellow",   label: "Yellow",   color: Color(red: 0xFF/255, green: 0xF3/255, blue: 0x6D/255)),
         NoteColorSwatch(id: "lime",     label: "Lime",     color: Color(red: 0x6D/255, green: 0xEB/255, blue: 0x73/255)),
         NoteColorSwatch(id: "cyan",     label: "Cyan",     color: Color(red: 0x78/255, green: 0xE6/255, blue: 0xF1/255)),
         NoteColorSwatch(id: "pink",     label: "Pink",     color: Color(red: 0xF7/255, green: 0x95/255, blue: 0xC0/255)),
+    ]
+
+    /// Pen palette — full nine-swatch spectrum led by Black so a new note
+    /// opens in the most common writing color.
+    static let penPalette: [NoteColorSwatch] = palette
+
+    /// Highlighter palette — the four bright pastels from the original
+    /// JSX set. Black/red as a highlighter looks bad, so we narrow the
+    /// dropdown to colors that read well as a translucent marker.
+    static let highlighterPalette: [NoteColorSwatch] = [
+        palette.first { $0.id == "yellow" }!,
+        palette.first { $0.id == "lime"   }!,
+        palette.first { $0.id == "cyan"   }!,
+        palette.first { $0.id == "pink"   }!,
     ]
 
     static func swatch(named id: String) -> NoteColorSwatch? {
@@ -153,7 +227,8 @@ final class NoteEditorViewModel: ObservableObject {
     @Published var activeTool: NoteEditorTool = .pen
 
     // Pen
-    @Published var penSwatchId: String = "pink"
+    @Published var penBrush: NotePenBrush = .pen
+    @Published var penSwatchId: String = "black"
     @Published var penCustomColor: Color = Color(red: 0x6E/255, green: 0x8B/255, blue: 0xFF/255)
     @Published var penUsesCustomColor: Bool = false
     /// Pen thickness in roughly-mm-feeling units. Range 2…12 (JSX L2417).
@@ -242,18 +317,20 @@ final class NoteEditorViewModel: ObservableObject {
     var penColor: Color {
         if penUsesCustomColor { return penCustomColor }
         return NoteColorSwatch.swatch(named: penSwatchId)?.color
-            ?? NoteColorSwatch.palette[5].color
+            ?? NoteColorSwatch.swatch(named: "black")?.color
+            ?? .black
     }
 
     var penColorLabel: String {
         if penUsesCustomColor { return "Custom" }
-        return NoteColorSwatch.swatch(named: penSwatchId)?.label ?? "Pink"
+        return NoteColorSwatch.swatch(named: penSwatchId)?.label ?? "Black"
     }
 
     var highlighterColor: Color {
         if highlighterUsesCustomColor { return highlighterCustomColor }
         return NoteColorSwatch.swatch(named: highlighterSwatchId)?.color
-            ?? NoteColorSwatch.palette[2].color
+            ?? NoteColorSwatch.swatch(named: "yellow")?.color
+            ?? .yellow
     }
 
     var highlighterColorLabel: String {
@@ -267,7 +344,7 @@ final class NoteEditorViewModel: ObservableObject {
     var pkTool: PKTool {
         switch activeTool {
         case .pen:
-            return PKInkingTool(.pen, color: UIColor(penColor), width: penThickness)
+            return PKInkingTool(penBrush.pkInkType, color: UIColor(penColor), width: penThickness)
         case .highlighter:
             // Marker stroke widens as it's drawn — match the JSX feel by
             // doubling the pen thickness so it visibly highlights text.
@@ -283,7 +360,7 @@ final class NoteEditorViewModel: ObservableObject {
             // Decorative tool buttons — their UI is wired but they don't
             // bind to a PencilKit primitive. Falling back to the pen so
             // the canvas keeps drawing while the user explores them.
-            return PKInkingTool(.pen, color: UIColor(penColor), width: penThickness)
+            return PKInkingTool(penBrush.pkInkType, color: UIColor(penColor), width: penThickness)
         }
     }
 
@@ -570,6 +647,12 @@ final class NoteEditorViewModel: ObservableObject {
         flashStatus(penStatus())
     }
 
+    func selectPenBrush(_ brush: NotePenBrush) {
+        penBrush = brush
+        activeTool = .pen
+        flashStatus(penStatus())
+    }
+
     func setPenCustomColor(_ color: Color) {
         penCustomColor = color
         penUsesCustomColor = true
@@ -625,7 +708,7 @@ final class NoteEditorViewModel: ObservableObject {
 
     private func penStatus() -> String {
         let mm = String(format: "%.1f", Double(penThickness) / 10)
-        return "\(penColorLabel) pen · \(mm) mm ready"
+        return "\(penColorLabel) \(penBrush.label.lowercased()) · \(mm) mm ready"
     }
 
     private func highlighterStatus() -> String {

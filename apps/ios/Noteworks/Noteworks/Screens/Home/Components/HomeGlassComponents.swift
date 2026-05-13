@@ -133,6 +133,13 @@ struct BubbleView: View {
                     .font(.system(size: titleSize, weight: .semibold))
                     .foregroundStyle(HomeTheme.textPrimary)
                     .multilineTextAlignment(.center)
+                    // Long single-word titles like "Engineering" can't word-wrap,
+                    // and SwiftUI's default behavior breaks them mid-character
+                    // ("Engineerin g") on a small bubble. Pin to one line and
+                    // let `minimumScaleFactor` shrink the type until it fits.
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.55)
+                    .padding(.horizontal, 6)
 
                 HStack(spacing: 4) {
                     Image("Icons/fluent_notebook-24-regular")

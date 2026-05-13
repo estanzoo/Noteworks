@@ -48,6 +48,19 @@ struct PencilCanvasView: UIViewRepresentable {
         canvasView.tool = tool
         canvasView.delegate = context.coordinator
         canvasView.isUserInteractionEnabled = isDrawingEnabled
+
+        // PKCanvasView IS-A UIScrollView, so it has its own pinch gesture
+        // recognizer. When this canvas is hosted inside `ZoomablePageScrollView`
+        // we want the OUTER scroll view to own the pinch — otherwise both
+        // recognizers fight over the same touches and zoom feels jittery.
+        // Disabling pinch here leaves drawing untouched (PencilKit uses its
+        // own internal recognizers) while letting the outer scroll handle
+        // the two-finger zoom + pan gestures cleanly.
+        canvasView.pinchGestureRecognizer?.isEnabled = false
+        canvasView.minimumZoomScale = 1
+        canvasView.maximumZoomScale = 1
+        canvasView.bouncesZoom = false
+
         // We're not showing PKToolPicker; nothing else to set up here.
         DispatchQueue.main.async {
             onCanvasReady?(canvasView)
