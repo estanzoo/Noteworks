@@ -35,12 +35,14 @@ enum NoteEditorPanel: Equatable, Hashable {
 
 // MARK: - Tool button anchor key
 
-/// Reports the global midX (in a shared coordinate space named
-/// `NoteEditorCoord`) of each panel-bearing tool button so the editor view
-/// can pop the matching dropdown directly underneath it.
+/// Reports the full frame (in a shared coordinate space named
+/// `NoteEditorCoord`) of each panel-bearing trigger so the editor view
+/// can pop the matching dropdown directly underneath it — using
+/// `frame.midX` to center horizontally and `frame.maxY` to position it
+/// right below the button rather than below the entire chrome.
 struct ToolButtonAnchorKey: PreferenceKey {
-    static var defaultValue: [NoteEditorPanel: CGFloat] = [:]
-    static func reduce(value: inout [NoteEditorPanel: CGFloat], nextValue: () -> [NoteEditorPanel: CGFloat]) {
+    static var defaultValue: [NoteEditorPanel: CGRect] = [:]
+    static func reduce(value: inout [NoteEditorPanel: CGRect], nextValue: () -> [NoteEditorPanel: CGRect]) {
         value.merge(nextValue()) { _, new in new }
     }
 }
@@ -127,7 +129,7 @@ struct NoteEditorToolStrip: View {
         .background(anchorReporter(for: panel))
     }
 
-    /// Publishes this button's midX to `ToolButtonAnchorKey` so the editor
+    /// Publishes this button's frame to `ToolButtonAnchorKey` so the editor
     /// view can pop the matching dropdown directly underneath. Only buttons
     /// that own a panel report (pen / eraser / highlighter); others return
     /// `EmptyView` so they cost nothing.
@@ -138,7 +140,7 @@ struct NoteEditorToolStrip: View {
                 let frame = proxy.frame(in: .named("NoteEditorCoord"))
                 Color.clear.preference(
                     key: ToolButtonAnchorKey.self,
-                    value: [panel: frame.midX]
+                    value: [panel: frame]
                 )
             }
         } else {
@@ -169,7 +171,13 @@ struct PenDropdownPanel: View {
                 PaletteSwatchRow(
                     swatches: NoteColorSwatch.penPalette,
                     selectedId: viewModel.penSwatchId,
-                    usingCustom: viewModel.penUsesCustomColor
+                    usingCustom: viewModel.penUsesCustomColor,
+                    // 9 swatches at 24pt + 8pt spacing don't fit on one
+                    // row inside the 240pt dropdown — wrap to 5 + 4
+                    // instead. This is what fixes the "color is out of
+                    // bounds" overflow you saw after we widened the
+                    // pen palette.
+                    maxPerRow: 5
                 ) { swatch in
                     viewModel.selectPenSwatch(swatch.id)
                 }

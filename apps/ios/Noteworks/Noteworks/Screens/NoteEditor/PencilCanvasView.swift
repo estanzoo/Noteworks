@@ -2,13 +2,18 @@
 //  PencilCanvasView.swift
 //  Noteworks
 //
-//  Created by 王颢泰 on 2026-02-01.
-//
 //  SwiftUI wrapper around `PKCanvasView`. We deliberately do NOT use the
 //  system `PKToolPicker` — the editor builds its own glass toolbar chrome
 //  (mirroring the JSX `NotetakingPage`) and pushes the active tool down
 //  through `tool: PKTool`. The canvas is rendered transparent so the
 //  background pattern view behind it shows through.
+//
+//  Zoom is handled by an OUTER `ZoomablePageScrollView` that wraps this
+//  canvas + the background pattern + overlay layer. PKCanvasView itself
+//  has its inherited UIScrollView zoom disabled (`minimumZoomScale` and
+//  `maximumZoomScale` both pinned to 1, pinch gesture turned off) so
+//  the outer scroll view owns the pinch — otherwise both recognizers
+//  would fight over the same touches.
 //
 
 import SwiftUI
@@ -49,13 +54,12 @@ struct PencilCanvasView: UIViewRepresentable {
         canvasView.delegate = context.coordinator
         canvasView.isUserInteractionEnabled = isDrawingEnabled
 
-        // PKCanvasView IS-A UIScrollView, so it has its own pinch gesture
-        // recognizer. When this canvas is hosted inside `ZoomablePageScrollView`
-        // we want the OUTER scroll view to own the pinch — otherwise both
-        // recognizers fight over the same touches and zoom feels jittery.
-        // Disabling pinch here leaves drawing untouched (PencilKit uses its
-        // own internal recognizers) while letting the outer scroll handle
-        // the two-finger zoom + pan gestures cleanly.
+        // Disable PKCanvasView's inherited UIScrollView zoom so the
+        // outer `ZoomablePageScrollView` cleanly owns pinch + pan.
+        // Trying to give PKCanvasView its OWN zoom requires returning a
+        // non-nil view from `viewForZooming(in:)`, but PencilKit doesn't
+        // expose a drawing-content view we can pick — so we let the
+        // outer scroll view handle it.
         canvasView.pinchGestureRecognizer?.isEnabled = false
         canvasView.minimumZoomScale = 1
         canvasView.maximumZoomScale = 1

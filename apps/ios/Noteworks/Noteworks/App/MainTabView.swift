@@ -22,6 +22,7 @@ enum AppTab: String, CaseIterable {
 }
 
 struct MainTabView: View {
+    @EnvironmentObject private var appState: AppState
     @State private var selectedTab: AppTab? = .home
 
     var body: some View {
@@ -57,7 +58,15 @@ struct MainTabView: View {
             // `transition: opacity 0.24s cubic-bezier(0.22,0.61,0.36,1)`.
             .animation(.easeInOut(duration: 0.22), value: selectedTab)
 
-            FloatingTabBar(selectedTab: $selectedTab)
+            // Floating Home/Library/Community pill — hidden while the
+            // user is inside the note editor so the writing surface gets
+            // the entire bottom of the screen back. The slide-down +
+            // fade transition matches the cross-fade used for tab
+            // switches above.
+            if !appState.isImmersiveEditing {
+                FloatingTabBar(selectedTab: $selectedTab)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
     }

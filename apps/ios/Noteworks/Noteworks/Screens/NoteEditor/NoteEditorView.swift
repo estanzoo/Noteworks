@@ -43,11 +43,14 @@ struct NoteEditorView: View {
     /// Counter that ticks every time the canvas reports a change so undo /
     /// redo enabled-state in the chrome stays in sync.
     @State private var canvasRevision: Int = 0
-    /// midX of each panel-bearing tool button in the shared
-    /// "NoteEditorCoord" space. The tool-panel overlay reads this so the
-    /// pen / eraser / highlighter dropdowns pop up directly under the
-    /// icon that opened them, sitting above the page card.
-    @State private var toolAnchors: [NoteEditorPanel: CGFloat] = [:]
+    /// Full frame of each panel-bearing trigger in the shared
+    /// "NoteEditorCoord" space (pen / eraser / highlighter buttons in
+    /// the tool strip, AI pill in the header row, ellipsis button in
+    /// the header row). The dropdown layer reads `midX` for horizontal
+    /// centering and `maxY` to anchor the panel directly under whichever
+    /// button opened it — so the AI dropdown is just under the AI pill
+    /// instead of below the entire chrome.
+    @State private var toolAnchors: [NoteEditorPanel: CGRect] = [:]
 
     // MARK: - Overlay editor state
 
@@ -82,14 +85,34 @@ struct NoteEditorView: View {
 
             VStack(spacing: 0) {
                 chromeCard
-                    .padding(.horizontal, 18)
+                    // Chrome hugs the screen edges (just a couple of pts
+                    // so the rounded corners don't kiss the bezel) to
+                    // match the GoodNotes-style "full-bleed" feel the
+                    // user is asking for.
+                    .padding(.horizontal, 6)
                     .padding(.top, 4)
-                    .padding(.bottom, 6)
+                    .padding(.bottom, 4)
 
                 canvasArea
-                    .padding(.horizontal, 18)
-                    .padding(.bottom, 8)
+                    .padding(.horizontal, 0)
+                    .padding(.bottom, 0)
             }
+            // Push the bottom of the editor past the home-indicator /
+            // bottom safe area so the page card actually reaches the
+            // edge of the screen — without this, a thin gradient strip
+            // peeks through under the page (the "downside is still not
+            // full screen" the user is reporting). The chrome stays in
+            // its safe spot at the top because we don't ignore safe
+            // areas there.
+            .ignoresSafeArea(.container, edges: .bottom)
+            // Critical: pin the editor layout regardless of keyboard.
+            // Without this, focusing the title field shrinks the canvas
+            // to make room for the keyboard, the page rescales mid-edit,
+            // and the user sees the whole UI jump. The title field
+            // lives at the very top of the chrome so the keyboard never
+            // actually obscures it — we just want the layout to stay
+            // put while the keyboard overlays.
+            .ignoresSafeArea(.keyboard, edges: .bottom)
 
             VStack {
                 Spacer()
@@ -101,6 +124,18 @@ struct NoteEditorView: View {
                 .padding(.horizontal, 18)
                 .padding(.bottom, 12)
             }
+            .ignoresSafeArea(.keyboard, edges: .bottom)
+
+            // Floating dropdowns layer — drawn ABOVE the chrome and
+            // canvas so they're never clipped behind the page card.
+            // Each panel positions itself directly under whichever
+            // button opened it (the three-dots menu under the
+            // ellipsis, the AI panel under the AI pill, the pen /
+            // highlighter / eraser panels under their respective tool
+            // icons), using the frames published via
+            // `ToolButtonAnchorKey`.
+            dropdownsLayer
+                .ignoresSafeArea(.keyboard, edges: .bottom)
         }
         .coordinateSpace(name: "NoteEditorCoord")
         .onPreferenceChange(ToolButtonAnchorKey.self) { anchors in
@@ -118,6 +153,17 @@ struct NoteEditorView: View {
                 store.openNoteInEditor(initialId)
             }
             viewModel.attach(store: store, noteId: store.activeOpenNoteId ?? noteId)
+            // Tell MainTabView to retract its floating Home/Library/
+            // Community pill so it doesn't squat over the bottom of the
+            // page card while the user is writing.
+            withAnimation(.easeInOut(duration: 0.22)) {
+                appState.isImmersiveEditing = true
+            }
+        }
+        .onDisappear {
+            withAnimation(.easeInOut(duration: 0.22)) {
+                appState.isImmersiveEditing = false
+            }
         }
         .onChange(of: store.activeOpenNoteId) { _, newId in
             // Tab switch — flush the previous note's pending save first,
@@ -310,37 +356,89 @@ struct NoteEditorView: View {
                 .strokeBorder(NoteEditorTheme.chromeBorder, lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.05), radius: 10, y: 3)
-        .overlay(alignment: .topTrailing) {
-            moreDropdownOverlay
-                .offset(x: -10, y: 44)
-                .allowsHitTesting(openPanel == .more || openPanel == .background || openPanel == .rotate)
+    }
+
+    // MARK: - Floating dropdowns
+
+    /// Single layer that hosts every chrome dropdown — the AI pill panel,
+    /// the more-options menu (and its background / rotate sub-panels),
+    /// and the pen / highlighter / eraser color panels. Stacking them
+    /// here (above both the chrome card AND the canvas) is what fixes
+    /// the "dropdown disappears behind the note" bug: previously the
+    /// three-dots menu was an overlay on the chrome card, but its
+    /// vertical extent spilled into the canvas area below, and the
+    /// canvas (a later sibling in the VStack) drew on top of it.
+    @ViewBuilder
+    private var dropdownsLayer: some View {
+        GeometryReader { rootProxy in
+            let rootFrame = rootProxy.frame(in: .named("NoteEditorCoord"))
+            ZStack(alignment: .topLeading) {
+                if openPanel != nil {
+                    // Invisible scrim — catches taps outside the
+                    // dropdown so the user can dismiss the panel by
+                    // tapping the page. The canvas's own
+                    // `onTapGesture` sits underneath this layer and
+                    // can't receive taps while the layer is shown,
+                    // so the scrim is what wires up "tap outside to
+                    // close".
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture { openPanel = nil }
+                }
+                if let panel = openPanel {
+                    dropdownView(for: panel)
+                        .modifier(DropdownAnchorModifier(
+                            anchor: toolAnchors[panel],
+                            rootFrame: rootFrame,
+                            panelWidth: dropdownWidth(for: panel)
+                        ))
+                        .transition(.scale(scale: 0.96, anchor: .top).combined(with: .opacity))
+                }
+            }
+            .frame(width: rootFrame.width, height: rootFrame.height, alignment: .topLeading)
+        }
+        .allowsHitTesting(openPanel != nil)
+    }
+
+    @ViewBuilder
+    private func dropdownView(for panel: NoteEditorPanel) -> some View {
+        switch panel {
+        case .ai:
+            AIEnhancementsDropdown(viewModel: viewModel) {
+                openPanel = nil
+                viewModel.closeAIEnhancements()
+            }
+        case .more:
+            MoreOptionsDropdown(
+                viewModel: viewModel,
+                openBackgroundPanel: { openPanel = .background },
+                openRotatePanel: { openPanel = .rotate },
+                dismiss: { openPanel = nil }
+            )
+        case .background:
+            BackgroundDropdown(viewModel: viewModel) { openPanel = nil }
+        case .rotate:
+            RotateDropdown(viewModel: viewModel) { openPanel = nil }
+        case .pen:
+            PenDropdownPanel(viewModel: viewModel)
+        case .highlighter:
+            HighlighterDropdownPanel(viewModel: viewModel)
+        case .eraser:
+            EraserDropdownPanel(viewModel: viewModel)
+        case .bookmark, .share:
+            EmptyView()
         }
     }
 
-    /// AI Enhancements dropdown — anchored under the pill via the shared
-    /// `NoteEditorCoord` space. Lives in the canvas area so it sits
-    /// floating above the page card, just like the tool color panels.
-    @ViewBuilder
-    private func aiDropdownAnchoredOverlay(canvasWidth: CGFloat) -> some View {
-        if openPanel == .ai {
-            GeometryReader { canvasProxy in
-                let canvasFrame = canvasProxy.frame(in: .named("NoteEditorCoord"))
-                let panelWidth: CGFloat = 308
-                let anchorX = toolAnchors[.ai] ?? canvasFrame.maxX
-                let localCenter = anchorX - canvasFrame.minX
-                let minLeading: CGFloat = 8
-                let maxLeading = max(minLeading, canvasWidth - panelWidth - 8)
-                let leading = min(max(localCenter - panelWidth / 2, minLeading), maxLeading)
-                AIEnhancementsDropdown(viewModel: viewModel) {
-                    openPanel = nil
-                    viewModel.closeAIEnhancements()
-                }
-                .frame(width: panelWidth, alignment: .leading)
-                .offset(x: leading, y: 8)
-                .transition(.scale(scale: 0.96).combined(with: .opacity))
-            }
-        } else {
-            EmptyView()
+    /// Width hint per dropdown so the clamping logic in
+    /// `DropdownAnchorModifier` knows when a panel would spill off the
+    /// trailing edge of the screen and needs to be nudged inward.
+    private func dropdownWidth(for panel: NoteEditorPanel) -> CGFloat {
+        switch panel {
+        case .ai:                        return 308
+        case .more, .background, .rotate: return 220
+        case .pen, .highlighter, .eraser: return 248
+        case .bookmark, .share:           return 0
         }
     }
 
@@ -389,15 +487,7 @@ struct NoteEditorView: View {
                     openPanel = .ai
                 }
             }
-            .background(
-                GeometryReader { proxy in
-                    let frame = proxy.frame(in: .named("NoteEditorCoord"))
-                    Color.clear.preference(
-                        key: ToolButtonAnchorKey.self,
-                        value: [.ai: frame.midX]
-                    )
-                }
-            )
+            .background(anchorReporter(for: .ai))
 
             ChromeIconButton(
                 symbol: "ellipsis",
@@ -409,6 +499,27 @@ struct NoteEditorView: View {
                     openPanel = .more
                 }
             }
+            // Anchor the ellipsis button so the three-dots dropdown drops
+            // straight down from it (instead of from the corner of the
+            // entire chrome card). We forward the same frame to .more,
+            // .background, and .rotate so each sub-panel stays glued to
+            // the same trigger as the user navigates between them.
+            .background(anchorReporter(for: .more))
+            .background(anchorReporter(for: .background))
+            .background(anchorReporter(for: .rotate))
+        }
+    }
+
+    /// Background helper that publishes a button's frame (in the shared
+    /// "NoteEditorCoord" space) under the given panel key, so the
+    /// `dropdownsLayer` knows where to anchor that panel's dropdown.
+    private func anchorReporter(for panel: NoteEditorPanel) -> some View {
+        GeometryReader { proxy in
+            let frame = proxy.frame(in: .named("NoteEditorCoord"))
+            Color.clear.preference(
+                key: ToolButtonAnchorKey.self,
+                value: [panel: frame]
+            )
         }
     }
 
@@ -472,72 +583,20 @@ struct NoteEditorView: View {
         .id(canvasRevision)
     }
 
-    // MARK: - Dropdown overlays
-
-    @ViewBuilder
-    private var moreDropdownOverlay: some View {
-        switch openPanel {
-        case .more:
-            MoreOptionsDropdown(
-                viewModel: viewModel,
-                openBackgroundPanel: { openPanel = .background },
-                openRotatePanel: { openPanel = .rotate },
-                dismiss: { openPanel = nil }
-            )
-        case .background:
-            BackgroundDropdown(viewModel: viewModel) { openPanel = nil }
-        case .rotate:
-            RotateDropdown(viewModel: viewModel) { openPanel = nil }
-        default:
-            EmptyView()
-        }
-    }
-
-    @ViewBuilder
-    private var toolPanelOverlay: some View {
-        switch openPanel {
-        case .pen:
-            PenDropdownPanel(viewModel: viewModel)
-        case .highlighter:
-            HighlighterDropdownPanel(viewModel: viewModel)
-        case .eraser:
-            EraserDropdownPanel(viewModel: viewModel)
-        default:
-            EmptyView()
-        }
-    }
-
     // MARK: - Canvas area
 
     private var canvasArea: some View {
         GeometryReader { geometry in
             let rotation = viewModel.currentPageRotation
-            let portraitSize = pageSize(in: geometry.size, rotation: rotation)
-            ZStack(alignment: .top) {
-                // The zoomable page lives inside its own UIScrollView so
-                // the background pattern, PencilKit ink, and overlay
-                // stickers all zoom + pan together. The scroll view
-                // routes two-finger gestures to itself and lets
-                // single-finger touches fall through to PencilKit, so
-                // drawing while at any zoom level just works.
-                ZoomablePageScrollView(contentSize: portraitSize) {
-                    pageCard(portraitSize: portraitSize, rotation: rotation)
-                }
-                .frame(width: geometry.size.width, height: geometry.size.height)
-
-                // Floating color / eraser / AI dropdowns — kept OUTSIDE
-                // the zoomable scroll view so they stay at native size
-                // (and stay anchored to their toolbar buttons) regardless
-                // of the page's current zoom level. The panel's leading
-                // x is clamped to the canvas width minus the panel width
-                // so it never gets pushed off screen.
-                toolPanelAnchoredOverlay(canvasWidth: geometry.size.width)
-                    .allowsHitTesting(
-                        openPanel == .pen || openPanel == .highlighter || openPanel == .eraser
-                    )
-
-                aiDropdownAnchoredOverlay(canvasWidth: geometry.size.width)
-                    .allowsHitTesting(openPanel == .ai)
+            // Logical page size — what the page "is". At zoom 1 the
+            // whole page fits inside `geometry.size` so the user sees
+            // the entire page on first render. Pinching in via the
+            // outer `ZoomablePageScrollView` scales the page beyond
+            // the viewport and two-finger pan navigates the detail —
+            // exactly the GoodNotes flow.
+            let logicalPageSize = pageSize(in: geometry.size, rotation: rotation)
+            ZoomablePageScrollView(contentSize: logicalPageSize, maxScale: 3.0) {
+                pageCard(logicalPageSize: logicalPageSize, rotation: rotation)
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
             .contentShape(Rectangle())
@@ -547,13 +606,13 @@ struct NoteEditorView: View {
         }
     }
 
-    /// The page card content — background, PencilKit canvas, and overlay
-    /// stickers — extracted into its own builder so it can be hosted
-    /// inside `ZoomablePageScrollView`. The card itself stays at
-    /// `portraitSize`; the scroll view's `zoomScale` is what produces
-    /// visible scale changes.
+    /// The page card — background pattern + PencilKit canvas + overlay
+    /// stickers, all sized to `logicalPageSize`. The outer
+    /// `ZoomablePageScrollView` handles pinch + pan over the whole
+    /// card, so background/canvas/overlays scale together in lockstep
+    /// (no need for per-layer `scaleEffect` math).
     @ViewBuilder
-    private func pageCard(portraitSize: CGSize, rotation: Int) -> some View {
+    private func pageCard(logicalPageSize: CGSize, rotation: Int) -> some View {
         ZStack {
             Color.white
             NotePageBackgroundView(background: viewModel.currentPageBackground)
@@ -563,15 +622,10 @@ struct NoteEditorView: View {
                 isDrawingEnabled: viewModel.activeTool.canDraw,
                 onCanvasReady: { canvas in self.liveCanvas = canvas }
             )
-            // Text + image stickers — rendered above PencilKit so they
-            // sit on top of ink. The layer only intercepts touches when
-            // an overlay is currently selected or the user is in
-            // text/image mode, so drawing still goes through to
-            // PencilKit by default.
             if let noteId = viewModel.noteId {
                 NoteOverlayLayer(
                     overlays: viewModel.currentPageOverlays(store: store),
-                    pageSize: portraitSize,
+                    pageSize: logicalPageSize,
                     noteId: noteId,
                     selectedId: $selectedOverlayId,
                     onUpdate: { updated in
@@ -592,7 +646,7 @@ struct NoteEditorView: View {
                 )
             }
         }
-        .frame(width: portraitSize.width, height: portraitSize.height)
+        .frame(width: logicalPageSize.width, height: logicalPageSize.height)
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .overlay(
             RoundedRectangle(cornerRadius: 16)
@@ -602,51 +656,38 @@ struct NoteEditorView: View {
         .rotationEffect(.degrees(Double(rotation)))
     }
 
-    /// Pen / highlighter / eraser dropdown rendered floating just below
-    /// the chrome, centered on the trigger button's reported midX in the
-    /// shared "NoteEditorCoord" space. We translate that global x into a
-    /// leading offset inside the canvas frame and clamp so the 240-pt
-    /// panel always stays fully visible.
-    @ViewBuilder
-    private func toolPanelAnchoredOverlay(canvasWidth: CGFloat) -> some View {
-        if let panel = openPanel,
-           panel == .pen || panel == .highlighter || panel == .eraser {
-            GeometryReader { canvasProxy in
-                let canvasFrame = canvasProxy.frame(in: .named("NoteEditorCoord"))
-                let panelWidth: CGFloat = 248      // matches ChromeDropdownPanel width(240) + a little fudge
-                let anchorX = toolAnchors[panel] ?? canvasFrame.midX
-                let localCenter = anchorX - canvasFrame.minX
-                let minLeading: CGFloat = 8
-                let maxLeading = max(minLeading, canvasWidth - panelWidth - 8)
-                let leading = min(max(localCenter - panelWidth / 2, minLeading), maxLeading)
-                toolPanelOverlay
-                    .frame(width: panelWidth, alignment: .leading)
-                    .offset(x: leading, y: 8)
-                    .transition(.scale(scale: 0.96).combined(with: .opacity))
-            }
-        } else {
-            EmptyView()
-        }
-    }
-
-    /// Sizes the page card to fill almost all of the available editor
-    /// space, keeping a soft margin so the rounded corners and shadow
-    /// breathe. The page is portrait (1:1.4 aspect); rotation only
-    /// affects how it presents — the underlying canvas stays portrait.
+    /// Logical page size — the page is portrait (1 : 1.4) and fits
+    /// ENTIRELY inside the visible viewport at zoom 1. Zooming in via
+    /// `PKCanvasView`'s native pinch scales the content beyond the
+    /// viewport, and two-finger pan moves around the zoomed detail —
+    /// same flow as GoodNotes. The starting view at zoom 1 always
+    /// shows the whole page, which is what the user explicitly asked
+    /// for ("when it zoom in, it should still start like what it is
+    /// before").
+    ///
+    /// We fit by height so the page fills the entire vertical canvas
+    /// area; the resulting width is then derived from the aspect
+    /// ratio and may leave horizontal margin on landscape iPad
+    /// (unavoidable: a portrait page can't fill a landscape screen
+    /// without stretching or scrolling, and stretching changes the
+    /// aspect).
     private func pageSize(in available: CGSize, rotation: Int) -> CGSize {
         let isSideways = rotation == 90 || rotation == 270
-        // Reserve room for the bottom status / page-footer strip.
-        let bottomReserve: CGFloat = 44
-        let usableH = max(0, available.height - bottomReserve)
-        let usableW = available.width
         let pageAspect: CGFloat = 1.4
+        let usableW = max(1, available.width)
+        let usableH = max(1, available.height)
         if isSideways {
-            // Visible orientation is landscape-on-screen → fit longer
-            // edge horizontally.
+            // Rotated → after the parent's rotationEffect the page
+            // presents landscape on screen. Fit by visible height
+            // so the rotated bounding box doesn't spill horizontally.
             let maxW = min(usableW, usableH * pageAspect)
             let height = maxW / pageAspect
             return CGSize(width: height * pageAspect, height: height)
         } else {
+            // Portrait. Fit-to-height so the whole page is visible at
+            // zoom 1, then clamp by width in case the canvas is very
+            // tall and narrow (e.g. iPhone portrait) — that case
+            // shrinks the page so its width still fits the screen.
             let maxH = min(usableH, usableW * pageAspect)
             return CGSize(width: maxH / pageAspect, height: maxH)
         }
@@ -673,6 +714,39 @@ struct NoteEditorView: View {
         )
         .overlay(Capsule().strokeBorder(NoteEditorTheme.chromeBorder, lineWidth: 1))
         .animation(.easeInOut(duration: 0.18), value: viewModel.statusText)
+    }
+}
+
+// MARK: - Dropdown anchor positioning
+
+/// Positions a dropdown directly underneath its trigger button, using
+/// the button frame published via `ToolButtonAnchorKey`.
+///
+/// Horizontal: centered on the button's midX, then clamped 8 pts in
+/// from either side of the root frame so a panel anchored to a button
+/// near the trailing edge (e.g. the ellipsis or AI pill) doesn't spill
+/// off screen.
+///
+/// Vertical: anchored to the button's `maxY` plus a small 6-pt gap so
+/// the panel reads as "dropped down from" the button rather than
+/// "below the chrome". When no anchor is known yet (first render
+/// before preferences flow up), we fall back to the top of the root
+/// frame so the panel still has somewhere to land.
+private struct DropdownAnchorModifier: ViewModifier {
+    let anchor: CGRect?
+    let rootFrame: CGRect
+    let panelWidth: CGFloat
+
+    func body(content: Content) -> some View {
+        let anchorFrame = anchor ?? CGRect(x: rootFrame.midX, y: rootFrame.minY + 60, width: 0, height: 0)
+        let minLeading: CGFloat = 8
+        let maxLeading = max(minLeading, rootFrame.width - panelWidth - 8)
+        let preferredLeading = anchorFrame.midX - rootFrame.minX - panelWidth / 2
+        let leading = min(max(preferredLeading, minLeading), maxLeading)
+        let top = anchorFrame.maxY - rootFrame.minY + 6
+        return content
+            .frame(width: panelWidth, alignment: .leading)
+            .offset(x: leading, y: top)
     }
 }
 
