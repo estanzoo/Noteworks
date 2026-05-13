@@ -23,6 +23,12 @@ class OnboardingData: ObservableObject {
 
     // Step 3: College
     @Published var college = ""
+    /// `schools.id` of the row the user picked from the autocomplete. We
+    /// require this to be set before letting the user advance: the
+    /// onboarding flow no longer accepts free-form college names, so a
+    /// non-empty `college` string with `selectedSchoolId == nil` means
+    /// the user typed something we don't recognise.
+    @Published var selectedSchoolId: String?
     /// Selected label from `yearOfStudyOptions`, or `nil` until the user picks.
     @Published var yearOfStudySelection: String?
     /// When selection is "Other", optional detail (empty → stored as "Other").
@@ -54,18 +60,110 @@ class OnboardingData: ObservableObject {
         "Crypto", "Vlogging"
     ]
 
-    // Validation
+    // MARK: - Validation
+    //
+    // Each step view drives its own "did the user try Next yet?" state and
+    // surfaces the messages below as inline errors. The `is*Valid` flags
+    // are kept around for any caller that just needs a yes/no answer (the
+    // step views themselves now rely on the granular helpers).
 
-    var isSignUpValid: Bool {
-        !name.isEmpty && !email.isEmpty && password.count >= 8 && password == verifyPassword
+    /// Loose email-shape regex — matches what `submit-onboarding` accepts
+    /// (`^[^\s@]+@[^\s@]+\.[^\s@]+$`). Catches the obvious "no @", "no
+    /// dot", "trailing space" mistakes without trying to be RFC-correct.
+    private static let emailRegex = #"^[^\s@]+@[^\s@]+\.[^\s@]+$"#
+
+    private static func looksLikeEmail(_ raw: String) -> Bool {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        return trimmed.range(of: emailRegex, options: .regularExpression) != nil
     }
 
-    var isVerifyValid: Bool {
-        verificationCode.allSatisfy { !$0.isEmpty }
+    // Step 1 — Sign Up
+
+    var signUpNameError: String? {
+        name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "Please enter your name."
+            : nil
+    }
+
+    var signUpEmailError: String? {
+        let trimmed = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return "Please enter your email." }
+        if !Self.looksLikeEmail(trimmed) { return "Enter a valid email address." }
+        return nil
+    }
+
+    var signUpPasswordError: String? {
+        if password.isEmpty { return "Please choose a password." }
+        if password.count < 8 { return "Password must be at least 8 characters." }
+        return nil
+    }
+
+    var signUpVerifyPasswordError: String? {
+        if verifyPassword.isEmpty { return "Re-enter your password." }
+        if password != verifyPassword { return "Passwords don't match." }
+        return nil
+    }
+
+    var isSignUpValid: Bool {
+        signUpNameError == nil
+            && signUpEmailError == nil
+            && signUpPasswordError == nil
+            && signUpVerifyPasswordError == nil
+    }
+
+    // Step 2 — Verify Email
+
+    var verifyCodeError: String? {
+        let digits = verificationCode.joined()
+        if digits.isEmpty { return "Enter the 6-digit code we sent to your email." }
+        if digits.count < 6 || !digits.allSatisfy({ $0.isNumber }) {
+            return "Enter all 6 digits of the verification code."
+        }
+        return nil
+    }
+
+    var isVerifyValid: Bool { verifyCodeError == nil }
+
+    // Step 3 — College
+
+    /// Optional school-email error. Only enforced when the field is
+    /// visible (OAuth users), since email-password sign-ups already
+    /// captured the email up-front.
+    var collegeSchoolEmailError: String? {
+        guard isOAuthUser else { return nil }
+        let trimmed = schoolEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return "Please enter your school email." }
+        if !Self.looksLikeEmail(trimmed) { return "Enter a valid school email." }
+        return nil
+    }
+
+    var collegeNameError: String? {
+        guard !notAStudent else { return nil }
+        let trimmed = college.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return "Please choose your college." }
+        if selectedSchoolId == nil { return "Please pick a school from the list." }
+        return nil
+    }
+
+    var yearOfStudyError: String? {
+        guard !notAStudent else { return nil }
+        return yearOfStudySelection == nil ? "Please pick your year of study." : nil
     }
 
     var isCollegeValid: Bool {
-        notAStudent || (!college.isEmpty && yearOfStudySelection != nil)
+        collegeSchoolEmailError == nil
+            && collegeNameError == nil
+            && yearOfStudyError == nil
+    }
+
+    /// Convenience used by the inline error directly under the college
+    /// field — true the moment the user has typed something we can't
+    /// match, even before they tap Next.
+    var hasUnrecognisedCollege: Bool {
+        guard !notAStudent else { return false }
+        let trimmed = college.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty && selectedSchoolId == nil
     }
 
     /// Maps UI year selection to `year_of_graduation` (integer) for `submit-onboarding`.
@@ -95,13 +193,35 @@ class OnboardingData: ObservableObject {
             : college.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    var isMajorValid: Bool {
-        undeclared || (!school.isEmpty && !major.isEmpty)
+    // Step 4 — Major
+
+    var majorFacultyError: String? {
+        guard !undeclared else { return nil }
+        return school.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "Please enter your faculty."
+            : nil
     }
 
-    var isInterestsValid: Bool {
-        !interests.isEmpty || !customInterests.isEmpty
+    var majorNameError: String? {
+        guard !undeclared else { return nil }
+        return major.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "Please enter your major."
+            : nil
     }
+
+    var isMajorValid: Bool {
+        majorFacultyError == nil && majorNameError == nil
+    }
+
+    // Step 5 — Interests
+
+    var interestsError: String? {
+        (interests.isEmpty && customInterests.isEmpty)
+            ? "Pick at least one topic you're interested in."
+            : nil
+    }
+
+    var isInterestsValid: Bool { interestsError == nil }
 
     /// Course-code-shaped list submitted to `submit-onboarding`.
     ///

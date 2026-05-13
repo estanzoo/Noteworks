@@ -15,9 +15,29 @@ struct SignInStepView: View {
     let onForgotPassword: () -> Void
 
     @State private var visible = false
+    /// See `SignUpStepView.attemptedNext` — flipped on the first invalid
+    /// sign-in attempt so the inline errors start rendering.
+    @State private var attemptedNext = false
+
+    private static let emailRegex = #"^[^\s@]+@[^\s@]+\.[^\s@]+$"#
+
+    private var emailError: String? {
+        let trimmed = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return "Please enter your email." }
+        if trimmed.range(of: Self.emailRegex, options: .regularExpression) == nil {
+            return "Enter a valid email address."
+        }
+        return nil
+    }
+
+    private var passwordError: String? {
+        if password.isEmpty { return "Please enter your password." }
+        if password.count < 8 { return "Password must be at least 8 characters." }
+        return nil
+    }
 
     private var isValid: Bool {
-        !email.isEmpty && password.count >= 8
+        emailError == nil && passwordError == nil
     }
 
     var body: some View {
@@ -35,12 +55,16 @@ struct SignInStepView: View {
                             .lineSpacing(4)
                             .padding(.bottom, 24)
 
-                        OnboardingRow(disabled: !isValid, onNext: onSignIn) {
+                        OnboardingRow(disabled: false, onNext: handleNext) {
                             OnboardingField(
                                 label: "Email",
                                 placeholder: "name@university.edu",
                                 isEmail: true,
                                 text: $email
+                            )
+                            OnboardingError(
+                                show: attemptedNext && emailError != nil,
+                                text: emailError ?? ""
                             )
 
                             OnboardingField(
@@ -48,6 +72,10 @@ struct SignInStepView: View {
                                 placeholder: "Min. 8 characters",
                                 isSecure: true,
                                 text: $password
+                            )
+                            OnboardingError(
+                                show: attemptedNext && passwordError != nil,
+                                text: passwordError ?? ""
                             )
                         }
 
@@ -79,6 +107,14 @@ struct SignInStepView: View {
         .offset(y: visible ? 0 : 16)
         .onAppear {
             withAnimation(.easeOut(duration: 0.5)) { visible = true }
+        }
+    }
+
+    private func handleNext() {
+        if isValid {
+            onSignIn()
+        } else {
+            attemptedNext = true
         }
     }
 }

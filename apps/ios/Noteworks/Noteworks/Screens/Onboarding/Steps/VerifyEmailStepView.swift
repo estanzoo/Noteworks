@@ -14,6 +14,9 @@ struct VerifyEmailStepView: View {
     let onResend: () -> Void
     @State private var visible = false
     @FocusState private var focusedIndex: Int?
+    /// See `SignUpStepView.attemptedNext` — flipped on the first invalid
+    /// Next tap so the page-level error appears and stays live.
+    @State private var attemptedNext = false
 
     var body: some View {
         ScrollView {
@@ -26,7 +29,7 @@ struct VerifyEmailStepView: View {
                     VStack(alignment: .leading, spacing: 0) {
                         OnboardingHeader(title: "Verify your Email", onBack: onBack)
 
-                        OnboardingRow(disabled: !data.isVerifyValid, onNext: onNext) {
+                        OnboardingRow(disabled: false, onNext: handleNext) {
                             VStack(alignment: .leading, spacing: 0) {
                                 Text("We've sent a verification code to ")
                                     .foregroundStyle(OnboardingTheme.textSecondary)
@@ -72,7 +75,12 @@ struct VerifyEmailStepView: View {
                                         }
                                 }
                             }
-                            .padding(.bottom, 24)
+                            .padding(.bottom, 12)
+
+                            OnboardingError(
+                                show: attemptedNext && data.verifyCodeError != nil,
+                                text: data.verifyCodeError ?? ""
+                            )
 
                             Button("Resend code", action: onResend)
                                 .font(.system(size: 15, weight: .semibold))
@@ -90,6 +98,14 @@ struct VerifyEmailStepView: View {
         .onAppear {
             withAnimation(.easeOut(duration: 0.5)) { visible = true }
             focusedIndex = 0
+        }
+    }
+
+    private func handleNext() {
+        if data.isVerifyValid {
+            onNext()
+        } else {
+            attemptedNext = true
         }
     }
 }

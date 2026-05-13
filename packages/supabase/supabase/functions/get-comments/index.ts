@@ -104,7 +104,7 @@ Deno.serve(async (req) => {
 
   if (topErr) return errorResponse('Query failed', topErr.message, 500)
   if (!topComments || topComments.length === 0) {
-    return json({ data: [], next_cursor: null })
+    return json({ comments: [], next_cursor: null })
   }
 
   const hasMore = topComments.length > limit
@@ -150,5 +150,5 @@ Deno.serve(async (req) => {
 
   const tree = buildTree(allComments, likedSet)
 
-  return json({ data: tree, next_cursor: nextCursor })
+  return json({ comments: tree, next_cursor: nextCursor })
 })
