@@ -191,6 +191,12 @@ export interface Comment {
   updated_at: string
 }
 
+export interface CommentLike {
+  comment_id: string
+  user_id: string
+  created_at: string
+}
+
 // Cursor-based pagination
 export interface CursorPaginatedResponse<T> {
   data: T[]
@@ -295,6 +301,7 @@ export interface CommentResponse {
   parent_comment_id: string | null
   body: string
   likes_count: number
+  has_liked: boolean
   visibility: string
   created_at: string
   updated_at: string
@@ -308,6 +315,15 @@ export interface GetCommentsResponse extends CursorPaginatedResponse<CommentResp
 export interface DeleteCommentResponse {
   message: string
   comment_id: string
+}
+
+export interface LikeCommentRequest {
+  comment_id: string
+}
+
+export interface LikeCommentResponse {
+  liked: boolean
+  likes_count: number
 }
 
 // Hashtags

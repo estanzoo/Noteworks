@@ -1,7 +1,7 @@
 # Test Edge Functions on Hosted Supabase (curl)
 
 Use these curl commands to test the edge functions against your **hosted** project.  
-Base URL: `https://canhewvuprjwmpopcloj.supabase.co`
+Base URL: `https://app.noteworks.studio`
 
 **Set these before running** (from Dashboard → Project Settings → API, and from sign-in response):
 
@@ -18,7 +18,7 @@ Base URL: `https://canhewvuprjwmpopcloj.supabase.co`
 After sign-in, fetch the current user's profile to check if onboarding is complete.
 
 ```bash
-curl "https://canhewvuprjwmpopcloj.supabase.co/functions/v1/get-user-profile" \
+curl "https://app.noteworks.studio/functions/v1/get-user-profile" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -H "apikey: YOUR_ANON_KEY"
 ```
@@ -30,7 +30,7 @@ If `onboarding_completed_at` is `null`, the user hasn't completed onboarding yet
 ## 0b. Get schools (for onboarding picker)
 
 ```bash
-curl "https://canhewvuprjwmpopcloj.supabase.co/functions/v1/get-schools?page=1&pageSize=20" \
+curl "https://app.noteworks.studio/functions/v1/get-schools?page=1&pageSize=20" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -H "apikey: YOUR_ANON_KEY"
 ```
@@ -44,7 +44,7 @@ Optional: `&search=MIT` to filter by name or location.
 After sign-in, call this once to complete onboarding. It updates the user profile and creates school + course enrollments from the course codes you send.
 
 ```bash
-curl -X POST "https://canhewvuprjwmpopcloj.supabase.co/functions/v1/submit-onboarding" \
+curl -X POST "https://app.noteworks.studio/functions/v1/submit-onboarding" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -H "apikey: YOUR_ANON_KEY" \
   -H "Content-Type: application/json" \
@@ -65,7 +65,7 @@ curl -X POST "https://canhewvuprjwmpopcloj.supabase.co/functions/v1/submit-onboa
 ## 1. Sign in (get token and user id)
 
 ```bash
-curl -X POST "https://canhewvuprjwmpopcloj.supabase.co/auth/v1/token?grant_type=password" \
+curl -X POST "https://app.noteworks.studio/auth/v1/token?grant_type=password" \
   -H "apikey: YOUR_ANON_KEY" \
   -H "Content-Type: application/json" \
   -d '{"email": "your-user@example.com", "password": "your-password"}'
@@ -78,7 +78,7 @@ From the response, copy `access_token` → `ACCESS_TOKEN` and `user.id` → `USE
 ## 2. Get courses (list)
 
 ```bash
-curl "https://canhewvuprjwmpopcloj.supabase.co/functions/v1/get-courses?page=1&pageSize=10" \
+curl "https://app.noteworks.studio/functions/v1/get-courses?page=1&pageSize=10" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -H "apikey: YOUR_ANON_KEY"
 ```
@@ -90,7 +90,7 @@ Optional: `&search=math` to filter by name/code. Copy one `id` as `COURSE_ID` if
 ## 2b. Get courses by school
 
 ```bash
-curl "https://canhewvuprjwmpopcloj.supabase.co/functions/v1/get-school-courses?school_id=YOUR_SCHOOL_ID&page=1&pageSize=10" \
+curl "https://app.noteworks.studio/functions/v1/get-school-courses?school_id=YOUR_SCHOOL_ID&page=1&pageSize=10" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -H "apikey: YOUR_ANON_KEY"
 ```
@@ -102,7 +102,7 @@ Optional: `&search=math` to filter by name/code within that school's courses.
 ## 3. Create a note
 
 ```bash
-curl -X POST "https://canhewvuprjwmpopcloj.supabase.co/functions/v1/create-note" \
+curl -X POST "https://app.noteworks.studio/functions/v1/create-note" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -H "apikey: YOUR_ANON_KEY" \
   -H "Content-Type: application/json" \
@@ -116,7 +116,7 @@ Copy the returned `id` as `NOTE_ID` for the next steps. Example course ID from s
 ## 4. Get notes (list, optional course filter)
 
 ```bash
-curl "https://canhewvuprjwmpopcloj.supabase.co/functions/v1/get-notes?course_id=YOUR_COURSE_ID&page=1&pageSize=10" \
+curl "https://app.noteworks.studio/functions/v1/get-notes?course_id=YOUR_COURSE_ID&page=1&pageSize=10" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -H "apikey: YOUR_ANON_KEY"
 ```
@@ -128,7 +128,7 @@ Omit `course_id` to list all notes the user can see.
 ## 5. Get single note by ID
 
 ```bash
-curl "https://canhewvuprjwmpopcloj.supabase.co/functions/v1/get-notes?id=YOUR_NOTE_ID" \
+curl "https://app.noteworks.studio/functions/v1/get-notes?id=YOUR_NOTE_ID" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -H "apikey: YOUR_ANON_KEY"
 ```
@@ -140,7 +140,7 @@ curl "https://canhewvuprjwmpopcloj.supabase.co/functions/v1/get-notes?id=YOUR_NO
 Send the PDF as binary body. Replace `path/to/file.pdf` with a real file.
 
 ```bash
-curl -X POST "https://canhewvuprjwmpopcloj.supabase.co/functions/v1/upload-note-pdf?note_id=YOUR_NOTE_ID&filename=mynotes.pdf" \
+curl -X POST "https://app.noteworks.studio/functions/v1/upload-note-pdf?note_id=YOUR_NOTE_ID&filename=mynotes.pdf" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -H "apikey: YOUR_ANON_KEY" \
   -H "Content-Type: application/pdf" \
@@ -152,7 +152,7 @@ curl -X POST "https://canhewvuprjwmpopcloj.supabase.co/functions/v1/upload-note-
 ## 7. Get signed PDF download URL
 
 ```bash
-curl "https://canhewvuprjwmpopcloj.supabase.co/functions/v1/get-note-pdf-url?note_id=YOUR_NOTE_ID" \
+curl "https://app.noteworks.studio/functions/v1/get-note-pdf-url?note_id=YOUR_NOTE_ID" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -H "apikey: YOUR_ANON_KEY"
 ```
@@ -164,7 +164,7 @@ Optional: `&expires_in=3600` (seconds, default 3600, max 86400).
 ## 8. Update note (title and/or metadata)
 
 ```bash
-curl -X PATCH "https://canhewvuprjwmpopcloj.supabase.co/functions/v1/update-note" \
+curl -X PATCH "https://app.noteworks.studio/functions/v1/update-note" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -H "apikey: YOUR_ANON_KEY" \
   -H "Content-Type: application/json" \
@@ -174,7 +174,7 @@ curl -X PATCH "https://canhewvuprjwmpopcloj.supabase.co/functions/v1/update-note
 To update only metadata:
 
 ```bash
-curl -X PATCH "https://canhewvuprjwmpopcloj.supabase.co/functions/v1/update-note" \
+curl -X PATCH "https://app.noteworks.studio/functions/v1/update-note" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -H "apikey: YOUR_ANON_KEY" \
   -H "Content-Type: application/json" \
@@ -186,7 +186,7 @@ curl -X PATCH "https://canhewvuprjwmpopcloj.supabase.co/functions/v1/update-note
 ## 9. Delete note (and its PDF in storage)
 
 ```bash
-curl -X DELETE "https://canhewvuprjwmpopcloj.supabase.co/functions/v1/delete-note?id=YOUR_NOTE_ID" \
+curl -X DELETE "https://app.noteworks.studio/functions/v1/delete-note?id=YOUR_NOTE_ID" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -H "apikey: YOUR_ANON_KEY"
 ```
@@ -197,17 +197,17 @@ curl -X DELETE "https://canhewvuprjwmpopcloj.supabase.co/functions/v1/delete-not
 
 | Step | Command |
 |------|---------|
-| Sign in | `curl -X POST "https://canhewvuprjwmpopcloj.supabase.co/auth/v1/token?grant_type=password" -H "apikey: ANON_KEY" -H "Content-Type: application/json" -d '{"email":"YOU@example.com","password":"PASS"}'` |
-| Get profile | `curl "https://canhewvuprjwmpopcloj.supabase.co/functions/v1/get-user-profile" -H "Authorization: Bearer TOKEN" -H "apikey: ANON_KEY"` |
-| Get schools | `curl "https://canhewvuprjwmpopcloj.supabase.co/functions/v1/get-schools?page=1&pageSize=20" -H "Authorization: Bearer TOKEN" -H "apikey: ANON_KEY"` |
-| Submit onboarding | `curl -X POST "https://canhewvuprjwmpopcloj.supabase.co/functions/v1/submit-onboarding" -H "Authorization: Bearer TOKEN" -H "apikey: ANON_KEY" -H "Content-Type: application/json" -d '{"name":"Name","year_of_graduation":2028,"school_affiliation":"School","school_email":"you@school.edu","course_codes":["CS101","MATH201"]}'` |
-| Get courses | `curl "https://canhewvuprjwmpopcloj.supabase.co/functions/v1/get-courses?page=1&pageSize=10" -H "Authorization: Bearer TOKEN" -H "apikey: ANON_KEY"` |
-| Get school courses | `curl "https://canhewvuprjwmpopcloj.supabase.co/functions/v1/get-school-courses?school_id=SCHOOL_ID&page=1&pageSize=10" -H "Authorization: Bearer TOKEN" -H "apikey: ANON_KEY"` |
-| Create note | `curl -X POST "https://canhewvuprjwmpopcloj.supabase.co/functions/v1/create-note" -H "Authorization: Bearer TOKEN" -H "apikey: ANON_KEY" -H "Content-Type: application/json" -d '{"title":"Test","course_id":"COURSE_UUID"}'` |
-| Get notes | `curl "https://canhewvuprjwmpopcloj.supabase.co/functions/v1/get-notes?id=NOTE_ID" -H "Authorization: Bearer TOKEN" -H "apikey: ANON_KEY"` |
-| Upload PDF | `curl -X POST "https://canhewvuprjwmpopcloj.supabase.co/functions/v1/upload-note-pdf?note_id=NOTE_ID&filename=f.pdf" -H "Authorization: Bearer TOKEN" -H "apikey: ANON_KEY" -H "Content-Type: application/pdf" --data-binary @file.pdf` |
-| Get PDF URL | `curl "https://canhewvuprjwmpopcloj.supabase.co/functions/v1/get-note-pdf-url?note_id=NOTE_ID" -H "Authorization: Bearer TOKEN" -H "apikey: ANON_KEY"` |
-| Update note | `curl -X PATCH "https://canhewvuprjwmpopcloj.supabase.co/functions/v1/update-note" -H "Authorization: Bearer TOKEN" -H "apikey: ANON_KEY" -H "Content-Type: application/json" -d '{"note_id":"NOTE_ID","title":"New title"}'` |
-| Delete note | `curl -X DELETE "https://canhewvuprjwmpopcloj.supabase.co/functions/v1/delete-note?id=NOTE_ID" -H "Authorization: Bearer TOKEN" -H "apikey: ANON_KEY"` |
+| Sign in | `curl -X POST "https://app.noteworks.studio/auth/v1/token?grant_type=password" -H "apikey: ANON_KEY" -H "Content-Type: application/json" -d '{"email":"YOU@example.com","password":"PASS"}'` |
+| Get profile | `curl "https://app.noteworks.studio/functions/v1/get-user-profile" -H "Authorization: Bearer TOKEN" -H "apikey: ANON_KEY"` |
+| Get schools | `curl "https://app.noteworks.studio/functions/v1/get-schools?page=1&pageSize=20" -H "Authorization: Bearer TOKEN" -H "apikey: ANON_KEY"` |
+| Submit onboarding | `curl -X POST "https://app.noteworks.studio/functions/v1/submit-onboarding" -H "Authorization: Bearer TOKEN" -H "apikey: ANON_KEY" -H "Content-Type: application/json" -d '{"name":"Name","year_of_graduation":2028,"school_affiliation":"School","school_email":"you@school.edu","course_codes":["CS101","MATH201"]}'` |
+| Get courses | `curl "https://app.noteworks.studio/functions/v1/get-courses?page=1&pageSize=10" -H "Authorization: Bearer TOKEN" -H "apikey: ANON_KEY"` |
+| Get school courses | `curl "https://app.noteworks.studio/functions/v1/get-school-courses?school_id=SCHOOL_ID&page=1&pageSize=10" -H "Authorization: Bearer TOKEN" -H "apikey: ANON_KEY"` |
+| Create note | `curl -X POST "https://app.noteworks.studio/functions/v1/create-note" -H "Authorization: Bearer TOKEN" -H "apikey: ANON_KEY" -H "Content-Type: application/json" -d '{"title":"Test","course_id":"COURSE_UUID"}'` |
+| Get notes | `curl "https://app.noteworks.studio/functions/v1/get-notes?id=NOTE_ID" -H "Authorization: Bearer TOKEN" -H "apikey: ANON_KEY"` |
+| Upload PDF | `curl -X POST "https://app.noteworks.studio/functions/v1/upload-note-pdf?note_id=NOTE_ID&filename=f.pdf" -H "Authorization: Bearer TOKEN" -H "apikey: ANON_KEY" -H "Content-Type: application/pdf" --data-binary @file.pdf` |
+| Get PDF URL | `curl "https://app.noteworks.studio/functions/v1/get-note-pdf-url?note_id=NOTE_ID" -H "Authorization: Bearer TOKEN" -H "apikey: ANON_KEY"` |
+| Update note | `curl -X PATCH "https://app.noteworks.studio/functions/v1/update-note" -H "Authorization: Bearer TOKEN" -H "apikey: ANON_KEY" -H "Content-Type: application/json" -d '{"note_id":"NOTE_ID","title":"New title"}'` |
+| Delete note | `curl -X DELETE "https://app.noteworks.studio/functions/v1/delete-note?id=NOTE_ID" -H "Authorization: Bearer TOKEN" -H "apikey: ANON_KEY"` |
 
 Ensure edge functions are deployed: `cd packages/supabase && npx supabase functions deploy`.

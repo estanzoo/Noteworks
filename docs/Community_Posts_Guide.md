@@ -77,7 +77,7 @@ End of feed:    GET /get-posts?cursor=2026-03-01T00:00:00.000Z&limit=20
 
 **Request:**
 ```
-POST https://canhewvuprjwmpopcloj.supabase.co/functions/v1/create-post
+POST https://app.noteworks.studio/functions/v1/create-post
 
 Headers:
   apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNhbmhld3Z1cHJqd21wb3BjbG9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk5NjI1NDgsImV4cCI6MjA4NTUzODU0OH0.jp-RcV0gxHHozwgL4pOlNkwUsjUbzoZTJ6MRJH4Oo8Y
@@ -141,7 +141,7 @@ This is the main endpoint for loading the feed. It supports multiple filters thr
 ### Get the public feed (default)
 
 ```
-GET https://canhewvuprjwmpopcloj.supabase.co/functions/v1/get-posts?limit=20
+GET https://app.noteworks.studio/functions/v1/get-posts?limit=20
 
 Headers:
   apikey: <anon_key>
@@ -252,7 +252,7 @@ Use this when the user taps on a post to view its full detail page.
 
 **Request:**
 ```
-GET https://canhewvuprjwmpopcloj.supabase.co/functions/v1/get-post?post_id=POST_UUID
+GET https://app.noteworks.studio/functions/v1/get-post?post_id=POST_UUID
 
 Headers:
   apikey: <anon_key>
@@ -312,7 +312,7 @@ Only the post's author can update it.
 
 **Request:**
 ```
-PATCH https://canhewvuprjwmpopcloj.supabase.co/functions/v1/update-post
+PATCH https://app.noteworks.studio/functions/v1/update-post
 
 Headers:
   apikey: <anon_key>
@@ -378,7 +378,7 @@ Only the post's author can delete it. The post is **soft deleted** (marked as de
 
 **Request:**
 ```
-DELETE https://canhewvuprjwmpopcloj.supabase.co/functions/v1/delete-post?post_id=POST_UUID
+DELETE https://app.noteworks.studio/functions/v1/delete-post?post_id=POST_UUID
 
 Headers:
   apikey: <anon_key>
@@ -409,7 +409,7 @@ This is a **toggle** — call it once to like, call it again to unlike. The endp
 
 **Request:**
 ```
-POST https://canhewvuprjwmpopcloj.supabase.co/functions/v1/like-post
+POST https://app.noteworks.studio/functions/v1/like-post
 
 Headers:
   apikey: <anon_key>
@@ -451,7 +451,7 @@ Comments support **threading** — a comment can be a reply to another comment.
 ### Top-level comment (reply to the post)
 
 ```
-POST https://canhewvuprjwmpopcloj.supabase.co/functions/v1/create-comment
+POST https://app.noteworks.studio/functions/v1/create-comment
 
 Headers:
   apikey: <anon_key>
@@ -518,7 +518,7 @@ Returns comments in **threaded** structure — top-level comments with their rep
 
 **Request:**
 ```
-GET https://canhewvuprjwmpopcloj.supabase.co/functions/v1/get-comments?post_id=POST_UUID&limit=50
+GET https://app.noteworks.studio/functions/v1/get-comments?post_id=POST_UUID&limit=50
 
 Headers:
   apikey: <anon_key>
@@ -589,7 +589,7 @@ Only the comment's author can delete it. Comments are **hard deleted** — they'
 
 **Request:**
 ```
-DELETE https://canhewvuprjwmpopcloj.supabase.co/functions/v1/delete-comment?comment_id=COMMENT_UUID
+DELETE https://app.noteworks.studio/functions/v1/delete-comment?comment_id=COMMENT_UUID
 
 Headers:
   apikey: <anon_key>
@@ -614,7 +614,7 @@ Use this for the hashtag input field — as the user types, show matching sugges
 
 **Request:**
 ```
-GET https://canhewvuprjwmpopcloj.supabase.co/functions/v1/search-hashtags?q=study&limit=10
+GET https://app.noteworks.studio/functions/v1/search-hashtags?q=study&limit=10
 
 Headers:
   apikey: <anon_key>

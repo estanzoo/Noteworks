@@ -8,7 +8,7 @@
 import Foundation
 
 enum SupabaseConfig {
-    static let baseURL = "https://canhewvuprjwmpopcloj.supabase.co"
+    static let baseURL = "https://app.noteworks.studio"
     static let anonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNhbmhld3Z1cHJqd21wb3BjbG9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk5NjI1NDgsImV4cCI6MjA4NTUzODU0OH0.jp-RcV0gxHHozwgL4pOlNkwUsjUbzoZTJ6MRJH4Oo8Y"
 
     static let functionsBase = "\(baseURL)/functions/v1"
