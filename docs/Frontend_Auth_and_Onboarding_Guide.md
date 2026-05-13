@@ -23,7 +23,7 @@ eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNhbmhld3Z
 
 The **token** (called an `access_token`) is unique per user session. You get it when the user signs in.
 
-**Base URL for all requests:** `https://canhewvuprjwmpopcloj.supabase.co`
+**Base URL for all requests:** `https://app.noteworks.studio`
 
 ---
 
@@ -66,7 +66,7 @@ When a user creates an account for the first time.
 
 **Request:**
 ```
-POST https://canhewvuprjwmpopcloj.supabase.co/auth/v1/signup
+POST https://app.noteworks.studio/auth/v1/signup
 
 Headers:
   apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNhbmhld3Z1cHJqd21wb3BjbG9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk5NjI1NDgsImV4cCI6MjA4NTUzODU0OH0.jp-RcV0gxHHozwgL4pOlNkwUsjUbzoZTJ6MRJH4Oo8Y
@@ -119,7 +119,7 @@ When a user already has an account and wants to log in.
 
 **Request:**
 ```
-POST https://canhewvuprjwmpopcloj.supabase.co/auth/v1/token?grant_type=password
+POST https://app.noteworks.studio/auth/v1/token?grant_type=password
 
 Headers:
   apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNhbmhld3Z1cHJqd21wb3BjbG9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk5NjI1NDgsImV4cCI6MjA4NTUzODU0OH0.jp-RcV0gxHHozwgL4pOlNkwUsjUbzoZTJ6MRJH4Oo8Y
@@ -150,7 +150,7 @@ After sign-in, fetch the user's profile to see if they've completed onboarding.
 
 **Request:**
 ```
-GET https://canhewvuprjwmpopcloj.supabase.co/functions/v1/get-user-profile
+GET https://app.noteworks.studio/functions/v1/get-user-profile
 
 Headers:
   apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNhbmhld3Z1cHJqd21wb3BjbG9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk5NjI1NDgsImV4cCI6MjA4NTUzODU0OH0.jp-RcV0gxHHozwgL4pOlNkwUsjUbzoZTJ6MRJH4Oo8Y
@@ -187,7 +187,7 @@ The first onboarding screen lets the user pick their school. Fetch the list from
 
 **Request:**
 ```
-GET https://canhewvuprjwmpopcloj.supabase.co/functions/v1/get-schools?page=1&pageSize=50
+GET https://app.noteworks.studio/functions/v1/get-schools?page=1&pageSize=50
 
 Headers:
   apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNhbmhld3Z1cHJqd21wb3BjbG9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk5NjI1NDgsImV4cCI6MjA4NTUzODU0OH0.jp-RcV0gxHHozwgL4pOlNkwUsjUbzoZTJ6MRJH4Oo8Y
@@ -233,7 +233,7 @@ After the user picks a school, show them courses offered at that school so they 
 
 **Request:**
 ```
-GET https://canhewvuprjwmpopcloj.supabase.co/functions/v1/get-school-courses?school_id=THE_SCHOOL_ID&page=1&pageSize=50
+GET https://app.noteworks.studio/functions/v1/get-school-courses?school_id=THE_SCHOOL_ID&page=1&pageSize=50
 
 Headers:
   apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNhbmhld3Z1cHJqd21wb3BjbG9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk5NjI1NDgsImV4cCI6MjA4NTUzODU0OH0.jp-RcV0gxHHozwgL4pOlNkwUsjUbzoZTJ6MRJH4Oo8Y
@@ -279,7 +279,7 @@ After the user has filled in their name, graduation year, school, school email, 
 
 **Request:**
 ```
-POST https://canhewvuprjwmpopcloj.supabase.co/functions/v1/submit-onboarding
+POST https://app.noteworks.studio/functions/v1/submit-onboarding
 
 Headers:
   apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNhbmhld3Z1cHJqd21wb3BjbG9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk5NjI1NDgsImV4cCI6MjA4NTUzODU0OH0.jp-RcV0gxHHozwgL4pOlNkwUsjUbzoZTJ6MRJH4Oo8Y
@@ -358,7 +358,7 @@ After about 1 hour, API calls will start returning **401 (Unauthorized)**. When 
 
 **Refresh request:**
 ```
-POST https://canhewvuprjwmpopcloj.supabase.co/auth/v1/token?grant_type=refresh_token
+POST https://app.noteworks.studio/auth/v1/token?grant_type=refresh_token
 
 Headers:
   apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNhbmhld3Z1cHJqd21wb3BjbG9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk5NjI1NDgsImV4cCI6MjA4NTUzODU0OH0.jp-RcV0gxHHozwgL4pOlNkwUsjUbzoZTJ6MRJH4Oo8Y

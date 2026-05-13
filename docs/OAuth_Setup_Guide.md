@@ -113,7 +113,7 @@ func signInWithGoogle() async throws -> AuthResult {
 **How it works:**
 1. Supabase SDK opens a browser sheet pointed at Google's OAuth consent page.
 2. User signs in with their Google account.
-3. Google redirects back to `https://canhewvuprjwmpopcloj.supabase.co/auth/v1/callback`.
+3. Google redirects back to `https://app.noteworks.studio/auth/v1/callback`.
 4. Supabase exchanges the code for tokens and redirects to the app's URL scheme.
 5. The SDK intercepts the redirect and returns the session.
 
