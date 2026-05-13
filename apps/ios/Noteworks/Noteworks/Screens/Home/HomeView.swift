@@ -37,10 +37,6 @@ struct HomeView: View {
         notifications.filter(\.unread).count
     }
 
-    private var bubbles: [CourseBubble] {
-        HomeBubbleLayout.bubbles(from: store)
-    }
-
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
             OnboardingBackground()
@@ -53,7 +49,14 @@ struct HomeView: View {
                     .padding(.bottom, 12)
 
                 titleRow
-                bubbleField
+                // `store.isReady` guards against a half-rendered Home in the
+                // window between sign-out (notesStore.deactivate) and
+                // sign-in (notesStore.activate) on the same device.
+                if store.isReady {
+                    bubbleField
+                } else {
+                    homeNotReadyPlaceholder
+                }
             }
 
             // Tap-to-close backdrop while the FAB menu is open
@@ -201,10 +204,27 @@ struct HomeView: View {
         .padding(.bottom, 24)
     }
 
+    // MARK: - Placeholder while the store has no active user
+
+    private var homeNotReadyPlaceholder: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+                .tint(.primary.opacity(0.5))
+            Text("Loading your library…")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     // MARK: - Bubble Field
 
     private var bubbleField: some View {
         GeometryReader { geo in
+            // Recompute the layout against the live container size so
+            // the packer can guarantee no overlap on this exact canvas
+            // (phone, iPad, split-view, rotation all just work).
+            let bubbles = HomeBubbleLayout.bubbles(from: store, in: geo.size)
             ZStack {
                 ForEach(Array(bubbles.enumerated()), id: \.element.id) { index, course in
                     Button {
@@ -285,6 +305,6 @@ struct HomeView: View {
 #Preview {
     NavigationStack {
         HomeView(selectedTab: .constant(AppTab.home))
-            .environmentObject(NotesStore())
+            .environmentObject(NotesStore.preview())
     }
 }

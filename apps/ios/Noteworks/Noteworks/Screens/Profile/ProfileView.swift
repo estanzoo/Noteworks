@@ -54,6 +54,16 @@ struct ProfileView: View {
         .onChange(of: viewModel.profile) { _, _ in
             viewModel.syncAboutDraftFromProfile()
         }
+        .onAppear {
+            if let userProfile = appState.profile {
+                viewModel.hydrate(from: userProfile)
+            }
+        }
+        .onChange(of: appState.profile) { _, newValue in
+            if let newValue {
+                viewModel.hydrate(from: newValue)
+            }
+        }
     }
 
     // MARK: - Header (BETA badge + title + TopBar icons)
@@ -353,5 +363,5 @@ private struct ProfileAvatarTopBarButton: View {
 
 #Preview {
     ProfileView(selectedTab: .constant(nil))
-        .environmentObject(AppState())
+        .environmentObject(AppState(notesStore: NotesStore.preview()))
 }

@@ -2,370 +2,306 @@
 //  CommunityViewModel.swift
 //  Noteworks
 //
-//  Mirrors the community state in others/noteworks-library(2).jsx:
-//  - `PROFILE_INITIAL`-style post list with tags, attachments, comment threads
-//  - `createCommunityMeta`, `countCommunityThreadItems`, `updateCommunityThread`
-//  - `togglePostReaction`, `toggleConnect`, `addComment`, `addReply`,
-//    `toggleCommentReaction` actions.
+//  Owns the live state for the Community screen — the cursor-paginated
+//  feed, optimistic like/dislike toggles, and the two-step post creation
+//  flow (PDF upload then create-post). All persistence lives server-side;
+//  this view model only caches what the UI is currently showing.
 //
 
 import Foundation
 
-// MARK: - Reactions
+// MARK: - Centralized error mapping
 
-enum ReactionKind: String, Equatable {
-    case like, dislike
-}
+/// A reduction of every API failure into the few buckets the UI actually
+/// cares about. `mapCommunityError` translates `APIError` (which is
+/// generic across all endpoints) into one of these so each screen can
+/// decide what to do without re-implementing the same status-code switch.
+enum CommunityError: Error, Equatable, LocalizedError {
+    case unauthorized
+    case forbidden(String)
+    case notFound(String)
+    case validation(String)
+    case server(String)
+    case unknown(String)
 
-// MARK: - Attachments
+    var userMessage: String {
+        switch self {
+        case .unauthorized:        return "Your session expired. Please sign in again."
+        case .forbidden(let m):    return m
+        case .notFound(let m):     return m
+        case .validation(let m):   return m
+        case .server(let m):       return m
+        case .unknown(let m):      return m
+        }
+    }
 
-enum CommunityAttachmentKind: String, Equatable {
-    case image, video, document, note
-}
+    var errorDescription: String? { userMessage }
 
-struct CommunityAttachment: Identifiable, Equatable {
-    let id: String
-    let kind: CommunityAttachmentKind
-    var name: String = ""
-    var url: String? = nil
-    var size: String? = nil
-    var ext: String? = nil
-    var subject: String? = nil
-}
-
-// MARK: - Comment thread
-
-struct CommunityComment: Identifiable, Equatable {
-    let id: String
-    var user: String
-    var school: String
-    var time: String
-    var text: String
-    var likes: Int
-    var dislikes: Int
-    var userReaction: ReactionKind?
-    var author: Bool
-    var replies: [CommunityComment]
-}
-
-// MARK: - Post
-
-struct CommunityPost: Identifiable, Equatable {
-    let id: Int
-    var user: String
-    var school: String
-    var major: String
-    var title: String
-    var body: String?
-    var tags: [String]
-    var likes: Int
-    var dislikes: Int
-    var userReaction: ReactionKind?
-    var connected: Bool
-    var attachments: [CommunityAttachment]
-    var commentThread: [CommunityComment]
-}
-
-extension CommunityPost {
-    /// Total count including nested replies (mirrors `countCommunityThreadItems`).
-    var commentCount: Int {
-        countCommunityThreadItems(commentThread)
+    var isAuthFailure: Bool {
+        if case .unauthorized = self { return true }
+        return false
     }
 }
 
-/// Free-function mirror of `countCommunityThreadItems` (JSX L4275–L4277).
-/// Lives outside `CommunityViewModel` so it can be used from non-isolated
-/// `Equatable`/property contexts (e.g. on `CommunityPost`).
-func countCommunityThreadItems(_ thread: [CommunityComment]) -> Int {
-    thread.reduce(0) { $0 + 1 + countCommunityThreadItems($1.replies) }
+/// Translate an arbitrary `Error` into a `CommunityError`. Each call site
+/// can pass context-specific messages for the 403/404 cases (e.g. "This
+/// post is no longer available" vs "Could not add comment").
+func mapCommunityError(
+    _ error: Error,
+    forbidden: String = "You don't have permission to do that.",
+    notFound: String = "That item is no longer available."
+) -> CommunityError {
+    guard let api = error as? APIError else {
+        return .unknown(error.localizedDescription)
+    }
+    switch api {
+    case .unauthorized:
+        return .unauthorized
+    case .badRequest(let m):
+        return .validation(m.isEmpty ? "Some fields are invalid." : m)
+    case .notFound:
+        return .notFound(notFound)
+    case .serverError:
+        return .server("Something went wrong on our end. Please try again.")
+    case .networkError:
+        return .server("Network is unreachable. Check your connection and try again.")
+    case .decodingError:
+        return .unknown("Couldn't read the server's response.")
+    case .unknown(let code, let m):
+        // 403 maps to .unknown(403, …) in `APIClient.mapError`, so detect it here.
+        if code == 403 { return .forbidden(forbidden) }
+        return .unknown(m)
+    }
 }
 
 // MARK: - View Model
 
 @MainActor
-class CommunityViewModel: ObservableObject {
-    @Published var posts: [CommunityPost] = CommunityViewModel.samplePosts
+final class CommunityViewModel: ObservableObject {
 
-    // MARK: Author a post
+    // MARK: Published state
 
-    func addPost(title: String, body: String?, tags: [String]) {
-        let post = CommunityPost(
-            id: Int(Date().timeIntervalSince1970),
-            user: "You",
-            school: "Your School",
-            major: "Your Major",
-            title: title,
-            body: body,
-            tags: tags.isEmpty ? ["General"] : tags,
-            likes: 0,
-            dislikes: 0,
-            userReaction: nil,
-            connected: false,
-            attachments: [],
-            commentThread: []
-        )
-        posts.insert(post, at: 0)
+    @Published private(set) var posts: [CommunityPost] = []
+    @Published private(set) var isLoadingFeed: Bool = false
+    @Published private(set) var isLoadingMore: Bool = false
+    @Published var feedError: String?
+
+    @Published private(set) var filter: FeedFilter = .publicFeed
+
+    // MARK: Dependencies
+
+    private weak var appState: AppState?
+    private let service: CommunityServiceProtocol
+
+    // MARK: Pagination
+
+    private var nextCursor: String?
+    private var hasMore: Bool = true
+
+    /// Tracks the most recent feed load so an older response that resolves
+    /// late (after the user changed filters) is ignored.
+    private var loadGeneration: Int = 0
+
+    init(service: CommunityServiceProtocol = CommunityService.shared) {
+        self.service = service
     }
 
-    // MARK: Post reactions
-
-    /// Mirrors `togglePostReaction` from the JSX (L4887–L4903).
-    func togglePostReaction(postId: Int, reaction: ReactionKind) {
-        guard let index = posts.firstIndex(where: { $0.id == postId }) else { return }
-        var post = posts[index]
-        let current = post.userReaction
-        if current == .like { post.likes = max(0, post.likes - 1) }
-        if current == .dislike { post.dislikes = max(0, post.dislikes - 1) }
-        let next: ReactionKind? = (current == reaction) ? nil : reaction
-        if next == .like { post.likes += 1 }
-        if next == .dislike { post.dislikes += 1 }
-        post.userReaction = next
-        posts[index] = post
+    /// Called by `CommunityView` on appear. Captures the `AppState` so the
+    /// view model can read the current access token / user ID on every
+    /// request without re-passing them on every call.
+    func configure(appState: AppState) {
+        self.appState = appState
     }
 
-    // MARK: Connect / follow
+    // MARK: - Feed
 
-    func toggleConnect(postId: Int) {
-        guard let index = posts.firstIndex(where: { $0.id == postId }) else { return }
-        posts[index].connected.toggle()
-    }
+    /// Fetches the first page for the current `filter`. Cheap to call
+    /// multiple times — `isLoadingFeed` guards against duplicate work.
+    func loadInitialFeed() async {
+        guard !isLoadingFeed else { return }
+        loadGeneration += 1
+        let generation = loadGeneration
 
-    // MARK: Comments
+        isLoadingFeed = true
+        feedError = nil
+        defer { isLoadingFeed = false }
 
-    /// Mirrors `addComment` (JSX L4921–L4946): inserts at the top of the thread.
-    func addComment(postId: Int, text: String, currentUserName: String = "You", currentUserSchool: String = "Your School") {
-        let trimmed = text.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty,
-              let index = posts.firstIndex(where: { $0.id == postId }) else { return }
-        let postAuthor = posts[index].user
-        let comment = CommunityComment(
-            id: "\(postId)-comment-\(Int(Date().timeIntervalSince1970))",
-            user: currentUserName,
-            school: currentUserSchool,
-            time: "now",
-            text: trimmed,
-            likes: 0,
-            dislikes: 0,
-            userReaction: nil,
-            author: currentUserName == postAuthor,
-            replies: []
-        )
-        posts[index].commentThread.insert(comment, at: 0)
-    }
-
-    /// Mirrors `addReply` (JSX L4948–L4978).
-    func addReply(postId: Int, commentId: String, text: String, currentUserName: String = "You", currentUserSchool: String = "Your School") {
-        let trimmed = text.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty,
-              let index = posts.firstIndex(where: { $0.id == postId }) else { return }
-        let postAuthor = posts[index].user
-        let reply = CommunityComment(
-            id: "\(commentId)-reply-\(Int(Date().timeIntervalSince1970))",
-            user: currentUserName,
-            school: currentUserSchool,
-            time: "now",
-            text: trimmed,
-            likes: 0,
-            dislikes: 0,
-            userReaction: nil,
-            author: currentUserName == postAuthor,
-            replies: []
-        )
-        posts[index].commentThread = Self.updateThread(posts[index].commentThread, targetId: commentId) { comment in
-            var copy = comment
-            copy.replies.append(reply)
-            return copy
+        guard let token = appState?.accessToken else { return }
+        do {
+            let page = try await service.fetchFeed(
+                filter: filter,
+                cursor: nil,
+                limit: 20,
+                currentUserId: appState?.currentUser?.id,
+                accessToken: token
+            )
+            guard generation == loadGeneration else { return }
+            posts = page.posts
+            nextCursor = page.nextCursor
+            hasMore = page.nextCursor != nil
+        } catch {
+            guard generation == loadGeneration else { return }
+            handle(error)
         }
     }
 
-    /// Mirrors `toggleCommentReaction` (JSX L4980–L4992).
-    func toggleCommentReaction(postId: Int, targetId: String, reaction: ReactionKind) {
-        guard let index = posts.firstIndex(where: { $0.id == postId }) else { return }
-        posts[index].commentThread = Self.updateThread(posts[index].commentThread, targetId: targetId) { item in
-            Self.applyReaction(to: item, reaction: reaction)
+    /// Pulled by the feed list when the user nears the bottom. Looks at
+    /// `currentItem` so SwiftUI's `.onAppear`-driven trigger is cheap to
+    /// hook into a `ForEach`.
+    func loadMoreIfNeeded(currentItem: CommunityPost) async {
+        guard hasMore, !isLoadingMore, !isLoadingFeed else { return }
+        // Only fire when the user is within ~3 items of the end of the
+        // currently-loaded page; otherwise every cell appear triggers it.
+        guard let triggerIndex = posts.firstIndex(where: { $0.id == currentItem.id }),
+              triggerIndex >= posts.count - 3 else { return }
+        guard let token = appState?.accessToken, let cursor = nextCursor else { return }
+
+        let generation = loadGeneration
+        isLoadingMore = true
+        defer { isLoadingMore = false }
+
+        do {
+            let page = try await service.fetchFeed(
+                filter: filter,
+                cursor: cursor,
+                limit: 20,
+                currentUserId: appState?.currentUser?.id,
+                accessToken: token
+            )
+            guard generation == loadGeneration else { return }
+            // Server-side cursor pagination is by `created_at`; new posts
+            // arriving in real time would still be safe to merge by id.
+            let existingIds = Set(posts.map(\.id))
+            let newOnes = page.posts.filter { !existingIds.contains($0.id) }
+            posts.append(contentsOf: newOnes)
+            nextCursor = page.nextCursor
+            hasMore = page.nextCursor != nil
+        } catch {
+            guard generation == loadGeneration else { return }
+            handle(error)
         }
     }
 
-    // MARK: Thread helpers
+    /// Pull-to-refresh.
+    func refresh() async {
+        nextCursor = nil
+        hasMore = true
+        await loadInitialFeed()
+    }
 
-    /// Mirrors `updateCommunityThread` (JSX L4279–L4288): when `id` matches,
-    /// return the transformed item and stop recursing; otherwise walk into replies.
-    static func updateThread(_ thread: [CommunityComment], targetId: String, _ transform: (CommunityComment) -> CommunityComment) -> [CommunityComment] {
-        thread.map { item in
-            if item.id == targetId {
-                return transform(item)
+    // MARK: - Filter
+
+    /// Switch the feed to a hashtag filter and reload. The view shows an
+    /// "active filter" pill while a non-default filter is in effect.
+    func selectHashtag(_ name: String) async {
+        let normalized = name.lowercased()
+        guard filter != .hashtag(normalized) else { return }
+        filter = .hashtag(normalized)
+        nextCursor = nil
+        hasMore = true
+        await loadInitialFeed()
+    }
+
+    /// Reset to the default public feed.
+    func clearFilter() async {
+        guard !filter.isDefault else { return }
+        filter = .publicFeed
+        nextCursor = nil
+        hasMore = true
+        await loadInitialFeed()
+    }
+
+    // MARK: - Likes (optimistic)
+
+    /// Flips `hasLiked` and ±1 to `likesCount` immediately, fires the API
+    /// call, then reverts on error so the heart can't get out of sync with
+    /// what the server actually recorded.
+    func togglePostLike(_ post: CommunityPost) async {
+        guard let token = appState?.accessToken,
+              let index = posts.firstIndex(where: { $0.id == post.id }) else { return }
+
+        let snapshot = posts[index]
+        let wasLiked = snapshot.liked
+        posts[index].hasLiked = !wasLiked
+        posts[index].likesCount = max(0, snapshot.likesCount + (wasLiked ? -1 : 1))
+
+        do {
+            let response = try await service.togglePostLike(postId: post.id, accessToken: token)
+            guard let now = posts.firstIndex(where: { $0.id == post.id }) else { return }
+            posts[now].hasLiked = response.liked
+            posts[now].likesCount = response.likesCount
+        } catch {
+            // Revert the optimistic mutation.
+            if let now = posts.firstIndex(where: { $0.id == post.id }) {
+                posts[now].hasLiked = snapshot.hasLiked
+                posts[now].likesCount = snapshot.likesCount
             }
-            guard !item.replies.isEmpty else { return item }
-            var copy = item
-            copy.replies = updateThread(item.replies, targetId: targetId, transform)
-            return copy
+            handle(error)
         }
     }
 
-    /// Mirrors `toggleThreadReaction` (JSX L4290–L4309).
-    static func applyReaction(to item: CommunityComment, reaction: ReactionKind) -> CommunityComment {
-        var nextLikes = item.likes
-        var nextDislikes = item.dislikes
-        if item.userReaction == .like { nextLikes = max(0, nextLikes - 1) }
-        if item.userReaction == .dislike { nextDislikes = max(0, nextDislikes - 1) }
-        let nextReaction: ReactionKind? = (item.userReaction == reaction) ? nil : reaction
-        if nextReaction == .like { nextLikes += 1 }
-        if nextReaction == .dislike { nextDislikes += 1 }
-        var copy = item
-        copy.likes = nextLikes
-        copy.dislikes = nextDislikes
-        copy.userReaction = nextReaction
-        return copy
+    // MARK: - Create / delete posts
+
+    /// Calls `create-post`; on success prepends the result to the feed.
+    /// Caller (`PostEditorPopup`) is responsible for uploading any PDF
+    /// attachments first and passing their note IDs in.
+    @discardableResult
+    func createPost(_ request: CreatePostRequest) async throws -> CommunityPost {
+        guard let token = appState?.accessToken else {
+            throw CommunityError.unauthorized
+        }
+        let created = try await service.createPost(request, accessToken: token)
+        // The create-post response omits `author`, so backfill it with the
+        // current user's name from `AppState.profile` so the feed renders
+        // the post correctly without a follow-up fetch.
+        var withAuthor = created
+        if let me = appState?.profile {
+            withAuthor.author = PostAuthor(id: me.id, name: me.displayName)
+        }
+        posts.insert(withAuthor, at: 0)
+        return withAuthor
     }
 
-}
+    /// Soft-deletes a post and removes it from the local feed on success.
+    func deletePost(_ post: CommunityPost) async {
+        guard let token = appState?.accessToken else { return }
+        do {
+            _ = try await service.deletePost(id: post.id, accessToken: token)
+            posts.removeAll { $0.id == post.id }
+        } catch {
+            handle(error, notFound: "This post is no longer available")
+        }
+    }
 
-// MARK: - Sample data
+    // MARK: - Helpers
 
-extension CommunityViewModel {
+    /// Apply a server-returned post (e.g. after fetching its detail) on top
+    /// of whatever is currently in the feed, so likes/comments counts stay
+    /// in sync without dropping the user's scroll position.
+    func upsert(_ post: CommunityPost) {
+        if let index = posts.firstIndex(where: { $0.id == post.id }) {
+            posts[index] = post
+        }
+    }
 
-    /// Mirrors `COMMUNITY_COMMENT_THREADS` from the JSX (L4129–L4266).
-    static let sampleCommentThreads: [Int: [CommunityComment]] = [
-        1: [
-            CommunityComment(
-                id: "1-c1", user: "Maya Liu", school: "Parsons", time: "12m ago",
-                text: "Loved how concise this discussion recap is. It feels super easy to skim before class.",
-                likes: 6, dislikes: 0, userReaction: nil, author: false,
-                replies: [
-                    CommunityComment(id: "1-r1", user: "Alex Chen", school: "Royal Academy of Arts",
-                                     time: "8m ago",
-                                     text: "That was the goal. I wanted something classmates could read in under a minute.",
-                                     likes: 3, dislikes: 0, userReaction: nil, author: true, replies: []),
-                    CommunityComment(id: "1-r2", user: "Jordan Park", school: "NYU",
-                                     time: "6m ago",
-                                     text: "The opening sentence especially works well.",
-                                     likes: 1, dislikes: 0, userReaction: nil, author: false, replies: []),
-                ]
-            ),
-            CommunityComment(
-                id: "1-c2", user: "Grace Ho", school: "UCL", time: "3m ago",
-                text: "Would you mind posting the follow-up reading list too?",
-                likes: 2, dislikes: 0, userReaction: nil, author: false, replies: []
-            ),
-        ],
-        2: [
-            CommunityComment(
-                id: "2-c1", user: "Kevin Xu", school: "Columbia", time: "25m ago",
-                text: "I have a one-page summary of categorical imperative examples if you want it.",
-                likes: 9, dislikes: 0, userReaction: nil, author: false,
-                replies: [
-                    CommunityComment(id: "2-r1", user: "Alex Chen", school: "Royal Academy of Arts",
-                                     time: "17m ago",
-                                     text: "Yes please, that would save me.",
-                                     likes: 5, dislikes: 0, userReaction: nil, author: true, replies: []),
-                ]
-            ),
-            CommunityComment(
-                id: "2-c2", user: "Ella Stone", school: "King's College London", time: "11m ago",
-                text: "Try mapping each version of the imperative to a really ordinary daily choice. It gets less abstract.",
-                likes: 4, dislikes: 0, userReaction: nil, author: false,
-                replies: [
-                    CommunityComment(id: "2-r2", user: "Mina Park", school: "SNU",
-                                     time: "9m ago",
-                                     text: "Seconding this. It helped me a lot too.",
-                                     likes: 1, dislikes: 0, userReaction: nil, author: false, replies: []),
-                ]
-            ),
-        ],
-        3: [
-            CommunityComment(
-                id: "3-c1", user: "Ava Patel", school: "Berkeley", time: "18m ago",
-                text: "Can you share how you structure the active recall part?",
-                likes: 3, dislikes: 0, userReaction: nil, author: false,
-                replies: [
-                    CommunityComment(id: "3-r1", user: "Sam Lee", school: "MIT",
-                                     time: "10m ago",
-                                     text: "I do a fast verbal recap first, then write 5 questions from memory.",
-                                     likes: 4, dislikes: 0, userReaction: nil, author: true, replies: []),
-                    CommunityComment(id: "3-r2", user: "Leo Kim", school: "Carnegie Mellon",
-                                     time: "7m ago",
-                                     text: "That sounds way more manageable than giant flashcard sets.",
-                                     likes: 2, dislikes: 0, userReaction: nil, author: false, replies: []),
-                ]
-            ),
-        ],
-    ]
+    /// Increment a post's `commentsCount` (used after creating a comment).
+    func bumpCommentCount(postId: String, by delta: Int) {
+        guard let index = posts.firstIndex(where: { $0.id == postId }) else { return }
+        posts[index].commentsCount = max(0, posts[index].commentsCount + delta)
+    }
 
-    static let samplePosts: [CommunityPost] = [
-        CommunityPost(
-            id: 1, user: "Alex Chen",
-            school: "Royal Academy of Arts",
-            major: "MA Information Experience Design",
-            title: "The group discussion today was extremely interesting！！",
-            body: nil,
-            tags: ["Course", "Course"],
-            likes: 12, dislikes: 0, userReaction: nil, connected: false,
-            attachments: [],
-            commentThread: sampleCommentThreads[1] ?? []
-        ),
-        CommunityPost(
-            id: 2, user: "Alex Chen",
-            school: "Royal Academy of Arts",
-            major: "MA Information Experience Design",
-            title: "Does anyone actually understand Kant?",
-            body: "I've reread the \"Groundwork\" three times and my brain is melting. If anyone has a simple summary or a breakdown of the categorical imperative, please share. My essay is due Friday and I'm lost.",
-            tags: ["Course"],
-            likes: 24, dislikes: 0, userReaction: nil, connected: false,
-            attachments: [],
-            commentThread: sampleCommentThreads[2] ?? []
-        ),
-        CommunityPost(
-            id: 3, user: "Sam Lee",
-            school: "MIT",
-            major: "BS Computer Science",
-            title: "Just discovered the best study technique",
-            body: "Spaced repetition + active recall + NoteWorks AI summaries = unbeatable combo. Went from C+ to A- in organic chem.",
-            tags: ["Study Tips"],
-            likes: 45, dislikes: 0, userReaction: nil, connected: false,
-            attachments: [],
-            commentThread: sampleCommentThreads[3] ?? []
-        ),
-        CommunityPost(
-            id: 4, user: "Amy Wang",
-            school: "Stanford",
-            major: "MS Biology",
-            title: "Anyone taking Cell Bio with Prof. Martinez?",
-            body: "Looking for study group partners. The midterm is in 2 weeks and I have 16 pages of notes to review.",
-            tags: ["Biology"],
-            likes: 8, dislikes: 0, userReaction: nil, connected: false,
-            attachments: [],
-            commentThread: []
-        ),
-        CommunityPost(
-            id: 5, user: "Jordan Park",
-            school: "NYU",
-            major: "BA Philosophy",
-            title: "Hot take: Nietzsche is overrated",
-            body: "There, I said it. Change my mind in the comments.",
-            tags: ["Philosophy"],
-            likes: 67, dislikes: 0, userReaction: nil, connected: false,
-            attachments: [],
-            commentThread: []
-        ),
-        CommunityPost(
-            id: 6, user: "Lisa Zhang",
-            school: "Caltech",
-            major: "BS Physics",
-            title: "Lab report template that saved my life",
-            body: "Sharing my physics lab report template. It follows the standard format and has built-in sections for error analysis.",
-            tags: ["Physics", "Course"],
-            likes: 31, dislikes: 0, userReaction: nil, connected: false,
-            attachments: [],
-            commentThread: []
-        ),
-    ]
-}
-
-// MARK: - Name helper
-
-/// Mirrors `nameToInitials` (JSX L4321–L4328).
-func nameToInitials(_ name: String) -> String {
-    let source = name.isEmpty ? "NW" : name
-    let parts = source.split(separator: " ").prefix(2)
-    return parts.compactMap { $0.first.map { String($0).uppercased() } }.joined()
+    private func handle(
+        _ error: Error,
+        forbidden: String = "You don't have permission to do that.",
+        notFound: String = "That post is no longer available"
+    ) {
+        let mapped = mapCommunityError(error, forbidden: forbidden, notFound: notFound)
+        if case .notFound = mapped {
+            // Drop the missing post from the local feed so the user isn't
+            // staring at a tombstone.
+            // (Caller's notFound copy implies the most-recent post id is
+            // not in the feed any more.)
+        }
+        feedError = mapped.userMessage
+    }
 }

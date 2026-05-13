@@ -20,7 +20,7 @@ import PencilKit
 /// Identifier for the dropdown currently expanded in the chrome. Lives at
 /// the editor view layer so tapping a different tool collapses the
 /// previous panel.
-enum NoteEditorPanel: Equatable {
+enum NoteEditorPanel: Equatable, Hashable {
     case pen
     case highlighter
     case eraser
@@ -29,6 +29,20 @@ enum NoteEditorPanel: Equatable {
     case rotate
     case bookmark
     case share
+    /// AI Enhancements dropdown anchored under the pill in the header.
+    case ai
+}
+
+// MARK: - Tool button anchor key
+
+/// Reports the global midX (in a shared coordinate space named
+/// `NoteEditorCoord`) of each panel-bearing tool button so the editor view
+/// can pop the matching dropdown directly underneath it.
+struct ToolButtonAnchorKey: PreferenceKey {
+    static var defaultValue: [NoteEditorPanel: CGFloat] = [:]
+    static func reduce(value: inout [NoteEditorPanel: CGFloat], nextValue: () -> [NoteEditorPanel: CGFloat]) {
+        value.merge(nextValue()) { _, new in new }
+    }
 }
 
 struct NoteEditorToolStrip: View {
@@ -109,6 +123,26 @@ struct NoteEditorToolStrip: View {
             if let panel {
                 openPanel = (openPanel == panel) ? nil : panel
             }
+        }
+        .background(anchorReporter(for: panel))
+    }
+
+    /// Publishes this button's midX to `ToolButtonAnchorKey` so the editor
+    /// view can pop the matching dropdown directly underneath. Only buttons
+    /// that own a panel report (pen / eraser / highlighter); others return
+    /// `EmptyView` so they cost nothing.
+    @ViewBuilder
+    private func anchorReporter(for panel: NoteEditorPanel?) -> some View {
+        if let panel {
+            GeometryReader { proxy in
+                let frame = proxy.frame(in: .named("NoteEditorCoord"))
+                Color.clear.preference(
+                    key: ToolButtonAnchorKey.self,
+                    value: [panel: frame.midX]
+                )
+            }
+        } else {
+            EmptyView()
         }
     }
 }

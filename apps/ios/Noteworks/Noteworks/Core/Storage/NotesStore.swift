@@ -51,6 +51,84 @@ enum NotePageBackground: String, Codable, CaseIterable, Hashable {
     }
 }
 
+// MARK: - Page overlays (text + image stickers on top of the canvas)
+
+/// Whether the overlay is a text box or an image. PencilKit can't host
+/// either natively, so the editor renders a SwiftUI overlay layer above
+/// the canvas with these items.
+enum NotePageOverlayKind: String, Codable, Hashable {
+    case text
+    case image
+}
+
+/// A draggable item placed on top of a note page. Coordinates are stored
+/// in normalized [0…1] units against the page rect so they survive page
+/// rotation, device rotation, and zoom without re-anchoring.
+struct NotePageOverlay: Codable, Identifiable, Equatable, Hashable {
+    let id: String
+    let kind: NotePageOverlayKind
+    var page: Int                   // 1-based, matching `Note.currentPage`
+    var normX: CGFloat              // top-left x, 0…1 of page width
+    var normY: CGFloat              // top-left y, 0…1 of page height
+    var normW: CGFloat              // width as fraction of page width
+    var normH: CGFloat              // height as fraction of page height
+
+    // .text fields
+    var text: String?
+    var fontSize: CGFloat?
+    /// 6-digit hex (e.g. "1C1C1E") — kept as a string so it round-trips
+    /// in JSON without dragging UIColor/Color into the model layer.
+    var colorHex: String?
+
+    // .image fields
+    /// Filename relative to the note's image folder. The full path is
+    /// resolved by `LocalNotesPersistence` so the model doesn't need to
+    /// know about users / disk layout.
+    var imageFilename: String?
+
+    static func text(
+        page: Int,
+        text: String,
+        fontSize: CGFloat = 18,
+        colorHex: String = "1C1C1E",
+        normRect: CGRect = CGRect(x: 0.2, y: 0.42, width: 0.6, height: 0.12)
+    ) -> NotePageOverlay {
+        NotePageOverlay(
+            id: UUID().uuidString,
+            kind: .text,
+            page: page,
+            normX: normRect.minX,
+            normY: normRect.minY,
+            normW: normRect.width,
+            normH: normRect.height,
+            text: text,
+            fontSize: fontSize,
+            colorHex: colorHex,
+            imageFilename: nil
+        )
+    }
+
+    static func image(
+        page: Int,
+        filename: String,
+        normRect: CGRect = CGRect(x: 0.25, y: 0.35, width: 0.5, height: 0.32)
+    ) -> NotePageOverlay {
+        NotePageOverlay(
+            id: UUID().uuidString,
+            kind: .image,
+            page: page,
+            normX: normRect.minX,
+            normY: normRect.minY,
+            normW: normRect.width,
+            normH: normRect.height,
+            text: nil,
+            fontSize: nil,
+            colorHex: nil,
+            imageFilename: filename
+        )
+    }
+}
+
 /// Codable note record. Drawing bytes live separately on disk under
 /// `Documents/notes/<id>/<pageIdx>.drawing` and are loaded lazily.
 struct Note: Codable, Identifiable, Equatable, Hashable {
@@ -74,6 +152,9 @@ struct Note: Codable, Identifiable, Equatable, Hashable {
     /// One entry per page. Source of truth for page count is
     /// `pageSettings.count`; `pageCount` is kept in sync for the library card.
     var pageSettings: [NotePageSetting] = [NotePageSetting()]
+    /// Text + image stickers placed on top of the canvas. New in v2.1;
+    /// older snapshots decode to `[]` thanks to the custom decoder below.
+    var overlays: [NotePageOverlay] = []
 
     var formattedDate: String {
         let calendar = Calendar.current
@@ -86,6 +167,58 @@ struct Note: Codable, Identifiable, Equatable, Hashable {
             f.dateFormat = "MMM.dd  HH:mm"
             return f.string(from: createdAt).uppercased()
         }
+    }
+
+    init(
+        id: String,
+        title: String,
+        subject: String? = nil,
+        tag: String? = nil,
+        sharedBy: String? = nil,
+        pageCount: Int,
+        createdAt: Date,
+        updatedAt: Date,
+        bookmarked: Bool = false,
+        currentPage: Int = 1,
+        pageSettings: [NotePageSetting] = [NotePageSetting()],
+        overlays: [NotePageOverlay] = []
+    ) {
+        self.id = id
+        self.title = title
+        self.subject = subject
+        self.tag = tag
+        self.sharedBy = sharedBy
+        self.pageCount = pageCount
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.bookmarked = bookmarked
+        self.currentPage = currentPage
+        self.pageSettings = pageSettings
+        self.overlays = overlays
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, subject, tag, sharedBy, pageCount, createdAt, updatedAt,
+             bookmarked, currentPage, pageSettings, overlays
+    }
+
+    /// Lenient decoder so notes persisted before `overlays` existed still
+    /// load cleanly (they just come back with an empty array).
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        subject = try c.decodeIfPresent(String.self, forKey: .subject)
+        tag = try c.decodeIfPresent(String.self, forKey: .tag)
+        sharedBy = try c.decodeIfPresent(String.self, forKey: .sharedBy)
+        pageCount = try c.decode(Int.self, forKey: .pageCount)
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        updatedAt = try c.decode(Date.self, forKey: .updatedAt)
+        bookmarked = (try c.decodeIfPresent(Bool.self, forKey: .bookmarked)) ?? false
+        currentPage = (try c.decodeIfPresent(Int.self, forKey: .currentPage)) ?? 1
+        pageSettings = (try c.decodeIfPresent([NotePageSetting].self, forKey: .pageSettings))
+            ?? Array(repeating: NotePageSetting(), count: max(1, pageCount))
+        overlays = (try c.decodeIfPresent([NotePageOverlay].self, forKey: .overlays)) ?? []
     }
 }
 
@@ -121,6 +254,26 @@ final class NotesStore: ObservableObject {
     /// (L6907 + `navigate(target, subject)` L6920–L6933).
     @Published var libraryFilter: String?
 
+    /// True once `activate(userId:)` has resolved (snapshot loaded or
+    /// confirmed empty). Views gate their content on this so we never
+    /// flash a half-empty layout between sign-out and the next sign-in.
+    @Published private(set) var isReady: Bool = false
+
+    /// Whichever user the store is currently scoped to. `nil` between
+    /// sign-out and the next `activate(userId:)`.
+    @Published private(set) var activeUserId: String?
+
+    // MARK: - Editor session state (open-note tabs)
+
+    /// Ordered list of note IDs currently open in the editor's tab strip.
+    /// Mirrors the JSX `openNotes` array (NotetakingPage L3533). In-memory
+    /// only — sessions reset on sign-out and on app cold-launch.
+    @Published private(set) var openNoteIds: [String] = []
+
+    /// The tab the editor is currently focused on. `nil` when no editor
+    /// session is active.
+    @Published private(set) var activeOpenNoteId: String?
+
     // MARK: - Reserved names (match JSX L7002–L7004)
 
     static let reservedBubbleNames: Set<String> = ["unnamed", "uncategorized"]
@@ -131,27 +284,99 @@ final class NotesStore: ObservableObject {
 
     // MARK: - Init
 
-    init(persistence: LocalNotesPersistence = .shared, autoload: Bool = true) {
+    /// Notes stay empty until `activate(userId:)` runs. `AppState.bootstrap`
+    /// and `AppState.handleAuthResult` are responsible for that call.
+    init(persistence: LocalNotesPersistence = .shared) {
         self.persistence = persistence
-        if autoload {
-            load()
-        }
     }
 
-    // MARK: - Loading / saving
+    // MARK: - Per-user lifecycle
 
-    private func load() {
-        if let snapshot = persistence.loadStore() {
+    /// Binds the store to `userId`. Loads the user's persisted bubble list
+    /// and notes from disk (or starts empty for a brand-new account). Safe
+    /// to call repeatedly with the same `userId` — that case is a no-op.
+    func activate(userId: String) {
+        if activeUserId == userId, isReady { return }
+        // Clear first so previously-displayed notes from another user never
+        // leak through even for a single frame while disk IO is in flight.
+        bubbleNames = []
+        notes = []
+        libraryFilter = nil
+
+        let snapshot = persistence.setActiveUser(userId)
+        if let snapshot {
             bubbleNames = snapshot.bubbleNames
             notes = snapshot.notes
-        } else {
-            // First run — seed with the JSX-style defaults so the home + library
-            // are not empty.
-            let seed = NotesStore.firstRunSeed()
-            bubbleNames = seed.bubbleNames
-            notes = seed.notes
-            saveNow()
         }
+        activeUserId = userId
+        isReady = true
+    }
+
+    /// Drops the store back to its pre-sign-in state. Files on disk stay
+    /// in place under `Documents/users/<userId>/` so a returning user
+    /// keeps their library.
+    func deactivate() {
+        persistence.clearActiveUser()
+        bubbleNames = []
+        notes = []
+        libraryFilter = nil
+        activeUserId = nil
+        isReady = false
+        clearOpenNotes()
+    }
+
+    // MARK: - Editor session lifecycle
+
+    /// Adds `id` to the tab strip (if not already there) and marks it
+    /// active. Tabs preserve insertion order so the JSX-style left-to-
+    /// right strip stays stable across opens.
+    func openNoteInEditor(_ id: String) {
+        if !openNoteIds.contains(id) {
+            openNoteIds.append(id)
+        }
+        activeOpenNoteId = id
+    }
+
+    /// Removes a tab. Returns the next note that should become active,
+    /// or `nil` if that was the last tab (caller should pop the editor).
+    @discardableResult
+    func closeNoteTab(_ id: String) -> String? {
+        guard let idx = openNoteIds.firstIndex(of: id) else {
+            return activeOpenNoteId
+        }
+        openNoteIds.remove(at: idx)
+        if openNoteIds.isEmpty {
+            activeOpenNoteId = nil
+            return nil
+        }
+        if activeOpenNoteId == id {
+            // Prefer the neighbour to the left so the user's focus stays
+            // close to where they were.
+            let nextIdx = max(0, min(idx, openNoteIds.count - 1))
+            activeOpenNoteId = openNoteIds[nextIdx]
+        }
+        return activeOpenNoteId
+    }
+
+    func setActiveOpenNote(_ id: String) {
+        guard openNoteIds.contains(id) else { return }
+        activeOpenNoteId = id
+    }
+
+    /// Creates a fresh draft and opens it in a new tab. Returns the new
+    /// note so the caller (the editor's "+" button) can land on it.
+    @discardableResult
+    func openNewNoteTab(subject: String? = nil) -> Note {
+        let note = createDraftNote(subject: subject)
+        openNoteInEditor(note.id)
+        return note
+    }
+
+    /// Clears every open tab. Called from `deactivate()` so a sign-out
+    /// never leaves another user's note IDs in memory.
+    func clearOpenNotes() {
+        openNoteIds = []
+        activeOpenNoteId = nil
     }
 
     private var snapshot: StoreSnapshot {
@@ -347,6 +572,32 @@ final class NotesStore: ObservableObject {
         notes[idx].pageCount = notes[idx].pageSettings.count
         notes[idx].currentPage = clamped + 1
         notes[idx].updatedAt = Date()
+        // Overlays: shift every page ≥ clamped+1 up by one, then clone
+        // the source page's overlays into the new slot. New ids so the
+        // copies are independently editable.
+        for oIdx in notes[idx].overlays.indices where notes[idx].overlays[oIdx].page > clamped {
+            notes[idx].overlays[oIdx].page += 1
+        }
+        let cloned = notes[idx].overlays
+            .filter { $0.page == clamped }
+            .map { src -> NotePageOverlay in
+                var copy = src
+                copy = NotePageOverlay(
+                    id: UUID().uuidString,
+                    kind: src.kind,
+                    page: clamped + 1,
+                    normX: src.normX,
+                    normY: src.normY,
+                    normW: src.normW,
+                    normH: src.normH,
+                    text: src.text,
+                    fontSize: src.fontSize,
+                    colorHex: src.colorHex,
+                    imageFilename: src.imageFilename
+                )
+                return copy
+            }
+        notes[idx].overlays.append(contentsOf: cloned)
         // Disk: shift any drawings at indices ≥ clamped down by one, then
         // copy the original drawing to the new slot.
         persistence.shiftDrawings(for: noteId, fromIndex: clamped - 1, by: 1)
@@ -372,6 +623,18 @@ final class NotesStore: ObservableObject {
         notes[idx].pageCount = notes[idx].pageSettings.count
         notes[idx].currentPage = min(clamped, notes[idx].pageSettings.count)
         notes[idx].updatedAt = Date()
+        // Overlays: drop everything on the deleted page (and delete its
+        // image files), then shift pages above it down by one.
+        let doomed = notes[idx].overlays.filter { $0.page == clamped }
+        notes[idx].overlays.removeAll { $0.page == clamped }
+        for oIdx in notes[idx].overlays.indices where notes[idx].overlays[oIdx].page > clamped {
+            notes[idx].overlays[oIdx].page -= 1
+        }
+        for overlay in doomed {
+            if let filename = overlay.imageFilename {
+                persistence.deleteOverlayImage(for: noteId, filename: filename)
+            }
+        }
         persistence.deleteDrawing(for: noteId, page: clamped - 1)
         // Shift any remaining drawings beyond the deleted one up by one.
         persistence.shiftDrawings(for: noteId, fromIndex: clamped, by: -1)
@@ -425,6 +688,56 @@ final class NotesStore: ObservableObject {
 
     func note(id: String) -> Note? {
         notes.first(where: { $0.id == id })
+    }
+
+    // MARK: - Page overlay IO (text + image stickers)
+
+    /// Returns overlays attached to one page of one note (1-based page).
+    func overlays(for noteId: String, page: Int) -> [NotePageOverlay] {
+        guard let note = notes.first(where: { $0.id == noteId }) else { return [] }
+        return note.overlays.filter { $0.page == page }
+    }
+
+    /// Appends a new overlay onto a note.
+    func addOverlay(_ overlay: NotePageOverlay, to noteId: String) {
+        guard let idx = notes.firstIndex(where: { $0.id == noteId }) else { return }
+        notes[idx].overlays.append(overlay)
+        notes[idx].updatedAt = Date()
+        saveDebounced()
+    }
+
+    /// Replaces an existing overlay by id. No-op if the note/overlay
+    /// doesn't exist (e.g. user closed the tab mid-drag).
+    func updateOverlay(_ overlay: NotePageOverlay, in noteId: String) {
+        guard let idx = notes.firstIndex(where: { $0.id == noteId }),
+              let oidx = notes[idx].overlays.firstIndex(where: { $0.id == overlay.id })
+        else { return }
+        notes[idx].overlays[oidx] = overlay
+        notes[idx].updatedAt = Date()
+        saveDebounced()
+    }
+
+    /// Removes an overlay by id. If the overlay was an image, deletes
+    /// the backing PNG file too.
+    func removeOverlay(id overlayId: String, from noteId: String) {
+        guard let idx = notes.firstIndex(where: { $0.id == noteId }) else { return }
+        let removed = notes[idx].overlays.first(where: { $0.id == overlayId })
+        notes[idx].overlays.removeAll { $0.id == overlayId }
+        notes[idx].updatedAt = Date()
+        saveDebounced()
+        if let filename = removed?.imageFilename {
+            persistence.deleteOverlayImage(for: noteId, filename: filename)
+        }
+    }
+
+    // MARK: - Overlay image data (delegate to persistence layer)
+
+    func loadOverlayImageData(for noteId: String, filename: String) -> Data? {
+        persistence.loadOverlayImage(for: noteId, filename: filename)
+    }
+
+    func saveOverlayImageData(_ data: Data, for noteId: String, filename: String) {
+        persistence.saveOverlayImage(data, for: noteId, filename: filename)
     }
 
     // MARK: - Lookups for the UI
@@ -536,5 +849,26 @@ extension NotesStore {
             notes: notes,
             schemaVersion: StoreSnapshot.currentSchemaVersion
         )
+    }
+}
+
+// MARK: - Preview helper
+
+extension NotesStore {
+    /// Activates a fixed "preview-user" so SwiftUI #Preview blocks see a
+    /// fully-ready store with realistic content. Hydrates from the
+    /// `firstRunSeed` in memory (without writing to disk) when the
+    /// preview user has no persisted snapshot yet, so the canvas pages
+    /// in the previews are always populated.
+    @MainActor
+    static func preview() -> NotesStore {
+        let store = NotesStore()
+        store.activate(userId: "preview-user")
+        if store.notes.isEmpty && store.bubbleNames.isEmpty {
+            let seed = NotesStore.firstRunSeed()
+            store.bubbleNames = seed.bubbleNames
+            store.notes = seed.notes
+        }
+        return store
     }
 }

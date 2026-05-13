@@ -25,7 +25,7 @@ enum OnboardingStep: Int, CaseIterable {
 struct OnboardingFlow: View {
     @EnvironmentObject var appState: AppState
     @StateObject private var data = OnboardingData()
-    @State private var step: OnboardingStep = .welcome
+    @State private var step: OnboardingStep
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var signInEmail = ""
@@ -34,6 +34,13 @@ struct OnboardingFlow: View {
     @State private var resetCode = ["", "", "", "", "", ""]
     @State private var resetNewPassword = ""
     @State private var resetConfirmPassword = ""
+
+    /// `startAt: .college` is the resume entry-point used by `ContentView`
+    /// when a returning user has a valid session but `onboarding_completed_at`
+    /// is still null (e.g. OAuth first run or a force-quit mid-flow).
+    init(startAt: OnboardingStep = .welcome) {
+        _step = State(initialValue: startAt)
+    }
 
     var body: some View {
         ZStack {
@@ -79,7 +86,18 @@ struct OnboardingFlow: View {
                 case .signInDone:
                     SignInDoneView(
                         email: signInEmail,
-                        onContinue: { appState.isAuthenticated = true }
+                        onContinue: {
+                            // Profile drives routing now. Refresh, and if the
+                            // user hasn't finished onboarding, drop them at
+                            // the college step inside this same flow.
+                            // Otherwise `ContentView` flips to `MainTabView`.
+                            Task {
+                                if let next = await appState.refreshProfile(),
+                                   !next.hasCompletedOnboarding {
+                                    step = .college
+                                }
+                            }
+                        }
                     )
                 case .signUp:
                     SignUpStepView(data: data, onNext: { handleSignUp() }, onBack: { step = .welcome })
@@ -99,8 +117,18 @@ struct OnboardingFlow: View {
                 case .interests:
                     InterestsStepView(data: data, onNext: { handleSubmitOnboarding() }, onBack: { step = .major })
                 case .done:
-                    DoneView(name: data.name, onExplore: { appState.isAuthenticated = true })
+                    // `submit-onboarding` already set `onboarding_completed_at`
+                    // and `handleSubmitOnboarding` refetched the profile, so
+                    // tapping Explore just lets `ContentView` route to
+                    // `MainTabView`. No need to flip a local flag.
+                    DoneView(name: data.name, onExplore: {
+                        Task { await appState.refreshProfile() }
+                    })
                 case .skipped:
+                    // Skip is a demo / debug shortcut; keep the legacy
+                    // "force-authenticated" toggle so the existing entry
+                    // points still work, but real users land here only by
+                    // bypassing onboarding intentionally.
                     SkippedView(onComplete: { appState.isAuthenticated = true })
                 case .forgotPassword:
                     ForgotPasswordView(
@@ -272,31 +300,53 @@ struct OnboardingFlow: View {
         isLoading = true
         Task {
             do {
-                let resolvedSchoolEmail: String
-                if data.isOAuthUser && !data.schoolEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    resolvedSchoolEmail = data.schoolEmail.trimmingCharacters(in: .whitespacesAndNewlines)
-                } else {
-                    resolvedSchoolEmail = data.email.trimmingCharacters(in: .whitespacesAndNewlines)
-                }
+                // `OnboardingData.email` / `.name` are only populated when the
+                // user walked through the sign-up screen. Sign-in users and
+                // some OAuth flows arrive here with those fields empty, so
+                // we fall back through every source we know about before
+                // the server has a chance to reject the payload with
+                // "Name is required" / "school_email is required".
+                let resolvedSchoolEmail: String = {
+                    let typed = data.schoolEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !typed.isEmpty { return typed }
+                    let signup = data.email.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !signup.isEmpty { return signup }
+                    let session = appState.currentUser?.email
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if let session, !session.isEmpty { return session }
+                    return appState.profile?.email.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                }()
 
-                let resolvedName: String
-                if data.isOAuthUser && data.name.isEmpty {
-                    resolvedName = appState.currentUser?.email ?? ""
-                } else {
-                    resolvedName = data.name
-                }
+                let resolvedName: String = {
+                    let typed = data.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !typed.isEmpty { return typed }
+                    if let profileName = appState.profile?.name?.trimmingCharacters(in: .whitespacesAndNewlines),
+                       !profileName.isEmpty {
+                        return profileName
+                    }
+                    // Last resort: derive a friendly name from the email so
+                    // the server's `Name is required` check passes. The user
+                    // can change this in the Profile screen afterwards.
+                    let emailSource = appState.currentUser?.email ?? data.email
+                    let local = emailSource.split(separator: "@").first.map(String.init) ?? emailSource
+                    return local.isEmpty ? "Noteworks User" : local
+                }()
 
                 let payload = OnboardingPayload(
                     name: resolvedName,
                     yearOfGraduation: data.resolvedYearOfGraduation,
                     schoolAffiliation: data.schoolAffiliationForSubmit,
                     schoolEmail: resolvedSchoolEmail,
-                    courseCodes: []
+                    courseCodes: data.selectedCourseCodes
                 )
                 try await appState.authService.submitOnboarding(
                     payload,
                     accessToken: appState.accessToken ?? ""
                 )
+                // Land on `DoneView` first so the user gets the
+                // celebration screen. The Explore button refetches the
+                // profile, which flips `onboarding_completed_at` and lets
+                // `ContentView` route into `MainTabView`.
                 step = .done
             } catch {
                 errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
@@ -364,5 +414,5 @@ struct OnboardingFlow: View {
 
 #Preview {
     OnboardingFlow()
-        .environmentObject(AppState())
+        .environmentObject(AppState(notesStore: NotesStore.preview()))
 }

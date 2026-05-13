@@ -215,7 +215,9 @@ struct CourseSpaceView: View {
                     .padding(.bottom, 16)
 
                     // Content
-                    if activeTab == .notes {
+                    if !store.isReady {
+                        libraryNotReadyPlaceholder
+                    } else if activeTab == .notes {
                         notesGrid
                     } else {
                         assignmentsPlaceholder
@@ -313,6 +315,20 @@ struct CourseSpaceView: View {
             filterSubject = pending
         }
         store.libraryFilter = nil
+    }
+
+    // MARK: - Placeholder while the store has no active user
+
+    private var libraryNotReadyPlaceholder: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+                .tint(textPrimary.opacity(0.5))
+            Text("Loading your library…")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(textSecondary)
+        }
+        .padding(.top, 80)
+        .frame(maxWidth: .infinity)
     }
 
     // MARK: - Notes grid (max 3 columns)
@@ -740,7 +756,7 @@ private struct CardPressStyle: ButtonStyle {
 // MARK: - AnyShape helper
 
 private struct AnyShape: Shape {
-    private let _path: (CGRect) -> Path
+    private let _path: @Sendable (CGRect) -> Path
 
     init<S: Shape>(_ shape: S) {
         _path = { shape.path(in: $0) }
@@ -754,6 +770,6 @@ private struct AnyShape: Shape {
 #Preview {
     NavigationStack {
         CourseSpaceView(selectedTab: .constant(AppTab.notebook))
-            .environmentObject(NotesStore())
+            .environmentObject(NotesStore.preview())
     }
 }

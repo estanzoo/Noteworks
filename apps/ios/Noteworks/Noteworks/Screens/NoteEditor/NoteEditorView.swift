@@ -26,6 +26,7 @@
 
 import SwiftUI
 import PencilKit
+import PhotosUI
 
 struct NoteEditorView: View {
     @EnvironmentObject private var appState: AppState
@@ -42,12 +43,42 @@ struct NoteEditorView: View {
     /// Counter that ticks every time the canvas reports a change so undo /
     /// redo enabled-state in the chrome stays in sync.
     @State private var canvasRevision: Int = 0
+    /// midX of each panel-bearing tool button in the shared
+    /// "NoteEditorCoord" space. The tool-panel overlay reads this so the
+    /// pen / eraser / highlighter dropdowns pop up directly under the
+    /// icon that opened them, sitting above the page card.
+    @State private var toolAnchors: [NoteEditorPanel: CGFloat] = [:]
+
+    // MARK: - Overlay editor state
+
+    /// Currently selected text/image overlay on the active page.
+    @State private var selectedOverlayId: String? = nil
+    /// Drives the text editor sheet. Holds either an existing overlay
+    /// (edit mode) or `nil` for fresh insert.
+    @State private var textEditorTarget: TextEditorTarget? = nil
+    @State private var showPhotoPicker = false
+    @State private var photoSelection: PhotosPickerItem? = nil
 
     var noteId: String?
 
+    // MARK: - Helper types
+
+    /// Identifier-bearing wrapper so SwiftUI can drive `.sheet(item:)`
+    /// against both the "fresh insert" (nil overlay) and "edit existing"
+    /// (existing overlay) cases.
+    struct TextEditorTarget: Identifiable {
+        let id: String
+        let overlay: NotePageOverlay?
+    }
+
     var body: some View {
         ZStack {
+            // `.ignoresSafeArea()` mirrors every other screen using
+            // `OnboardingBackground` (Home, Profile, Community). Without it
+            // the status-bar and home-indicator regions show through as a
+            // white band above the chrome and below the page footer.
             OnboardingBackground()
+                .ignoresSafeArea()
 
             VStack(spacing: 0) {
                 chromeCard
@@ -71,9 +102,29 @@ struct NoteEditorView: View {
                 .padding(.bottom, 12)
             }
         }
+        .coordinateSpace(name: "NoteEditorCoord")
+        .onPreferenceChange(ToolButtonAnchorKey.self) { anchors in
+            toolAnchors = anchors
+        }
         .navigationBarHidden(true)
         .toolbar(.hidden, for: .navigationBar)
-        .onAppear { viewModel.attach(store: store, noteId: noteId) }
+        .onAppear {
+            // Ensure the note we navigated in with is registered as an
+            // open tab and is the focused tab. If the user later opens a
+            // second note from CourseSpace while the editor is already
+            // on-screen, `store.openNoteInEditor` will just add it to
+            // `openNoteIds` and flip `activeOpenNoteId`.
+            if let initialId = noteId {
+                store.openNoteInEditor(initialId)
+            }
+            viewModel.attach(store: store, noteId: store.activeOpenNoteId ?? noteId)
+        }
+        .onChange(of: store.activeOpenNoteId) { _, newId in
+            // Tab switch — flush the previous note's pending save first,
+            // then load the freshly-active one.
+            viewModel.switchActiveNote(newId)
+            openPanel = nil
+        }
         .onChange(of: viewModel.drawing) { _, _ in
             viewModel.handleDrawingChange()
             canvasRevision &+= 1
@@ -92,12 +143,148 @@ struct NoteEditorView: View {
             .environmentObject(store)
             .presentationDetents([.medium, .large])
         }
+        .sheet(item: $textEditorTarget) { target in
+            TextOverlayEditorSheet(
+                existing: target.overlay,
+                onSave: { text, fontSize, hex in
+                    if let existing = target.overlay {
+                        viewModel.updateTextOverlay(
+                            store: store,
+                            overlay: existing,
+                            newText: text,
+                            newFontSize: fontSize,
+                            newColorHex: hex
+                        )
+                    } else if let newId = viewModel.insertTextOverlay(
+                        store: store,
+                        text: text,
+                        fontSize: fontSize,
+                        colorHex: hex
+                    ) {
+                        selectedOverlayId = newId
+                    }
+                    textEditorTarget = nil
+                },
+                onCancel: {
+                    textEditorTarget = nil
+                }
+            )
+        }
+        .photosPicker(
+            isPresented: $showPhotoPicker,
+            selection: $photoSelection,
+            matching: .images,
+            photoLibrary: .shared()
+        )
+        .onChange(of: photoSelection) { _, newItem in
+            guard let newItem else { return }
+            Task { await handlePhotoPicked(newItem) }
+        }
+        .onChange(of: viewModel.pendingTextInsertNonce) { _, _ in
+            // Fresh-insert path. Editing existing overlays is driven from
+            // the overlay layer's `onEditText` callback instead.
+            textEditorTarget = TextEditorTarget(id: UUID().uuidString, overlay: nil)
+        }
+        .onChange(of: viewModel.pendingImagePickNonce) { _, _ in
+            photoSelection = nil
+            showPhotoPicker = true
+        }
+        .onChange(of: viewModel.currentPage) { _, _ in
+            // Don't carry selection across pages — the selected id won't
+            // resolve to anything on the new page and would just disable
+            // PencilKit interaction for no reason.
+            selectedOverlayId = nil
+        }
+    }
+
+    // MARK: - Photo picker handling
+
+    /// Loads the selected photo's bytes, downscales if necessary, and
+    /// drops a fresh image overlay onto the current page.
+    private func handlePhotoPicked(_ item: PhotosPickerItem) async {
+        defer { photoSelection = nil }
+        do {
+            guard let raw = try await item.loadTransferable(type: Data.self),
+                  let original = UIImage(data: raw) else {
+                viewModel.flashStatus("Could not load that image")
+                return
+            }
+            // Resize to fit within 1600 px on the longer edge so saved
+            // image files stay sane. PNG preserves quality and avoids the
+            // JPEG re-encoding artifacts on text-heavy screenshots.
+            let downscaled = original.downscaled(toLongEdge: 1600)
+            guard let data = downscaled.pngData() else {
+                viewModel.flashStatus("Could not encode that image")
+                return
+            }
+            await MainActor.run {
+                if let newId = viewModel.insertImageOverlay(
+                    store: store,
+                    data: data,
+                    pixelSize: downscaled.size
+                ) {
+                    selectedOverlayId = newId
+                }
+            }
+        } catch {
+            viewModel.flashStatus("Image load failed")
+        }
+    }
+
+    // MARK: - Open-tab session helpers
+
+    /// Resolves each open tab id to a `Note` for the tab bar to render.
+    /// Filters out any id that the store doesn't know about so a deleted
+    /// note can't ghost the bar.
+    private var openTabNotes: [Note] {
+        store.openNoteIds.compactMap { store.note(id: $0) }
+    }
+
+    /// Closes a tab. If it was the last one we pop back to Home; if it
+    /// was the active tab the store automatically picks a neighbour and
+    /// the editor reacts via `.onChange(of: store.activeOpenNoteId)`.
+    private func handleCloseTab(_ id: String) {
+        let next = store.closeNoteTab(id)
+        openPanel = nil
+        if next == nil {
+            dismiss()
+        }
+    }
+
+    /// Opens a fresh draft tab inheriting the current note's subject so
+    /// the new note lands in the same bubble.
+    private func handleNewTab() {
+        _ = store.openNewNoteTab(subject: viewModel.subject)
+        openPanel = nil
     }
 
     // MARK: - Chrome card (single glass surface)
 
     private var chromeCard: some View {
         VStack(spacing: 0) {
+            // Tab strip — only rendered when more than one note is open
+            // so a single-tab session keeps the chrome compact.
+            if store.openNoteIds.count > 1 {
+                NoteTabBar(
+                    notes: openTabNotes,
+                    activeId: store.activeOpenNoteId,
+                    onSelect: { id in
+                        store.setActiveOpenNote(id)
+                        openPanel = nil
+                    },
+                    onClose: handleCloseTab,
+                    onCreateNew: handleNewTab
+                )
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
+                .padding(.bottom, 6)
+
+                Rectangle()
+                    .fill(NoteEditorTheme.chromeBorder.opacity(0.4))
+                    .frame(height: 1)
+                    .padding(.horizontal, 12)
+            }
+
             headerRow
                 .padding(.horizontal, 12)
                 .padding(.top, 8)
@@ -128,10 +315,32 @@ struct NoteEditorView: View {
                 .offset(x: -12, y: 56)
                 .allowsHitTesting(openPanel == .more || openPanel == .background || openPanel == .rotate)
         }
-        .overlay(alignment: .top) {
-            toolPanelOverlay
-                .offset(y: 100)
-                .allowsHitTesting(openPanel == .pen || openPanel == .highlighter || openPanel == .eraser)
+    }
+
+    /// AI Enhancements dropdown — anchored under the pill via the shared
+    /// `NoteEditorCoord` space. Lives in the canvas area so it sits
+    /// floating above the page card, just like the tool color panels.
+    @ViewBuilder
+    private func aiDropdownAnchoredOverlay(canvasWidth: CGFloat) -> some View {
+        if openPanel == .ai {
+            GeometryReader { canvasProxy in
+                let canvasFrame = canvasProxy.frame(in: .named("NoteEditorCoord"))
+                let panelWidth: CGFloat = 308
+                let anchorX = toolAnchors[.ai] ?? canvasFrame.maxX
+                let localCenter = anchorX - canvasFrame.minX
+                let minLeading: CGFloat = 8
+                let maxLeading = max(minLeading, canvasWidth - panelWidth - 8)
+                let leading = min(max(localCenter - panelWidth / 2, minLeading), maxLeading)
+                AIEnhancementsDropdown(viewModel: viewModel) {
+                    openPanel = nil
+                    viewModel.closeAIEnhancements()
+                }
+                .frame(width: panelWidth, alignment: .leading)
+                .offset(x: leading, y: 8)
+                .transition(.scale(scale: 0.96).combined(with: .opacity))
+            }
+        } else {
+            EmptyView()
         }
     }
 
@@ -168,21 +377,27 @@ struct NoteEditorView: View {
                 openPanel = nil
             }
 
-            // Gap-detection pill — visual only for v1 (mirrors JSX L3630).
-            HStack(spacing: 4) {
-                Image(systemName: "wand.and.stars")
-                    .font(.system(size: 11, weight: .semibold))
-                Text("Gap Detection")
-                    .font(.system(size: 11, weight: .semibold))
+            // AI Enhancements pill — opens the Gap Detection / Smart
+            // Organization dropdown. The pill visually morphs to a
+            // progress bar while a job is mid-run (mirrors jsx L2533).
+            AIEnhancementsPill(viewModel: viewModel) {
+                if openPanel == .ai {
+                    openPanel = nil
+                    viewModel.closeAIEnhancements()
+                } else {
+                    viewModel.openAIEnhancements()
+                    openPanel = .ai
+                }
             }
-            .foregroundStyle(NoteEditorTheme.accent)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(Capsule().fill(NoteEditorTheme.accent.opacity(0.12)))
-            .overlay(Capsule().strokeBorder(NoteEditorTheme.accent.opacity(0.35), lineWidth: 1))
-            .onTapGesture {
-                viewModel.flashStatus("Gap Detection · coming soon")
-            }
+            .background(
+                GeometryReader { proxy in
+                    let frame = proxy.frame(in: .named("NoteEditorCoord"))
+                    Color.clear.preference(
+                        key: ToolButtonAnchorKey.self,
+                        value: [.ai: frame.midX]
+                    )
+                }
+            )
 
             ChromeIconButton(
                 symbol: "ellipsis",
@@ -292,15 +507,44 @@ struct NoteEditorView: View {
         GeometryReader { geometry in
             let rotation = viewModel.currentPageRotation
             let portraitSize = pageSize(in: geometry.size, rotation: rotation)
-            ZStack {
+            ZStack(alignment: .top) {
                 ZStack {
                     Color.white
                     NotePageBackgroundView(background: viewModel.currentPageBackground)
                     PencilCanvasView(
                         drawing: $viewModel.drawing,
                         tool: viewModel.pkTool,
+                        isDrawingEnabled: viewModel.activeTool.canDraw,
                         onCanvasReady: { canvas in self.liveCanvas = canvas }
                     )
+                    // Text + image stickers — rendered above PencilKit
+                    // so they sit on top of ink. The layer only
+                    // intercepts touches when an overlay is currently
+                    // selected or the user is in text/image mode, so
+                    // drawing still goes through to PencilKit by default.
+                    if let noteId = viewModel.noteId {
+                        NoteOverlayLayer(
+                            overlays: viewModel.currentPageOverlays(store: store),
+                            pageSize: portraitSize,
+                            noteId: noteId,
+                            selectedId: $selectedOverlayId,
+                            onUpdate: { updated in
+                                store.updateOverlay(updated, in: noteId)
+                            },
+                            onDelete: { overlay in
+                                store.removeOverlay(id: overlay.id, from: noteId)
+                            },
+                            onEditText: { overlay in
+                                textEditorTarget = TextEditorTarget(id: overlay.id, overlay: overlay)
+                            },
+                            imageDataProvider: { filename in
+                                store.loadOverlayImageData(for: noteId, filename: filename)
+                            }
+                        )
+                        .allowsHitTesting(
+                            !viewModel.activeTool.canDraw || selectedOverlayId != nil
+                        )
+                    }
                 }
                 .frame(width: portraitSize.width, height: portraitSize.height)
                 .clipShape(RoundedRectangle(cornerRadius: 16))
@@ -310,12 +554,52 @@ struct NoteEditorView: View {
                 )
                 .shadow(color: .black.opacity(0.06), radius: 14, y: 6)
                 .rotationEffect(.degrees(Double(rotation)))
+
+                // Floating color / eraser dropdown — positioned in the
+                // canvas frame so it sits visually ABOVE the page. The
+                // panel's leading x is clamped to the canvas width minus
+                // a typical panel width so it doesn't get pushed off
+                // screen by a tool button near the right edge.
+                toolPanelAnchoredOverlay(canvasWidth: geometry.size.width)
+                    .allowsHitTesting(
+                        openPanel == .pen || openPanel == .highlighter || openPanel == .eraser
+                    )
+
+                aiDropdownAnchoredOverlay(canvasWidth: geometry.size.width)
+                    .allowsHitTesting(openPanel == .ai)
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
             .contentShape(Rectangle())
             .onTapGesture {
                 if openPanel != nil { openPanel = nil }
             }
+        }
+    }
+
+    /// Pen / highlighter / eraser dropdown rendered floating just below
+    /// the chrome, centered on the trigger button's reported midX in the
+    /// shared "NoteEditorCoord" space. We translate that global x into a
+    /// leading offset inside the canvas frame and clamp so the 240-pt
+    /// panel always stays fully visible.
+    @ViewBuilder
+    private func toolPanelAnchoredOverlay(canvasWidth: CGFloat) -> some View {
+        if let panel = openPanel,
+           panel == .pen || panel == .highlighter || panel == .eraser {
+            GeometryReader { canvasProxy in
+                let canvasFrame = canvasProxy.frame(in: .named("NoteEditorCoord"))
+                let panelWidth: CGFloat = 248      // matches ChromeDropdownPanel width(240) + a little fudge
+                let anchorX = toolAnchors[panel] ?? canvasFrame.midX
+                let localCenter = anchorX - canvasFrame.minX
+                let minLeading: CGFloat = 8
+                let maxLeading = max(minLeading, canvasWidth - panelWidth - 8)
+                let leading = min(max(localCenter - panelWidth / 2, minLeading), maxLeading)
+                toolPanelOverlay
+                    .frame(width: panelWidth, alignment: .leading)
+                    .offset(x: leading, y: 8)
+                    .transition(.scale(scale: 0.96).combined(with: .opacity))
+            }
+        } else {
+            EmptyView()
         }
     }
 
@@ -381,12 +665,36 @@ private struct ShareSheet: UIViewControllerRepresentable {
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 
+// MARK: - UIImage downscale helper
+
+private extension UIImage {
+    /// Returns a copy resized so its longer edge is at most `limit` px.
+    /// Returns `self` unchanged when the image is already small enough.
+    func downscaled(toLongEdge limit: CGFloat) -> UIImage {
+        let longEdge = max(size.width, size.height)
+        guard longEdge > limit else { return self }
+        let scale = limit / longEdge
+        let target = CGSize(width: size.width * scale, height: size.height * scale)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: target, format: format)
+        return renderer.image { _ in
+            draw(in: CGRect(origin: .zero, size: target))
+        }
+    }
+}
+
 // MARK: - Preview
 
 #Preview {
-    NavigationStack {
-        NoteEditorView(noteId: "preview-note")
-            .environmentObject(AppState())
-            .environmentObject(NotesStore())
+    let notesStore = NotesStore.preview()
+    // Seed the preview with the first note's id (rather than a fake
+    // "preview-note") so the editor actually has content to render.
+    let seedId = notesStore.notes.first?.id ?? "preview-note"
+    notesStore.openNoteInEditor(seedId)
+    return NavigationStack {
+        NoteEditorView(noteId: seedId)
+            .environmentObject(AppState(notesStore: notesStore))
+            .environmentObject(notesStore)
     }
 }

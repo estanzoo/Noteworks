@@ -102,4 +102,29 @@ class OnboardingData: ObservableObject {
     var isInterestsValid: Bool {
         !interests.isEmpty || !customInterests.isEmpty
     }
+
+    /// Course-code-shaped list submitted to `submit-onboarding`.
+    ///
+    /// The onboarding UI today collects free-form interests/tags; the API
+    /// accepts up to 50 strings of at most 50 characters each
+    /// (`docs/Frontend_Auth_and_Onboarding_Guide.md` step 6 table). We map
+    /// preset + custom interests through, trim whitespace, drop empties,
+    /// de-duplicate case-insensitively, and clamp lengths. Later product
+    /// work can replace this with a real course picker — the wire format
+    /// stays the same.
+    var selectedCourseCodes: [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for raw in interests + customInterests {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let clipped = String(trimmed.prefix(50))
+            let key = clipped.lowercased()
+            if seen.insert(key).inserted {
+                result.append(clipped)
+            }
+            if result.count == 50 { break }
+        }
+        return result
+    }
 }

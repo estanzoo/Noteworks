@@ -10,6 +10,7 @@ import SwiftUI
 
 struct AboutYouSection: View {
     @ObservedObject var viewModel: ProfileViewModel
+    @EnvironmentObject var appState: AppState
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -63,7 +64,7 @@ struct AboutYouSection: View {
                     title: "Save Changes",
                     enabled: viewModel.aboutHasChanges
                 ) {
-                    viewModel.saveAbout()
+                    Task { await viewModel.saveAbout(using: appState) }
                 }
                 .frame(maxWidth: 180)
             }

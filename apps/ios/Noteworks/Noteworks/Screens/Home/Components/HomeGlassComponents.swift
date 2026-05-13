@@ -45,7 +45,7 @@ struct HomeGlassIconButton: View {
 // MARK: - AnyShape helper
 
 private struct AnyShape: Shape {
-    private let _path: (CGRect) -> Path
+    private let _path: @Sendable (CGRect) -> Path
     init<S: Shape>(_ shape: S) { _path = { shape.path(in: $0) } }
     func path(in rect: CGRect) -> Path { _path(rect) }
 }

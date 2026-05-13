@@ -36,12 +36,29 @@ enum APIError: LocalizedError {
     }
 }
 
+/// Posted when `APIClient` exhausts its single retry and a request still
+/// returns 401. `AppState` observes this to drop the user back to Welcome
+/// without every call site having to remember to do so.
+extension Notification.Name {
+    static let authSessionExpired = Notification.Name("NoteworksAuthSessionExpired")
+}
+
 /// Lightweight HTTP client for Supabase Edge Functions.
-/// All authenticated requests require an `accessToken` from the current session.
+///
+/// `accessToken` is still passed explicitly to each call (every screen
+/// already has one in hand). On 401 the client asks the configured
+/// `refreshTokenProvider` for a new one and retries the request **once**.
+/// If the retry is also 401 — or there is no provider — `.unauthorized`
+/// bubbles up and `Notification.Name.authSessionExpired` is posted.
 actor APIClient {
     static let shared = APIClient()
     private let session: URLSession
     private let decoder: JSONDecoder
+
+    /// Closure that exchanges the stored refresh token for a fresh access
+    /// token. Returns `nil` if refresh failed (caller should sign out).
+    /// Configured once on app launch via `configure(refreshTokenProvider:)`.
+    private var refreshTokenProvider: (@Sendable () async -> String?)?
 
     private init() {
         let config = URLSessionConfiguration.default
@@ -53,28 +70,43 @@ actor APIClient {
         decoder.dateDecodingStrategy = .iso8601
     }
 
+    // MARK: - Configuration
+
+    /// Install the refresh hook used by the one-shot 401 retry. Safe to
+    /// call multiple times — the most recent provider wins.
+    func configure(refreshTokenProvider: @escaping @Sendable () async -> String?) {
+        self.refreshTokenProvider = refreshTokenProvider
+    }
+
     // MARK: - JSON requests
 
     func get<T: Decodable>(_ url: URL, accessToken: String) async throws -> T {
-        var request = makeRequest(url: url, method: "GET", accessToken: accessToken)
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        return try await perform(request)
+        try await performJSON(url: url, method: "GET", body: nil, accessToken: accessToken)
     }
 
     func post<T: Decodable>(_ url: URL, body: some Encodable, accessToken: String) async throws -> T {
-        var request = makeRequest(url: url, method: "POST", accessToken: accessToken)
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(body)
-        return try await perform(request)
+        let data = try JSONEncoder().encode(body)
+        return try await performJSON(url: url, method: "POST", body: data, accessToken: accessToken)
+    }
+
+    func patch<T: Decodable>(_ url: URL, body: some Encodable, accessToken: String) async throws -> T {
+        let data = try JSONEncoder().encode(body)
+        return try await performJSON(url: url, method: "PATCH", body: data, accessToken: accessToken)
+    }
+
+    func delete<T: Decodable>(_ url: URL, accessToken: String) async throws -> T {
+        try await performJSON(url: url, method: "DELETE", body: nil, accessToken: accessToken)
     }
 
     // MARK: - Raw binary upload (for PDFs)
 
     func uploadPDF(_ url: URL, pdfData: Data, accessToken: String) async throws -> NoteResponse {
-        var request = makeRequest(url: url, method: "POST", accessToken: accessToken)
-        request.setValue("application/pdf", forHTTPHeaderField: "Content-Type")
-        request.httpBody = pdfData
-        return try await perform(request)
+        try await performWithRetry(accessToken: accessToken) { token in
+            var request = self.makeRequest(url: url, method: "POST", accessToken: token)
+            request.setValue("application/pdf", forHTTPHeaderField: "Content-Type")
+            request.httpBody = pdfData
+            return request
+        }
     }
 
     // MARK: - Raw data download
@@ -88,6 +120,48 @@ actor APIClient {
     }
 
     // MARK: - Private helpers
+
+    private func performJSON<T: Decodable>(
+        url: URL,
+        method: String,
+        body: Data?,
+        accessToken: String
+    ) async throws -> T {
+        try await performWithRetry(accessToken: accessToken) { token in
+            var request = self.makeRequest(url: url, method: method, accessToken: token)
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            if let body {
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.httpBody = body
+            }
+            return request
+        }
+    }
+
+    /// Runs `buildRequest(token)` once, and on 401 asks the configured
+    /// `refreshTokenProvider` for a new token and runs it again exactly one
+    /// more time. The closure is invoked with the most-current token so the
+    /// retry uses fresh `Authorization`/`apikey` headers.
+    private func performWithRetry<T: Decodable>(
+        accessToken: String,
+        buildRequest: (_ token: String) -> URLRequest
+    ) async throws -> T {
+        do {
+            return try await perform(buildRequest(accessToken))
+        } catch APIError.unauthorized {
+            guard let provider = refreshTokenProvider,
+                  let refreshed = await provider() else {
+                NotificationCenter.default.post(name: .authSessionExpired, object: nil)
+                throw APIError.unauthorized
+            }
+            do {
+                return try await perform(buildRequest(refreshed))
+            } catch APIError.unauthorized {
+                NotificationCenter.default.post(name: .authSessionExpired, object: nil)
+                throw APIError.unauthorized
+            }
+        }
+    }
 
     private func makeRequest(url: URL, method: String, accessToken: String) -> URLRequest {
         var request = URLRequest(url: url)

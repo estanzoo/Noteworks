@@ -220,6 +220,6 @@ private struct SchoolAutocompleteField: View {
         OnboardingBackground()
             .ignoresSafeArea()
         CollegeStepView(data: OnboardingData(), onNext: {}, onBack: {})
-            .environmentObject(AppState())
+            .environmentObject(AppState(notesStore: NotesStore.preview()))
     }
 }

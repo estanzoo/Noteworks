@@ -2,35 +2,66 @@
 //  CommunityPostDetailPopup.swift
 //  Noteworks
 //
-//  Mirrors CommunityPostDetailPopup from others/noteworks-library(2).jsx
-//  L4663–L4846. Dimmed glass overlay with a two-column layout when the
-//  post has attachments (collapses to a single column on compact width):
-//  - header (avatar + user + Connect + close)
-//  - title + body + reaction pills + comment count + tags
-//  - scrollable comments list
-//  - comment composer pinned to the bottom.
+//  Full-post overlay shown when the user taps a card on the feed. On
+//  open it fetches the post detail + the first page of threaded comments
+//  in parallel, then renders the post body, hashtag chips, attachments,
+//  the comment thread, and a composer pinned to the bottom.
 //
 
 import SwiftUI
 
 struct CommunityPostDetailPopup: View {
-    let post: CommunityPost
-    let onClose: () -> Void
-    let onToggleConnect: () -> Void
-    let onToggleReaction: (ReactionKind) -> Void
-    let onToggleCommentReaction: (_ targetId: String, _ reaction: ReactionKind) -> Void
-    let onAddComment: (_ text: String) -> Void
-    let onAddReply: (_ commentId: String, _ text: String) -> Void
+    let initialPost: CommunityPost
+    let accessToken: String
+    let currentUserId: String?
 
+    let onClose: () -> Void
+    let onPostUpdated: (CommunityPost) -> Void
+    let onPostDeleted: () -> Void
+    let onCommentDelta: (_ delta: Int) -> Void
+    let onLikeToggled: () -> Void
+    let onHashtagTap: (String) -> Void
+
+    @State private var post: CommunityPost
+    @State private var comments: [CommunityComment] = []
+    @State private var isLoadingComments: Bool = true
+    @State private var loadError: String?
     @State private var commentDraft: String = ""
+    @State private var isSubmittingComment: Bool = false
+    @State private var attachmentPreview: PostAttachment?
+    @State private var showDeleteConfirm: Bool = false
+
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    init(
+        initialPost: CommunityPost,
+        accessToken: String,
+        currentUserId: String?,
+        onClose: @escaping () -> Void,
+        onPostUpdated: @escaping (CommunityPost) -> Void,
+        onPostDeleted: @escaping () -> Void,
+        onCommentDelta: @escaping (Int) -> Void,
+        onLikeToggled: @escaping () -> Void,
+        onHashtagTap: @escaping (String) -> Void
+    ) {
+        self.initialPost = initialPost
+        self.accessToken = accessToken
+        self.currentUserId = currentUserId
+        self.onClose = onClose
+        self.onPostUpdated = onPostUpdated
+        self.onPostDeleted = onPostDeleted
+        self.onCommentDelta = onCommentDelta
+        self.onLikeToggled = onLikeToggled
+        self.onHashtagTap = onHashtagTap
+        _post = State(initialValue: initialPost)
+    }
 
     private var hasAttachments: Bool { !post.attachments.isEmpty }
     private var isCompact: Bool { horizontalSizeClass == .compact }
+    private var isOwnPost: Bool { post.userId == currentUserId }
 
     var body: some View {
         ZStack {
-            // Dimmed backdrop that closes on tap (JSX L4704–L4705).
             Color(red: 18/255, green: 27/255, blue: 39/255)
                 .opacity(0.2)
                 .background(.ultraThinMaterial.opacity(0.6))
@@ -46,8 +77,177 @@ struct CommunityPostDetailPopup: View {
                     )
                     .position(x: geo.size.width / 2, y: geo.size.height / 2)
             }
+
+            if let preview = attachmentPreview {
+                PDFAttachmentPreview(
+                    attachment: preview,
+                    accessToken: accessToken,
+                    onDismiss: { attachmentPreview = nil }
+                )
+                .transition(.opacity)
+                .zIndex(200)
+            }
         }
         .transition(.opacity.combined(with: .scale(scale: 0.985)))
+        .task { await loadDetail() }
+        .alert("Delete this post?", isPresented: $showDeleteConfirm) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive) {
+                Task { await deletePost() }
+            }
+        } message: {
+            Text("This action soft-deletes the post and removes it from the feed.")
+        }
+    }
+
+    // MARK: - Loading
+
+    private func loadDetail() async {
+        isLoadingComments = true
+        loadError = nil
+        defer { isLoadingComments = false }
+
+        do {
+            async let detail = CommunityService.shared.fetchPost(id: post.id, accessToken: accessToken)
+            async let commentPage = CommunityService.shared.fetchComments(postId: post.id, accessToken: accessToken)
+            let fetched = try await detail
+            let page = try await commentPage
+
+            post = fetched
+            comments = page.comments
+            onPostUpdated(fetched)
+        } catch {
+            let mapped = mapCommunityError(error, notFound: "This post is no longer available.")
+            loadError = mapped.userMessage
+            if case .notFound = mapped {
+                // The feed VM will drop the stale row; close the overlay
+                // so the user isn't staring at an empty card.
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 600_000_000)
+                    onPostDeleted()
+                }
+            }
+        }
+    }
+
+    // MARK: - Mutations
+
+    private func toggleLike() async {
+        let snapshot = post
+        post.hasLiked = !post.liked
+        post.likesCount = max(0, post.likesCount + (snapshot.liked ? -1 : 1))
+
+        do {
+            let response = try await CommunityService.shared.togglePostLike(postId: post.id, accessToken: accessToken)
+            post.hasLiked = response.liked
+            post.likesCount = response.likesCount
+            onLikeToggled()
+            onPostUpdated(post)
+        } catch {
+            post = snapshot
+            loadError = mapCommunityError(error).userMessage
+        }
+    }
+
+    private func submitComment(parent: String?) async {
+        let body = commentDraft.trimmingCharacters(in: .whitespaces)
+        guard !body.isEmpty else { return }
+
+        isSubmittingComment = true
+        defer { isSubmittingComment = false }
+
+        do {
+            let created = try await CommunityService.shared.createComment(
+                CreateCommentRequest(postId: post.id, body: body, parentCommentId: parent),
+                accessToken: accessToken
+            )
+            insert(created)
+            commentDraft = ""
+            post.commentsCount += 1
+            onCommentDelta(1)
+            onPostUpdated(post)
+        } catch {
+            loadError = mapCommunityError(error, notFound: "Could not add comment.").userMessage
+        }
+    }
+
+    /// Insert a created comment into the local thread, either as a new
+    /// top-level entry or as a reply within its parent's `replies` chain.
+    private func insert(_ comment: CommunityComment) {
+        if let parentId = comment.parentCommentId {
+            comments = CommunityPostDetailPopup.insertReply(
+                comment,
+                parentId: parentId,
+                into: comments
+            )
+        } else {
+            comments.insert(comment, at: 0)
+        }
+    }
+
+    private static func insertReply(
+        _ reply: CommunityComment,
+        parentId: String,
+        into thread: [CommunityComment]
+    ) -> [CommunityComment] {
+        thread.map { existing in
+            if existing.id == parentId {
+                var copy = existing
+                copy.replies.append(reply)
+                return copy
+            }
+            guard !existing.replies.isEmpty else { return existing }
+            var copy = existing
+            copy.replies = insertReply(reply, parentId: parentId, into: existing.replies)
+            return copy
+        }
+    }
+
+    private func deleteComment(id: String) async {
+        // Find how many descendants the comment has so we can decrement
+        // the comments_count by the correct amount (the server cascades).
+        let removed = CommunityPostDetailPopup.removeComment(id: id, from: comments)
+        let dropped = removed.count
+        comments = removed.thread
+
+        do {
+            _ = try await CommunityService.shared.deleteComment(id: id, accessToken: accessToken)
+            post.commentsCount = max(0, post.commentsCount - dropped)
+            onCommentDelta(-dropped)
+            onPostUpdated(post)
+        } catch {
+            await loadDetail()
+            loadError = mapCommunityError(error, notFound: "That comment was already deleted.").userMessage
+        }
+    }
+
+    private static func removeComment(
+        id: String,
+        from thread: [CommunityComment]
+    ) -> (thread: [CommunityComment], count: Int) {
+        var totalDropped = 0
+        var next: [CommunityComment] = []
+        for comment in thread {
+            if comment.id == id {
+                totalDropped += comment.threadCount
+                continue
+            }
+            var copy = comment
+            let result = removeComment(id: id, from: comment.replies)
+            copy.replies = result.thread
+            totalDropped += result.count
+            next.append(copy)
+        }
+        return (next, totalDropped)
+    }
+
+    private func deletePost() async {
+        do {
+            _ = try await CommunityService.shared.deletePost(id: post.id, accessToken: accessToken)
+            onPostDeleted()
+        } catch {
+            loadError = mapCommunityError(error, forbidden: "You can only delete your own posts.").userMessage
+        }
     }
 
     // MARK: - Shell
@@ -100,7 +300,11 @@ struct CommunityPostDetailPopup: View {
     private var attachmentsPane: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 12) {
-                PostAttachmentStack(post: post, detail: true)
+                PostAttachmentStack(
+                    post: post,
+                    detail: true,
+                    onOpenAttachment: { attachmentPreview = $0 }
+                )
             }
             .padding(24)
         }
@@ -125,9 +329,21 @@ struct CommunityPostDetailPopup: View {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
                     if hasAttachments && isCompact {
-                        PostAttachmentStack(post: post, detail: true)
+                        PostAttachmentStack(
+                            post: post,
+                            detail: true,
+                            onOpenAttachment: { attachmentPreview = $0 }
+                        )
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 16)
+                    }
+
+                    if let error = loadError {
+                        Text(error)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(CommunityTheme.textMuted)
                             .padding(.horizontal, 24)
-                            .padding(.vertical, 16)
+                            .padding(.top, 16)
                     }
 
                     commentsList
@@ -145,25 +361,22 @@ struct CommunityPostDetailPopup: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top, spacing: 12) {
-                CommunityAvatar(name: post.user, size: 42)
+                CommunityAvatar(name: post.authorName, size: 42)
 
                 VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 10) {
-                        Text(post.user)
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundStyle(CommunityTheme.textPrimary)
-                        Text(post.school)
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(CommunityTheme.textMuted)
-                    }
-                    Text(post.major)
+                    Text(post.authorName)
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(CommunityTheme.textPrimary)
+                    Text(relativeTime(post.createdAt))
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(CommunityTheme.textMuted)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 HStack(spacing: 10) {
-                    connectButton
+                    if isOwnPost {
+                        deleteButton
+                    }
                     closeButton
                 }
             }
@@ -176,8 +389,8 @@ struct CommunityPostDetailPopup: View {
                     .lineSpacing(3)
                     .fixedSize(horizontal: false, vertical: true)
 
-                if let body = post.body {
-                    Text(body)
+                if !post.body.isEmpty {
+                    Text(post.body)
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(CommunityTheme.textSecondary)
                         .lineSpacing(6)
@@ -188,31 +401,28 @@ struct CommunityPostDetailPopup: View {
             FlowLayout(spacing: 8) {
                 CommunityReactionPill(
                     label: "Like",
-                    count: post.likes,
-                    kind: .like,
-                    active: post.userReaction == .like
-                ) { onToggleReaction(.like) }
+                    count: post.likesCount,
+                    active: post.liked
+                ) {
+                    Task { await toggleLike() }
+                }
 
-                CommunityReactionPill(
-                    label: "Dislike",
-                    count: post.dislikes,
-                    kind: .dislike,
-                    active: post.userReaction == .dislike
-                ) { onToggleReaction(.dislike) }
-
-                Text("\(post.commentCount) comments")
+                Text("\(post.commentsCount) comments")
                     .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(CommunityTheme.textMuted)
                     .padding(.horizontal, 4)
 
-                ForEach(Array(post.tags.enumerated()), id: \.offset) { _, tag in
-                    Text("#\(tag)")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(CommunityTheme.textMuted)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(Capsule().fill(Color.white.opacity(0.62)))
-                        .overlay(Capsule().strokeBorder(CommunityTheme.glassBorder, lineWidth: 1))
+                ForEach(post.hashtags, id: \.self) { tag in
+                    Button { onHashtagTap(tag) } label: {
+                        Text("#\(tag)")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(CommunityTheme.accent)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Capsule().fill(CommunityTheme.accent.opacity(0.10)))
+                            .overlay(Capsule().strokeBorder(CommunityTheme.accent.opacity(0.18), lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
                 }
             }
         }
@@ -226,30 +436,15 @@ struct CommunityPostDetailPopup: View {
         }
     }
 
-    private var connectButton: some View {
-        Button(action: onToggleConnect) {
-            Text(post.connected ? "Connected" : "Connect")
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(post.connected ? CommunityTheme.textPrimary : .white)
-                .padding(.horizontal, 16)
-                .frame(minHeight: 38)
-                .background(
-                    Capsule().fill(
-                        post.connected
-                            ? AnyShapeStyle(Color.white.opacity(0.68))
-                            : AnyShapeStyle(CommunityTheme.accentGradient)
-                    )
-                )
-                .overlay(
-                    Capsule().strokeBorder(
-                        post.connected ? CommunityTheme.glassBorder : Color.white.opacity(0.24),
-                        lineWidth: 1
-                    )
-                )
-                .shadow(
-                    color: post.connected ? .clear : CommunityTheme.accent.opacity(0.24),
-                    radius: 14, x: 0, y: 8
-                )
+    private var deleteButton: some View {
+        Button {
+            showDeleteConfirm = true
+        } label: {
+            Image(systemName: "trash")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(CommunityTheme.textMuted)
+                .frame(width: 34, height: 34)
+                .background(Circle().fill(Color.black.opacity(0.05)))
         }
         .buttonStyle(CommunityReactionPressStyle())
     }
@@ -269,7 +464,16 @@ struct CommunityPostDetailPopup: View {
 
     @ViewBuilder
     private var commentsList: some View {
-        if post.commentThread.isEmpty {
+        if isLoadingComments {
+            VStack(spacing: 12) {
+                ProgressView()
+                Text("Loading comments…")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(CommunityTheme.textMuted)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(minHeight: 200)
+        } else if comments.isEmpty {
             VStack(spacing: 16) {
                 ZStack {
                     Circle().fill(Color.white.opacity(0.72))
@@ -295,14 +499,17 @@ struct CommunityPostDetailPopup: View {
             .padding(.vertical, 24)
         } else {
             VStack(alignment: .leading, spacing: 0) {
-                ForEach(post.commentThread) { comment in
+                ForEach(comments) { comment in
                     CommunityCommentItem(
                         comment: comment,
-                        onToggleReaction: { targetId, reaction in
-                            onToggleCommentReaction(targetId, reaction)
+                        currentUserId: currentUserId,
+                        postAuthorId: post.userId,
+                        onSubmitReply: { parentId, text in
+                            commentDraft = text
+                            Task { await submitComment(parent: parentId) }
                         },
-                        onSubmitReply: { text in
-                            onAddReply(comment.id, text)
+                        onDelete: { id in
+                            Task { await deleteComment(id: id) }
                         }
                     )
                 }
@@ -326,9 +533,10 @@ struct CommunityPostDetailPopup: View {
                         lineWidth: 1
                     )
                 )
+                .disabled(isSubmittingComment)
 
             Button {
-                submitComment()
+                Task { await submitComment(parent: nil) }
             } label: {
                 Text("Comment")
                     .font(.system(size: 13, weight: .bold))
@@ -339,7 +547,7 @@ struct CommunityPostDetailPopup: View {
                     .shadow(color: CommunityTheme.accent.opacity(0.22), radius: 10, x: 0, y: 6)
             }
             .buttonStyle(CommunityReactionPressStyle())
-            .disabled(commentDraft.trimmingCharacters(in: .whitespaces).isEmpty)
+            .disabled(commentDraft.trimmingCharacters(in: .whitespaces).isEmpty || isSubmittingComment)
             .opacity(commentDraft.trimmingCharacters(in: .whitespaces).isEmpty ? 0.55 : 1)
         }
         .padding(20)
@@ -348,12 +556,5 @@ struct CommunityPostDetailPopup: View {
                 .fill(Color(red: 219/255, green: 227/255, blue: 235/255).opacity(0.78))
                 .frame(height: 1)
         }
-    }
-
-    private func submitComment() {
-        let trimmed = commentDraft.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return }
-        onAddComment(trimmed)
-        commentDraft = ""
     }
 }

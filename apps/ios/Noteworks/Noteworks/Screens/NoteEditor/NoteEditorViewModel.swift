@@ -32,12 +32,25 @@ enum NoteEditorTool: String, Equatable {
     case text
     case image
 
-    /// True for the four tools that drive `PKCanvasView.tool`. The other
-    /// three are decorative for v1.
+    /// True for tools that have a working UI in this build. `text` and
+    /// `image` are implemented via the `NoteOverlayLayer` rendered above
+    /// the PKCanvas (PencilKit can't host either natively). `shape` is
+    /// still a stub for v1.
     var isImplemented: Bool {
         switch self {
+        case .pen, .highlighter, .eraser, .lasso, .text, .image: return true
+        case .shape: return false
+        }
+    }
+
+    /// Tools that drive PencilKit ink. While a non-drawing tool is
+    /// active the editor disables `PKCanvasView` hit-testing so finger
+    /// drags go to the overlay layer (text/image) instead of leaving
+    /// stray strokes on the page.
+    var canDraw: Bool {
+        switch self {
         case .pen, .highlighter, .eraser, .lasso: return true
-        case .shape, .text, .image: return false
+        case .text, .image, .shape: return false
         }
     }
 }
@@ -47,6 +60,44 @@ enum NoteEditorTool: String, Equatable {
 enum NoteEraserMode: String, Equatable {
     case regular
     case object
+}
+
+// MARK: - AI Enhancements
+
+/// State of a single AI enhancement job. Both Gap Detection and Smart
+/// Organization share this shape; the view model holds one of each.
+enum AIEnhancementJob: Equatable {
+    case idle
+    case running(progress: Double)
+    case completed
+
+    var progress: Double {
+        switch self {
+        case .running(let value): return value
+        case .completed: return 1.0
+        case .idle: return 0.0
+        }
+    }
+
+    var isRunning: Bool {
+        if case .running = self { return true }
+        return false
+    }
+
+    var isCompleted: Bool {
+        if case .completed = self { return true }
+        return false
+    }
+}
+
+/// Sub-panel currently rendered inside the AI Enhancements dropdown.
+/// Mirrors the `aiEnhancementPanel` string union in the reference JSX
+/// (`root` / `task-status` / `smart-confirm` / `smart-organization`).
+enum AIEnhancementPanel: Equatable {
+    case root
+    case taskStatus
+    case smartConfirm
+    case smartOrganization
 }
 
 /// One swatch in the canvas color palette. Mirrors the JSX `palette`
@@ -120,6 +171,32 @@ final class NoteEditorViewModel: ObservableObject {
     /// First-tap arms the "Clear page" button red, second tap actually
     /// fires (mirrors JSX `clearPageArmed` L2454).
     @Published var clearPageArmed: Bool = false
+
+    // MARK: - AI Enhancements (UI-only v1)
+
+    /// Two parallel jobs the user can trigger from the AI Enhancements
+    /// dropdown — mirrors the JSX `activeGapIndicatorJob` /
+    /// `smartOrganizationState` pair at noteworks-library.jsx L5117.
+    /// The actual Edge Function calls are deferred to a follow-up; for
+    /// now `startGapDetection` / `startSmartOrganization` run a local
+    /// timer so the UI exercises every state.
+    @Published var gapJob: AIEnhancementJob = .idle
+    @Published var smartJob: AIEnhancementJob = .idle
+    @Published var aiEnhancementPanel: AIEnhancementPanel = .root
+    @Published var aiEnhancementNotice: String = ""
+
+    private var gapJobTask: Task<Void, Never>?
+    private var smartJobTask: Task<Void, Never>?
+    private static let aiBusyMessage = "Another AI enhancement is already running. Please wait for it to finish first."
+
+    // MARK: - Overlay-action signals
+
+    /// One-shot trigger consumed by `NoteEditorView` to open the text
+    /// editor sheet. Bumping the int re-fires the action even if the
+    /// user taps the text button twice in a row.
+    @Published var pendingTextInsertNonce: Int = 0
+    /// One-shot trigger to open the photo picker.
+    @Published var pendingImagePickNonce: Int = 0
 
     // MARK: - Status text
 
@@ -228,14 +305,37 @@ final class NoteEditorViewModel: ObservableObject {
     /// Loads metadata + first-page drawing from the store. Idempotent
     /// (later calls with the same `noteId` are no-ops) so SwiftUI's
     /// `.onAppear` retriggering during navigation does not reset the
-    /// canvas.
+    /// canvas. Use `switchActiveNote(_:)` to flip to a different note
+    /// inside the same editor session (e.g. tab switch); that path
+    /// flushes any pending save first.
     func attach(store: NotesStore, noteId: String?) {
         self.store = store
         if hasLoaded && self.noteId == noteId { return }
-        self.noteId = noteId
+        loadNote(noteId)
+    }
+
+    /// Switch the editor to a different open tab. Flushes any pending
+    /// debounced save for the previous note first so the user's last
+    /// stroke can't bleed into the freshly-loaded one.
+    func switchActiveNote(_ newNoteId: String?) {
+        guard newNoteId != noteId else { return }
+        if hasLoaded { flushPendingSave() }
+        // Reset AI panel state — jobs are scoped to a single note.
+        gapJobTask?.cancel()
+        smartJobTask?.cancel()
+        gapJob = .idle
+        smartJob = .idle
+        aiEnhancementPanel = .root
+        aiEnhancementNotice = ""
+        loadNote(newNoteId)
+    }
+
+    private func loadNote(_ newNoteId: String?) {
+        guard let store else { return }
+        self.noteId = newNoteId
         hasLoaded = false
 
-        guard let id = noteId, let note = store.note(id: id) else {
+        guard let id = newNoteId, let note = store.note(id: id) else {
             // No note id — likely a fresh draft pushed without store wiring,
             // or we're in a SwiftUI preview.
             hasLoaded = true
@@ -449,6 +549,17 @@ final class NoteEditorViewModel: ObservableObject {
         if activeTool != tool {
             activeTool = tool
         }
+        // Text + image tools are one-shot: every tap reopens the
+        // insertion sheet/picker so the user can add multiple items
+        // without round-tripping through another tool first.
+        switch tool {
+        case .text:
+            pendingTextInsertNonce &+= 1
+        case .image:
+            pendingImagePickNonce &+= 1
+        default:
+            break
+        }
         flashStatus(toolReadyStatus(for: tool))
     }
 
@@ -507,8 +618,8 @@ final class NoteEditorViewModel: ObservableObject {
         case .eraser: return eraserStatus()
         case .lasso: return "Lasso ready"
         case .shape: return "Shape · coming soon"
-        case .text: return "Text · coming soon"
-        case .image: return "Image · coming soon"
+        case .text: return "Tap to drop a text box"
+        case .image: return "Pick an image to insert"
         }
     }
 
@@ -535,6 +646,192 @@ final class NoteEditorViewModel: ObservableObject {
                 self.statusText = "Synced just now"
             }
         }
+    }
+
+    // MARK: - AI Enhancements (UI-only v1)
+
+    /// Opens the dropdown. If a job is already running, jump straight to
+    /// the running progress panel; otherwise show the two-option root.
+    func openAIEnhancements() {
+        aiEnhancementNotice = ""
+        if smartJob.isRunning {
+            aiEnhancementPanel = .smartOrganization
+        } else if gapJob.isRunning {
+            aiEnhancementPanel = .taskStatus
+        } else {
+            aiEnhancementPanel = .root
+        }
+        flashStatus("Choose an AI enhancement")
+    }
+
+    func closeAIEnhancements() {
+        aiEnhancementPanel = .root
+        aiEnhancementNotice = ""
+    }
+
+    func selectAIEnhancementPanel(_ panel: AIEnhancementPanel) {
+        aiEnhancementPanel = panel
+        aiEnhancementNotice = ""
+    }
+
+    /// Starts Gap Detection. Refuses if Smart Organization is mid-run.
+    func startGapDetection() {
+        if smartJob.isRunning {
+            aiEnhancementNotice = Self.aiBusyMessage
+            aiEnhancementPanel = .taskStatus
+            flashStatus("Smart Organization is already running")
+            return
+        }
+        if gapJob.isRunning {
+            aiEnhancementPanel = .taskStatus
+            return
+        }
+        aiEnhancementNotice = ""
+        aiEnhancementPanel = .taskStatus
+        flashStatus("Gap Detection started")
+        runFakeJob(.gap, statusName: "Gap Detection")
+    }
+
+    /// Smart Organization always shows the confirmation step first
+    /// (matches the JSX flow).
+    func requestSmartOrganization() {
+        if gapJob.isRunning {
+            aiEnhancementNotice = Self.aiBusyMessage
+            aiEnhancementPanel = .taskStatus
+            flashStatus("Gap Detection is already running")
+            return
+        }
+        if smartJob.isRunning || smartJob.isCompleted {
+            aiEnhancementPanel = .smartOrganization
+            return
+        }
+        aiEnhancementPanel = .smartConfirm
+        aiEnhancementNotice = ""
+    }
+
+    func confirmSmartOrganization() {
+        if gapJob.isRunning {
+            aiEnhancementNotice = Self.aiBusyMessage
+            aiEnhancementPanel = .taskStatus
+            flashStatus("Gap Detection is already running")
+            return
+        }
+        aiEnhancementPanel = .smartOrganization
+        aiEnhancementNotice = ""
+        flashStatus("Smart Organization started")
+        runFakeJob(.smart, statusName: "Smart Organization")
+    }
+
+    func dismissSmartOrganization() {
+        smartJob = .idle
+        aiEnhancementPanel = .root
+        aiEnhancementNotice = ""
+        flashStatus("Smart Organization dismissed")
+    }
+
+    func acknowledgeGapJobResult() {
+        gapJob = .idle
+        aiEnhancementPanel = .root
+        aiEnhancementNotice = ""
+    }
+
+    private enum AIJobSlot { case gap, smart }
+
+    /// Drives one of the two AI job slots through a short progress loop
+    /// so the UI exercises running → completed without a real backend.
+    private func runFakeJob(_ slot: AIJobSlot, statusName: String) {
+        setJob(slot, to: .running(progress: 0))
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            for tick in 1...20 {
+                try? await Task.sleep(nanoseconds: 280_000_000)
+                if Task.isCancelled { return }
+                let progress = Double(tick) / 20.0
+                self.setJob(slot, to: .running(progress: progress))
+            }
+            if Task.isCancelled { return }
+            self.setJob(slot, to: .completed)
+            self.flashStatus("\(statusName) complete")
+        }
+        switch slot {
+        case .gap:
+            gapJobTask?.cancel()
+            gapJobTask = task
+        case .smart:
+            smartJobTask?.cancel()
+            smartJobTask = task
+        }
+    }
+
+    private func setJob(_ slot: AIJobSlot, to job: AIEnhancementJob) {
+        switch slot {
+        case .gap:   gapJob = job
+        case .smart: smartJob = job
+        }
+    }
+
+    // MARK: - Overlay helpers
+
+    /// Convenience pass-through for the overlay layer — returns the
+    /// store's overlays filtered to the active note + page. Returning
+    /// `[]` when there's no active note keeps preview rendering simple.
+    func currentPageOverlays(store: NotesStore) -> [NotePageOverlay] {
+        guard let noteId else { return [] }
+        return store.overlays(for: noteId, page: currentPage)
+    }
+
+    /// Inserts a fresh text overlay centered on the current page. Caller
+    /// passes the typed string + style picked in the editor sheet.
+    func insertTextOverlay(store: NotesStore, text: String, fontSize: CGFloat, colorHex: String) -> String? {
+        guard let noteId else { return nil }
+        let overlay = NotePageOverlay.text(
+            page: currentPage,
+            text: text,
+            fontSize: fontSize,
+            colorHex: colorHex
+        )
+        store.addOverlay(overlay, to: noteId)
+        flashStatus("Text added")
+        return overlay.id
+    }
+
+    /// Replaces an existing text overlay's content/style.
+    func updateTextOverlay(
+        store: NotesStore,
+        overlay: NotePageOverlay,
+        newText: String,
+        newFontSize: CGFloat,
+        newColorHex: String
+    ) {
+        guard let noteId else { return }
+        var updated = overlay
+        updated.text = newText
+        updated.fontSize = newFontSize
+        updated.colorHex = newColorHex
+        store.updateOverlay(updated, in: noteId)
+        flashStatus("Text updated")
+    }
+
+    /// Persists raw image data + appends an `.image` overlay sized to fit
+    /// half the page width while preserving aspect.
+    func insertImageOverlay(store: NotesStore, data: Data, pixelSize: CGSize) -> String? {
+        guard let noteId else { return nil }
+        let filename = "\(UUID().uuidString).png"
+        store.saveOverlayImageData(data, for: noteId, filename: filename)
+        let aspect: CGFloat = pixelSize.height > 0 ? pixelSize.width / pixelSize.height : 1.0
+        // Default to 50% of the page width; clamp the resulting height
+        // to 70% of the page so a portrait photo doesn't fill the canvas.
+        let normW: CGFloat = 0.5
+        let normH = min(0.7, normW / max(0.0001, aspect) * (1.4))   // page aspect is 1:1.4 portrait
+        let normRect = CGRect(x: 0.25, y: 0.3, width: normW, height: max(0.12, normH))
+        let overlay = NotePageOverlay.image(
+            page: currentPage,
+            filename: filename,
+            normRect: normRect
+        )
+        store.addOverlay(overlay, to: noteId)
+        flashStatus("Image added")
+        return overlay.id
     }
 
     // MARK: - Internal helpers

@@ -17,14 +17,21 @@ enum CommunityTheme {
     static let accent        = Color(red: 0x5E/255, green: 0xAD/255, blue: 0xD3/255)
     static let accentSoft    = Color(red: 0x7C/255, green: 0xC4/255, blue: 0xE4/255)
 
-    /// The red used by the dislike reaction in the JSX (#E46464).
-    static let dislike       = Color(red: 0xE4/255, green: 0x64/255, blue: 0x64/255)
-
     static let accentGradient = LinearGradient(
         colors: [accent, accentSoft],
         startPoint: .topLeading,
         endPoint: .bottomTrailing
     )
+}
+
+// MARK: - Name helper
+
+/// Reduce a display name down to up to two initials. Falls back to "NW"
+/// for empty input so the avatar circle is never blank.
+func nameToInitials(_ name: String) -> String {
+    let source = name.trimmingCharacters(in: .whitespaces).isEmpty ? "NW" : name
+    let parts = source.split(separator: " ").prefix(2)
+    return parts.compactMap { $0.first.map { String($0).uppercased() } }.joined()
 }
 
 // MARK: - Avatar initials badge

@@ -81,7 +81,7 @@ struct GeneralSection: View {
 
             // Sign out (iOS-only affordance carried over from AccountView).
             Button {
-                appState.signOut()
+                Task { await appState.signOut() }
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "rectangle.portrait.and.arrow.right")

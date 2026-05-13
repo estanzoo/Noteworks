@@ -28,6 +28,11 @@ struct PencilCanvasView: UIViewRepresentable {
     /// finger pan/zoom the canvas as a `UIScrollView`.
     var drawingPolicy: PKCanvasViewDrawingPolicy = .anyInput
 
+    /// When `false`, the canvas ignores touches so taps/drags fall through
+    /// to the overlay layer above (used by the text + image tools — those
+    /// shouldn't accidentally leave stray strokes on the page).
+    var isDrawingEnabled: Bool = true
+
     /// Setter exposed so the chrome can wire its undo/redo buttons to the
     /// real canvas `UndoManager` once the view exists.
     var onCanvasReady: ((PKCanvasView) -> Void)? = nil
@@ -42,6 +47,7 @@ struct PencilCanvasView: UIViewRepresentable {
         canvasView.drawing = drawing
         canvasView.tool = tool
         canvasView.delegate = context.coordinator
+        canvasView.isUserInteractionEnabled = isDrawingEnabled
         // We're not showing PKToolPicker; nothing else to set up here.
         DispatchQueue.main.async {
             onCanvasReady?(canvasView)
@@ -52,6 +58,9 @@ struct PencilCanvasView: UIViewRepresentable {
     func updateUIView(_ canvasView: PKCanvasView, context: Context) {
         if canvasView.drawingPolicy != drawingPolicy {
             canvasView.drawingPolicy = drawingPolicy
+        }
+        if canvasView.isUserInteractionEnabled != isDrawingEnabled {
+            canvasView.isUserInteractionEnabled = isDrawingEnabled
         }
         // Apply the latest tool every refresh — PencilKit's tool object is
         // a value type so cheap to recreate.

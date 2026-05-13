@@ -71,14 +71,25 @@ struct MainTabView: View {
         isActive: Bool,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        content()
-            .opacity(isActive ? 1 : 0)
-            .allowsHitTesting(isActive)
-            // A tiny rest offset on the inactive tab adds the soft "slide
-            // forward" feel of the JSX `default` transition (L6869) when
-            // it animates back to 0.
-            .offset(y: isActive ? 0 : 6)
+        if Self.isRunningInPreview && !isActive {
+            // SwiftUI Previews have a 5-second render budget; mounting all
+            // four NavigationStacks at once routinely blows past it. In
+            // the real app every tab stays mounted so state survives a
+            // tab switch — preview only ever needs the active one.
+            Color.clear
+        } else {
+            content()
+                .opacity(isActive ? 1 : 0)
+                .allowsHitTesting(isActive)
+                // A tiny rest offset on the inactive tab adds the soft "slide
+                // forward" feel of the JSX `default` transition (L6869) when
+                // it animates back to 0.
+                .offset(y: isActive ? 0 : 6)
+        }
     }
+
+    private static let isRunningInPreview: Bool =
+        ProcessInfo.processInfo.environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1"
 }
 
 // MARK: - Floating Tab Bar
@@ -185,8 +196,9 @@ struct TabItemButton: View {
 }
 
 #Preview {
-    MainTabView()
-        .environmentObject(AppState())
-        .environmentObject(NotesStore())
+    let notesStore = NotesStore.preview()
+    return MainTabView()
+        .environmentObject(AppState(notesStore: notesStore))
+        .environmentObject(notesStore)
 }
 

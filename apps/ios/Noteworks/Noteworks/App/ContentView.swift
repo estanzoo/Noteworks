@@ -12,10 +12,22 @@ struct ContentView: View {
 
     var body: some View {
         Group {
-            if appState.isAuthenticated {
+            if appState.isBootstrapping {
+                // Cold-launch restore in flight — never flash Welcome
+                // under a returning user.
+                SplashView()
+            } else if appState.profile?.hasCompletedOnboarding == true {
                 MainTabView()
             } else {
-                OnboardingFlow()
+                // Single OnboardingFlow position keeps SwiftUI view identity
+                // stable across `isAuthenticated` transitions: when the user
+                // signs in or signs up, `handleAuthResult` flips
+                // `isAuthenticated`, but ContentView stays in this branch
+                // until the profile reports `onboarding_completed_at`, so
+                // the OnboardingFlow's @State and @StateObject survive.
+                OnboardingFlow(
+                    startAt: appState.resumeOnboardingAtCollege ? .college : .welcome
+                )
             }
         }
         .preferredColorScheme(.light)
@@ -23,7 +35,8 @@ struct ContentView: View {
 }
 
 #Preview {
-    ContentView()
-        .environmentObject(AppState())
-        .environmentObject(NotesStore())
+    let notesStore = NotesStore.preview()
+    return ContentView()
+        .environmentObject(AppState(notesStore: notesStore))
+        .environmentObject(notesStore)
 }

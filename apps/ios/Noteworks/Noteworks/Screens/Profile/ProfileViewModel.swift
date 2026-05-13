@@ -129,6 +129,72 @@ final class ProfileViewModel: ObservableObject {
         self.aboutDraft = AboutDraft(from: .initial)
     }
 
+    // MARK: - Hydration from AppState.profile
+
+    /// Copies server-backed fields from `UserProfile` into the local
+    /// `Profile` struct so the hero card, avatar, and About You section
+    /// show real data instead of the JSX `PROFILE_INITIAL` placeholder.
+    /// Subscription / credits / referral fields remain placeholder until a
+    /// future backend ships them.
+    func hydrate(from userProfile: UserProfile) {
+        if let name = userProfile.name, !name.trimmingCharacters(in: .whitespaces).isEmpty {
+            profile.name = name
+        }
+        profile.email = userProfile.email
+        if let school = userProfile.schoolAffiliation, !school.isEmpty {
+            profile.school = school
+        }
+        if let codes = userProfile.courseCodes, !codes.isEmpty {
+            // We don't have a separate "major" field on the server yet —
+            // surface the first course code so the hero card isn't empty.
+            profile.major = codes.first ?? profile.major
+        }
+        if let year = userProfile.yearOfGraduation {
+            profile.grade = "Graduates \(year)"
+        }
+        syncAboutDraftFromProfile()
+    }
+
+    /// Submitter for the "Save Changes" button in `AboutYouSection`. Reuses
+    /// `submit-onboarding` as an upsert (per `docs/Frontend_Auth_and_Onboarding_Guide.md`)
+    /// then refetches the profile via `AppState.refreshProfile()`.
+    func saveAbout(using appState: AppState) async {
+        let trimmedName = aboutDraft.name.trimmingCharacters(in: .whitespaces)
+        let resolvedName = trimmedName.isEmpty ? profile.name : trimmedName
+        let school = aboutDraft.school.trimmingCharacters(in: .whitespaces)
+        let yearOfGrad = appState.profile?.yearOfGraduation ?? 2100
+        let schoolEmail = appState.profile?.schoolEmail ?? profile.email
+        let courseCodes = appState.profile?.courseCodes ?? []
+
+        let payload = OnboardingPayload(
+            name: resolvedName,
+            yearOfGraduation: yearOfGrad,
+            schoolAffiliation: school.isEmpty ? (appState.profile?.schoolAffiliation ?? "") : school,
+            schoolEmail: schoolEmail,
+            courseCodes: courseCodes
+        )
+
+        guard let token = appState.accessToken else { return }
+        do {
+            try await appState.authService.submitOnboarding(payload, accessToken: token)
+            if let next = await appState.refreshProfile() {
+                hydrate(from: next)
+            } else {
+                // Still apply the local edits so the user sees their changes.
+                saveAbout()
+            }
+            aboutSaved = true
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 2_200_000_000)
+                aboutSaved = false
+            }
+        } catch {
+            // Profile edit failed; fall back to local-only save so the UI
+            // still reflects the user's intent and they can retry later.
+            saveAbout()
+        }
+    }
+
     // MARK: - Derived
 
     var usageTotal: Int {

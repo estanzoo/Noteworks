@@ -61,12 +61,15 @@ struct ProfileHeroCard: View {
     // MARK: - Sidebar (avatar + photo actions)
 
     private var sidebar: some View {
-        VStack(spacing: 12) {
+        // Capture out of the actor-isolated view model so the PhotosPicker's
+        // `@Sendable` label closure can read it without a concurrency warning.
+        let hasPhoto = viewModel.profile.photoData != nil
+        return VStack(spacing: 12) {
             ZStack {
                 AvatarBadge(profile: viewModel.profile, size: 126, fontSize: 38)
 
                 PhotosPicker(selection: $photoItem, matching: .images, photoLibrary: .shared()) {
-                    Text(viewModel.profile.photoData == nil ? "Set Photo" : "Change Photo")
+                    Text(hasPhoto ? "Change Photo" : "Set Photo")
                         .font(.system(size: 10.5, weight: .bold))
                         .tracking(0.01 * 10.5)
                         .foregroundStyle(ProfileTheme.accent)
