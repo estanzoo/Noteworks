@@ -24,10 +24,18 @@ struct CommunityView: View {
     // for SwiftUI previews only.
     @State private var notifications: [HomeNotification] = []
     @State private var activePostId: String? = nil
+    /// Fallback storage for a post the user opened from the search
+    /// popup that isn't (yet) in the loaded feed. The detail overlay
+    /// reads `activePost` so it doesn't care which source the post
+    /// came from.
+    @State private var searchPreviewPost: CommunityPost? = nil
 
     private var activePost: CommunityPost? {
         guard let id = activePostId else { return nil }
-        return viewModel.posts.first(where: { $0.id == id })
+        if let inFeed = viewModel.posts.first(where: { $0.id == id }) {
+            return inFeed
+        }
+        return searchPreviewPost?.id == id ? searchPreviewPost : nil
     }
 
     var body: some View {
@@ -306,9 +314,28 @@ struct CommunityView: View {
     @ViewBuilder
     private var searchOverlay: some View {
         if showSearch {
-            SearchPopupView(isPresented: $showSearch)
-                .transition(.opacity)
-                .zIndex(60)
+            SearchPopupView(
+                isPresented: $showSearch,
+                initialTab: .community,
+                onSelectCommunityPost: { post in
+                    // If the post is already loaded in the feed, keep
+                    // its (potentially fresher) feed copy as the source
+                    // of truth via `upsert`. Otherwise stash the search
+                    // hit in `searchPreviewPost` so `activePost` can
+                    // find it without polluting the chronological feed.
+                    if viewModel.posts.contains(where: { $0.id == post.id }) {
+                        viewModel.upsert(post)
+                        searchPreviewPost = nil
+                    } else {
+                        searchPreviewPost = post
+                    }
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                        activePostId = post.id
+                    }
+                }
+            )
+            .transition(.opacity)
+            .zIndex(60)
         }
     }
 
@@ -344,16 +371,21 @@ struct CommunityView: View {
                 onClose: {
                     withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
                         activePostId = nil
+                        searchPreviewPost = nil
                     }
                 },
                 onPostUpdated: { updated in
                     viewModel.upsert(updated)
+                    if searchPreviewPost?.id == updated.id {
+                        searchPreviewPost = updated
+                    }
                 },
                 onPostDeleted: {
                     Task {
                         await viewModel.deletePost(post)
                         withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
                             activePostId = nil
+                            searchPreviewPost = nil
                         }
                     }
                 },

@@ -137,4 +137,18 @@ enum SupabaseConfig {
         ]
         return components.url!
     }
+
+    /// `GET /search-posts?q=…&limit=…&cursor=…`. Returns the same
+    /// `FeedPage` shape as `get-posts`, so callers can reuse the feed UI
+    /// to render search hits.
+    static func searchPostsURL(query: String, cursor: String? = nil, limit: Int = 20) -> URL {
+        var components = URLComponents(string: "\(functionsBase)/search-posts")!
+        var items: [URLQueryItem] = [
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "limit", value: "\(limit)"),
+        ]
+        if let cursor { items.append(URLQueryItem(name: "cursor", value: cursor)) }
+        components.queryItems = items
+        return components.url!
+    }
 }
