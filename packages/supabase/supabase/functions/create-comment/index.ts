@@ -86,6 +86,7 @@ Deno.serve(async (req) => {
     parent_comment_id: comment.parent_comment_id,
     body: comment.body,
     likes_count: comment.likes_count,
+    has_liked: false,
     visibility: comment.visibility,
     created_at: comment.created_at,
     updated_at: comment.updated_at,

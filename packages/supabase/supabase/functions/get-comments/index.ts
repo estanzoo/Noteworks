@@ -22,13 +22,14 @@ interface CommentTree {
   parent_comment_id: string | null
   body: string
   likes_count: number
+  has_liked: boolean
   visibility: string
   created_at: string
   updated_at: string
   replies: CommentTree[]
 }
 
-function buildTree(comments: CommentRow[]): CommentTree[] {
+function buildTree(comments: CommentRow[], likedSet: Set<string>): CommentTree[] {
   const map = new Map<string, CommentTree>()
   const roots: CommentTree[] = []
 
@@ -42,6 +43,7 @@ function buildTree(comments: CommentRow[]): CommentTree[] {
       parent_comment_id: c.parent_comment_id,
       body: c.body,
       likes_count: c.likes_count,
+      has_liked: likedSet.has(c.id),
       visibility: c.visibility,
       created_at: c.created_at,
       updated_at: c.updated_at,
@@ -69,7 +71,7 @@ Deno.serve(async (req) => {
 
   const auth = await requireAuth(req)
   if (auth instanceof Response) return auth
-  const { supabase } = auth
+  const { supabase, user } = auth
 
   const url = new URL(req.url)
   const postId = url.searchParams.get('post_id')
@@ -133,7 +135,20 @@ Deno.serve(async (req) => {
     parentIds = children.map(c => c.id)
   }
 
-  const tree = buildTree(allComments)
+  // Batch-check which of these comments the current user has liked
+  const commentIds = allComments.map(c => c.id)
+  const likedSet = new Set<string>()
+  if (commentIds.length > 0) {
+    const { data: userLikes } = await supabase
+      .from('comment_likes')
+      .select('comment_id')
+      .eq('user_id', user.id)
+      .in('comment_id', commentIds)
+
+    for (const row of userLikes ?? []) likedSet.add(row.comment_id)
+  }
+
+  const tree = buildTree(allComments, likedSet)
 
   return json({ data: tree, next_cursor: nextCursor })
 })
