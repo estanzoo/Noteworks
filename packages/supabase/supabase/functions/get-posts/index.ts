@@ -1,6 +1,27 @@
 import { requireAuth } from '../_shared/auth.ts'
 import { corsResponse, json, errorResponse } from '../_shared/cors.ts'
 
+// Cursor format:
+//   When school-prioritized feed is active, the cursor encodes the phase:
+//     "school:<created_at>"  -> still paginating through same-school posts
+//     "other:<created_at>"   -> paginating through everyone else's posts
+//   When school prioritization is not in effect, the cursor is just "<created_at>"
+//   for backwards compatibility with older clients.
+type Phase = 'school' | 'other'
+
+function parseCursor(raw: string | null): { phase: Phase | null; ts: string | null } {
+  if (!raw) return { phase: null, ts: null }
+  if (raw.startsWith('school:')) {
+    const rest = raw.slice('school:'.length)
+    return { phase: 'school', ts: rest.length > 0 ? rest : null }
+  }
+  if (raw.startsWith('other:')) {
+    const rest = raw.slice('other:'.length)
+    return { phase: 'other', ts: rest.length > 0 ? rest : null }
+  }
+  return { phase: null, ts: raw }
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return corsResponse()
   if (req.method !== 'GET') {
@@ -12,7 +33,7 @@ Deno.serve(async (req) => {
   const { supabase, user } = auth
 
   const url = new URL(req.url)
-  const cursor = url.searchParams.get('cursor')
+  const cursorRaw = url.searchParams.get('cursor')
   const limit = Math.min(50, Math.max(1, Number(url.searchParams.get('limit') ?? 20)))
   const userId = url.searchParams.get('user_id')
   const hashtag = url.searchParams.get('hashtag')
@@ -20,42 +41,46 @@ Deno.serve(async (req) => {
   const likedByMe = url.searchParams.get('liked_by_me') === 'true'
   const includeOwnPrivate = url.searchParams.get('include_own_private') === 'true'
 
-  // Build the base query depending on which filter mode we're in
-  // We need to use raw SQL-like approach for the liked_by_me join and hashtag join
-  // But supabase-js can handle most of this with filters
+  const { phase: cursorPhase, ts: cursorTs } = parseCursor(cursorRaw)
 
-  let query = supabase
-    .from('posts')
-    .select(`
-      id, user_id, title, body, visibility, course_id,
-      likes_count, comments_count, created_at, updated_at,
-      author:users!posts_user_id_fkey(id, name)
-    `)
-    .is('deleted_at', null)
-    .order('created_at', { ascending: false })
-    .limit(limit + 1) // fetch one extra to determine next_cursor
+  // School-priority ordering only applies to the general feed.
+  // When the caller already narrows results by user, liked-by-me, or hashtag,
+  // those results are personal/specific enough that re-ordering by college
+  // adds no value (and would force extra round-trips).
+  const allowSchoolPriority = !userId && !likedByMe && !hashtag
 
-  if (cursor) {
-    query = query.lt('created_at', cursor)
-  }
+  let schoolMemberIds: string[] | null = null
+  if (allowSchoolPriority) {
+    const { data: myEnrollment } = await supabase
+      .from('school_enrollments')
+      .select('school_id')
+      .eq('user_id', user.id)
+      .limit(1)
+      .maybeSingle()
 
-  // Visibility filtering
-  if (userId) {
-    query = query.eq('user_id', userId)
-    if (userId === user.id && includeOwnPrivate) {
-      // Show all (public + private) for the requesting user
-    } else {
-      query = query.eq('visibility', 'public')
+    if (myEnrollment?.school_id) {
+      const { data: members } = await supabase
+        .from('school_enrollments')
+        .select('user_id')
+        .eq('school_id', myEnrollment.school_id)
+
+      const ids = (members ?? []).map(m => m.user_id as string)
+      if (ids.length > 0) schoolMemberIds = ids
     }
-  } else {
-    query = query.eq('visibility', 'public')
   }
 
-  if (courseId) {
-    query = query.eq('course_id', courseId)
+  // Decide which phase we should be querying right now.
+  // - If the cursor explicitly names a phase, honor it.
+  // - Otherwise, start with "school" if we have school members, else "other".
+  let activePhase: Phase = 'school'
+  if (cursorPhase) {
+    activePhase = cursorPhase
+  } else if (!schoolMemberIds) {
+    activePhase = 'other'
   }
 
-  // For hashtag filtering, get post IDs first
+  // Hashtag pre-resolution. Done up-front so we can short-circuit empty results.
+  let hashtagPostIds: string[] | null = null
   if (hashtag) {
     const { data: tagRow } = await supabase
       .from('hashtags')
@@ -72,42 +97,151 @@ Deno.serve(async (req) => {
       .select('post_id')
       .eq('hashtag_id', tagRow.id)
 
-    const postIds = (postHashtags ?? []).map(ph => ph.post_id)
-    if (postIds.length === 0) {
+    hashtagPostIds = (postHashtags ?? []).map(ph => ph.post_id as string)
+    if (hashtagPostIds.length === 0) {
       return json({ posts: [], next_cursor: null })
     }
-    query = query.in('id', postIds)
   }
 
-  // For liked_by_me, get the user's liked post IDs first
+  // liked_by_me pre-resolution (same pattern as hashtag).
+  let likedPostIds: string[] | null = null
   if (likedByMe) {
     const { data: likes } = await supabase
       .from('post_likes')
       .select('post_id')
       .eq('user_id', user.id)
 
-    const likedIds = (likes ?? []).map(l => l.post_id)
-    if (likedIds.length === 0) {
+    likedPostIds = (likes ?? []).map(l => l.post_id as string)
+    if (likedPostIds.length === 0) {
       return json({ posts: [], next_cursor: null })
     }
-    query = query.in('id', likedIds)
   }
 
-  const { data: posts, error: postsErr } = await query
+  // Builds a query for a given phase. Phase is ignored when school-priority is off.
+  function buildQuery(phase: Phase, phaseCursorTs: string | null, phaseLimit: number) {
+    let q = supabase
+      .from('posts')
+      .select(`
+        id, user_id, title, body, visibility, course_id,
+        likes_count, comments_count, created_at, updated_at,
+        author:users!posts_user_id_fkey(id, name)
+      `)
+      .is('deleted_at', null)
+      .order('created_at', { ascending: false })
+      .limit(phaseLimit + 1) // +1 to detect "has more"
 
-  if (postsErr) return errorResponse('Query failed', postsErr.message, 500)
-  if (!posts || posts.length === 0) {
-    return json({ posts: [], next_cursor: null })
+    if (phaseCursorTs) {
+      q = q.lt('created_at', phaseCursorTs)
+    }
+
+    // Visibility / user filtering (unchanged behavior).
+    if (userId) {
+      q = q.eq('user_id', userId)
+      if (!(userId === user.id && includeOwnPrivate)) {
+        q = q.eq('visibility', 'public')
+      }
+    } else {
+      q = q.eq('visibility', 'public')
+    }
+
+    if (courseId) q = q.eq('course_id', courseId)
+    if (hashtagPostIds) q = q.in('id', hashtagPostIds)
+    if (likedPostIds) q = q.in('id', likedPostIds)
+
+    if (schoolMemberIds) {
+      if (phase === 'school') {
+        q = q.in('user_id', schoolMemberIds)
+      } else {
+        // PostgREST `not.in` requires a parenthesized list literal.
+        q = q.not('user_id', 'in', `(${schoolMemberIds.join(',')})`)
+      }
+    }
+
+    return q
   }
 
-  // Determine pagination
-  const hasMore = posts.length > limit
-  const sliced = hasMore ? posts.slice(0, limit) : posts
-  const nextCursor = hasMore ? sliced[sliced.length - 1].created_at : null
+  type PostRow = {
+    id: string
+    user_id: string
+    title: string | null
+    body: string | null
+    visibility: string
+    course_id: string | null
+    likes_count: number
+    comments_count: number
+    created_at: string
+    updated_at: string
+    author: unknown
+  }
 
-  const postIds = sliced.map(p => p.id)
+  let combined: PostRow[] = []
+  let nextCursor: string | null = null
 
-  // Batch-fetch hashtags for these posts
+  if (!schoolMemberIds) {
+    // Simple single-phase path (no school priority in effect).
+    const { data, error } = await buildQuery('other', cursorTs, limit)
+    if (error) return errorResponse('Query failed', error.message, 500)
+    const rows = (data ?? []) as PostRow[]
+    const hasMore = rows.length > limit
+    combined = hasMore ? rows.slice(0, limit) : rows
+    nextCursor = hasMore ? combined[combined.length - 1].created_at : null
+  } else {
+    // Phase 1: try to fill from the active phase first.
+    const { data: phase1Data, error: phase1Err } = await buildQuery(
+      activePhase,
+      cursorTs,
+      limit,
+    )
+    if (phase1Err) return errorResponse('Query failed', phase1Err.message, 500)
+
+    const phase1Rows = (phase1Data ?? []) as PostRow[]
+    const phase1HasMore = phase1Rows.length > limit
+    const phase1Sliced = phase1HasMore ? phase1Rows.slice(0, limit) : phase1Rows
+
+    if (phase1HasMore) {
+      // The active phase has more results — stay in this phase.
+      combined = phase1Sliced
+      const lastTs = combined[combined.length - 1].created_at
+      nextCursor = `${activePhase}:${lastTs}`
+    } else if (activePhase === 'school') {
+      // School phase exhausted — top up from "other" phase to fill the page.
+      const remaining = limit - phase1Sliced.length
+      if (remaining <= 0) {
+        // Page exactly filled by school posts; next page starts the "other"
+        // phase from the very top (no timestamp = no `lt` filter).
+        combined = phase1Sliced
+        nextCursor = 'other:'
+      } else {
+        const { data: phase2Data, error: phase2Err } = await buildQuery(
+          'other',
+          null,
+          remaining,
+        )
+        if (phase2Err) return errorResponse('Query failed', phase2Err.message, 500)
+        const phase2Rows = (phase2Data ?? []) as PostRow[]
+        const phase2HasMore = phase2Rows.length > remaining
+        const phase2Sliced = phase2HasMore ? phase2Rows.slice(0, remaining) : phase2Rows
+
+        combined = [...phase1Sliced, ...phase2Sliced]
+        if (phase2Sliced.length > 0 && phase2HasMore) {
+          nextCursor = `other:${phase2Sliced[phase2Sliced.length - 1].created_at}`
+        } else {
+          nextCursor = null
+        }
+      }
+    } else {
+      // We were in the "other" phase and ran out — end of feed.
+      combined = phase1Sliced
+      nextCursor = null
+    }
+  }
+
+  if (combined.length === 0) {
+    return json({ posts: [], next_cursor: nextCursor })
+  }
+
+  const postIds = combined.map(p => p.id)
+
   const { data: phRows } = await supabase
     .from('post_hashtags')
     .select('post_id, hashtag:hashtags(name)')
@@ -122,15 +256,20 @@ Deno.serve(async (req) => {
     }
   }
 
-  // Batch-fetch attachments with PDF metadata
   const { data: attRows } = await supabase
     .from('post_attachments')
     .select('post_id, note_id, note:notes(title, metadata)')
     .in('post_id', postIds)
 
-  const attachmentsByPost: Record<string, { note_id: string; title: string; has_pdf: boolean; pdf_filename: string | null }[]> = {}
+  const attachmentsByPost: Record<
+    string,
+    { note_id: string; title: string; has_pdf: boolean; pdf_filename: string | null }[]
+  > = {}
   for (const row of attRows ?? []) {
-    const note = row.note as unknown as { title: string; metadata: Record<string, unknown> | null } | null
+    const note = row.note as unknown as {
+      title: string
+      metadata: Record<string, unknown> | null
+    } | null
     const meta = note?.metadata
     if (!attachmentsByPost[row.post_id]) attachmentsByPost[row.post_id] = []
     attachmentsByPost[row.post_id].push({
@@ -141,7 +280,6 @@ Deno.serve(async (req) => {
     })
   }
 
-  // Batch-check which posts the current user has liked
   const { data: userLikes } = await supabase
     .from('post_likes')
     .select('post_id')
@@ -150,7 +288,7 @@ Deno.serve(async (req) => {
 
   const likedSet = new Set((userLikes ?? []).map(l => l.post_id))
 
-  const responsePosts = sliced.map(p => {
+  const responsePosts = combined.map(p => {
     const author = p.author as unknown as { id: string; name: string | null } | null
     return {
       id: p.id,
