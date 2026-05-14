@@ -30,6 +30,11 @@ struct OnboardingPayload: Encodable, Sendable {
     let name: String
     let yearOfGraduation: Int
     let schoolAffiliation: String
+    /// Optional `schools.id` UUID picked from the autocomplete. When
+    /// present, `submit-onboarding` uses it directly for the
+    /// `school_enrollments` upsert instead of trying to match
+    /// `school_affiliation` by name.
+    var schoolId: String? = nil
     let schoolEmail: String
     let courseCodes: [String]
 
@@ -37,6 +42,7 @@ struct OnboardingPayload: Encodable, Sendable {
         case name
         case yearOfGraduation = "year_of_graduation"
         case schoolAffiliation = "school_affiliation"
+        case schoolId = "school_id"
         case schoolEmail = "school_email"
         case courseCodes = "course_codes"
     }

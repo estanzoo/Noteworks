@@ -84,11 +84,11 @@ struct CommunityCommentItem: View {
     @ViewBuilder
     private func commentEntry(_ entry: CommunityComment, nested: Bool) -> some View {
         HStack(alignment: .top, spacing: 10) {
-            CommunityAvatar(name: entry.author.name, size: nested ? 30 : 36, nested: nested)
+            CommunityAvatar(name: entry.authorName, size: nested ? 30 : 36, nested: nested)
 
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {
-                    Text(entry.author.name)
+                    Text(entry.authorName)
                         .font(.system(size: nested ? 13 : 14, weight: .bold))
                         .foregroundStyle(CommunityTheme.textPrimary)
 

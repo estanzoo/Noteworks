@@ -65,13 +65,42 @@ func mapCommunityError(
         return .server("Something went wrong on our end. Please try again.")
     case .networkError:
         return .server("Network is unreachable. Check your connection and try again.")
-    case .decodingError:
+    case .decodingError(let underlying):
+        #if DEBUG
+        return .unknown("Decode failed: \(decodeDebugDescription(underlying))")
+        #else
         return .unknown("Couldn't read the server's response.")
+        #endif
     case .unknown(let code, let m):
         // 403 maps to .unknown(403, …) in `APIClient.mapError`, so detect it here.
         if code == 403 { return .forbidden(forbidden) }
         return .unknown(m)
     }
+}
+
+/// Pulls the human-readable bits out of a `DecodingError` so the on-screen
+/// banner says *what* went wrong (missing key, type mismatch, bad date,
+/// etc.) instead of the generic "Couldn't read the server's response."
+/// This is wired in only for `#if DEBUG` builds so production users never
+/// see the raw error text.
+private func decodeDebugDescription(_ error: Error) -> String {
+    guard let de = error as? DecodingError else { return error.localizedDescription }
+    switch de {
+    case .keyNotFound(let key, let ctx):
+        return "missing key \"\(key.stringValue)\" at \(pathString(ctx.codingPath))"
+    case .typeMismatch(let type, let ctx):
+        return "wrong type \(type) at \(pathString(ctx.codingPath)) — \(ctx.debugDescription)"
+    case .valueNotFound(let type, let ctx):
+        return "null \(type) at \(pathString(ctx.codingPath))"
+    case .dataCorrupted(let ctx):
+        return "corrupted at \(pathString(ctx.codingPath)) — \(ctx.debugDescription)"
+    @unknown default:
+        return de.localizedDescription
+    }
+}
+
+private func pathString(_ path: [CodingKey]) -> String {
+    path.map { $0.intValue.map { "[\($0)]" } ?? $0.stringValue }.joined(separator: ".")
 }
 
 // MARK: - View Model

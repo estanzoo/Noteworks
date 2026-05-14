@@ -6,6 +6,9 @@
 //
 
 import Foundation
+import os.log
+
+private let apiLogger = Logger(subsystem: "studio.noteworks", category: "APIClient")
 
 enum APIError: LocalizedError {
     case unauthorized
@@ -67,7 +70,7 @@ actor APIClient {
 
         self.decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
-        decoder.dateDecodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .iso8601Flexible
     }
 
     // MARK: - Configuration
@@ -191,6 +194,12 @@ actor APIClient {
         do {
             return try decoder.decode(T.self, from: data)
         } catch {
+            // Without this log a decode failure becomes the opaque
+            // "Couldn't read the server's response." banner; surface the
+            // real reason (and a body preview) to the unified log so we
+            // can triage future contract drifts from Xcode's Console.
+            let preview = String(data: data.prefix(512), encoding: .utf8) ?? "<binary>"
+            apiLogger.error("Decode failure for \(request.url?.absoluteString ?? "?", privacy: .public)\nerror: \(String(describing: error), privacy: .public)\nbody: \(preview, privacy: .public)")
             throw APIError.decodingError(error)
         }
     }
@@ -213,4 +222,51 @@ actor APIClient {
 private struct ErrorBody: Decodable {
     let error: String?
     let message: String
+}
+
+// MARK: - Date decoding
+
+extension JSONDecoder.DateDecodingStrategy {
+    /// ISO-8601 strategy that accepts both Postgres `timestamptz` output
+    /// (`2026-05-13T19:05:58.718074+00:00`, with 1–6 digit fractional
+    /// seconds) and the plainer `2026-05-13T19:05:58Z` form. `Foundation`'s
+    /// built-in `.iso8601` only accepts the latter, so any field backed by
+    /// a `timestamptz` column would otherwise throw `dataCorrupted`.
+    static let iso8601Flexible: JSONDecoder.DateDecodingStrategy = .custom { decoder in
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        if let date = ISO8601DateParser.shared.date(from: raw) {
+            return date
+        }
+        throw DecodingError.dataCorruptedError(
+            in: container,
+            debugDescription: "Expected ISO-8601 date, got \(raw)"
+        )
+    }
+}
+
+/// Parses ISO-8601 strings with or without fractional seconds. Wraps two
+/// `ISO8601DateFormatter`s because each one's `formatOptions` are an AND
+/// mask — a single instance cannot accept both fractional and integral
+/// forms. Used by `JSONDecoder.DateDecodingStrategy.iso8601Flexible`.
+private final class ISO8601DateParser: @unchecked Sendable {
+    static let shared = ISO8601DateParser()
+
+    private let withFraction: ISO8601DateFormatter
+    private let withoutFraction: ISO8601DateFormatter
+
+    private init() {
+        let f1 = ISO8601DateFormatter()
+        f1.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        self.withFraction = f1
+
+        let f2 = ISO8601DateFormatter()
+        f2.formatOptions = [.withInternetDateTime]
+        self.withoutFraction = f2
+    }
+
+    func date(from string: String) -> Date? {
+        if let d = withFraction.date(from: string) { return d }
+        return withoutFraction.date(from: string)
+    }
 }

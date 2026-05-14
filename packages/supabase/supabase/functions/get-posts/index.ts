@@ -64,7 +64,7 @@ Deno.serve(async (req) => {
       .maybeSingle()
 
     if (!tagRow) {
-      return json({ data: [], next_cursor: null })
+      return json({ posts: [], next_cursor: null })
     }
 
     const { data: postHashtags } = await supabase
@@ -74,7 +74,7 @@ Deno.serve(async (req) => {
 
     const postIds = (postHashtags ?? []).map(ph => ph.post_id)
     if (postIds.length === 0) {
-      return json({ data: [], next_cursor: null })
+      return json({ posts: [], next_cursor: null })
     }
     query = query.in('id', postIds)
   }
@@ -88,7 +88,7 @@ Deno.serve(async (req) => {
 
     const likedIds = (likes ?? []).map(l => l.post_id)
     if (likedIds.length === 0) {
-      return json({ data: [], next_cursor: null })
+      return json({ posts: [], next_cursor: null })
     }
     query = query.in('id', likedIds)
   }
@@ -97,7 +97,7 @@ Deno.serve(async (req) => {
 
   if (postsErr) return errorResponse('Query failed', postsErr.message, 500)
   if (!posts || posts.length === 0) {
-    return json({ data: [], next_cursor: null })
+    return json({ posts: [], next_cursor: null })
   }
 
   // Determine pagination
@@ -150,7 +150,7 @@ Deno.serve(async (req) => {
 
   const likedSet = new Set((userLikes ?? []).map(l => l.post_id))
 
-  const data = sliced.map(p => {
+  const responsePosts = sliced.map(p => {
     const author = p.author as unknown as { id: string; name: string | null } | null
     return {
       id: p.id,
@@ -170,5 +170,5 @@ Deno.serve(async (req) => {
     }
   })
 
-  return json({ data, next_cursor: nextCursor })
+  return json({ posts: responsePosts, next_cursor: nextCursor })
 })

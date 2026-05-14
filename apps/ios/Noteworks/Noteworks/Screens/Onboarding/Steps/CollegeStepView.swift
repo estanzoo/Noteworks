@@ -10,10 +10,19 @@ import SwiftUI
 struct CollegeStepView: View {
     @ObservedObject var data: OnboardingData
     @EnvironmentObject var appState: AppState
+    /// Owned by `OnboardingFlow` so the full schools list can prefetch
+    /// while the user is still on Welcome / Sign-Up. By the time we land
+    /// here the cache is usually warm and the autocomplete runs locally.
+    @ObservedObject var schoolSearch: SchoolSearchService
     let onNext: () -> Void
     let onBack: () -> Void
     @State private var visible = false
-    @StateObject private var schoolSearch = SchoolSearchService()
+    /// Flipped on the first invalid Next tap. After that, all
+    /// required-field errors render live until the user passes
+    /// validation. The "must pick from the list" error is already live
+    /// (driven by `data.hasUnrecognisedCollege`) — it's the most common
+    /// mistake on this page.
+    @State private var attemptedNext = false
 
     var body: some View {
         ScrollView {
@@ -26,7 +35,7 @@ struct CollegeStepView: View {
                     VStack(alignment: .leading, spacing: 0) {
                         OnboardingHeader(title: "Getting To Know You", onBack: onBack)
 
-                        OnboardingRow(disabled: !data.isCollegeValid, onNext: onNext) {
+                        OnboardingRow(disabled: false, onNext: handleNext) {
                             Text("Tell us about your academic background.")
                                 .font(.system(size: 15))
                                 .foregroundStyle(OnboardingTheme.textSecondary)
@@ -40,19 +49,43 @@ struct CollegeStepView: View {
                                     disabled: false,
                                     text: $data.schoolEmail
                                 )
+                                OnboardingError(
+                                    show: attemptedNext && data.collegeSchoolEmailError != nil,
+                                    text: data.collegeSchoolEmailError ?? ""
+                                )
                             }
 
-                            // College name with autocomplete
+                            // College name with autocomplete. Users must
+                            // pick a row from the suggestion list — free-
+                            // form names are rejected via `isCollegeValid`
+                            // and surfaced as an inline error here.
                             SchoolAutocompleteField(
                                 college: $data.college,
+                                selectedSchoolId: $data.selectedSchoolId,
                                 disabled: data.notAStudent,
                                 searchService: schoolSearch
+                            )
+                            // The "must pick from the list" message is
+                            // live — it's the single most common mistake
+                            // on this page, so we don't wait for a Next
+                            // tap to surface it. Empty-field errors stay
+                            // gated on `attemptedNext`.
+                            OnboardingError(
+                                show: data.hasUnrecognisedCollege
+                                    || (attemptedNext && data.collegeNameError != nil),
+                                text: data.hasUnrecognisedCollege
+                                    ? "Please pick a school from the list."
+                                    : (data.collegeNameError ?? "")
                             )
 
                             OnboardingYearOfStudyPicker(
                                 label: "Year of study",
                                 disabled: data.notAStudent,
                                 selection: $data.yearOfStudySelection
+                            )
+                            OnboardingError(
+                                show: attemptedNext && data.yearOfStudyError != nil,
+                                text: data.yearOfStudyError ?? ""
                             )
                             if data.yearOfStudySelection == OnboardingData.yearOfStudyOther && !data.notAStudent {
                                 OnboardingField(
@@ -76,11 +109,18 @@ struct CollegeStepView: View {
         .offset(y: visible ? 0 : 16)
         .onAppear {
             withAnimation(.easeOut(duration: 0.5)) { visible = true }
-            schoolSearch.accessToken = appState.accessToken
+            // Belt-and-braces: `OnboardingFlow` already kicks off the
+            // prefetch the moment a token is available, but we re-trigger
+            // here so that any branch that bypasses that path (e.g. an
+            // older preview / test harness) still gets a populated cache.
+            if let token = appState.accessToken {
+                schoolSearch.prefetchAll(accessToken: token)
+            }
         }
         .onChange(of: data.notAStudent) { _, isNotStudent in
             if isNotStudent {
                 data.college = ""
+                data.selectedSchoolId = nil
                 data.yearOfStudySelection = nil
                 data.yearOfStudyOtherDetail = ""
             }
@@ -91,16 +131,34 @@ struct CollegeStepView: View {
             }
         }
     }
+
+    private func handleNext() {
+        if data.isCollegeValid {
+            onNext()
+        } else {
+            attemptedNext = true
+        }
+    }
 }
 
 // MARK: - School Autocomplete Field
 
 private struct SchoolAutocompleteField: View {
     @Binding var college: String
+    /// Set when the user picks a row from the suggestions dropdown;
+    /// cleared whenever the text field is edited. `CollegeStepView` uses
+    /// this to enforce "must pick from the list" — see `isCollegeValid`.
+    @Binding var selectedSchoolId: String?
     let disabled: Bool
     @ObservedObject var searchService: SchoolSearchService
     @FocusState private var focused: Bool
     @State private var showSuggestions = false
+    /// Suppresses the `onChange(of: college)` clear-selection side effect
+    /// while we programmatically write the picked school name into the
+    /// field. Without it, tapping a suggestion would set the id and then
+    /// immediately wipe it again because writing `college = school.name`
+    /// fires `onChange`.
+    @State private var isApplyingSelection = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -133,6 +191,13 @@ private struct SchoolAutocompleteField: View {
                     searchService.query = newValue
                     searchService.search()
                     showSuggestions = true
+                    // Any manual edit invalidates the previous pick — the
+                    // user must confirm by tapping a suggestion again.
+                    if isApplyingSelection {
+                        isApplyingSelection = false
+                    } else if selectedSchoolId != nil {
+                        selectedSchoolId = nil
+                    }
                 }
                 .onChange(of: focused) { _, isFocused in
                     if isFocused && college.count >= 2 {
@@ -145,7 +210,9 @@ private struct SchoolAutocompleteField: View {
                 VStack(spacing: 0) {
                     ForEach(searchService.results) { school in
                         Button {
+                            isApplyingSelection = true
                             college = school.name
+                            selectedSchoolId = school.id
                             showSuggestions = false
                             focused = false
                         } label: {
@@ -219,7 +286,12 @@ private struct SchoolAutocompleteField: View {
     ZStack {
         OnboardingBackground()
             .ignoresSafeArea()
-        CollegeStepView(data: OnboardingData(), onNext: {}, onBack: {})
-            .environmentObject(AppState(notesStore: NotesStore.preview()))
+        CollegeStepView(
+            data: OnboardingData(),
+            schoolSearch: SchoolSearchService(),
+            onNext: {},
+            onBack: {}
+        )
+        .environmentObject(AppState(notesStore: NotesStore.preview()))
     }
 }

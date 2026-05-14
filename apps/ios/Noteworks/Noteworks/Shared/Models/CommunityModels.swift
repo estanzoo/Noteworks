@@ -15,7 +15,10 @@ import Foundation
 
 struct PostAuthor: Codable, Equatable, Identifiable {
     let id: String
-    let name: String
+    /// Optional because the server joins `users.name`, which is itself
+    /// nullable — newly signed-up users haven't picked a display name yet,
+    /// in which case the server returns `name: null`.
+    let name: String?
 }
 
 // MARK: - Attachment
@@ -134,8 +137,12 @@ extension CommunityPost {
     var liked: Bool { hasLiked ?? false }
 
     /// Convenience for the heart/avatar UI — falls back to "Anonymous" if
-    /// the server hasn't populated the joined author row.
-    var authorName: String { author?.name ?? "Anonymous" }
+    /// the server hasn't populated the joined author row, or if the user
+    /// hasn't set a display name yet (server returns `name: null`).
+    var authorName: String {
+        if let name = author?.name, !name.isEmpty { return name }
+        return "Anonymous"
+    }
 }
 
 // MARK: - Comment
@@ -209,6 +216,14 @@ extension CommunityComment {
     /// Recursive count of this comment + all nested replies.
     var threadCount: Int {
         1 + replies.reduce(0) { $0 + $1.threadCount }
+    }
+
+    /// Display name with the same fallback rules as `CommunityPost.authorName`.
+    /// Necessary because the server returns `author.name: null` for users
+    /// who haven't set a display name yet.
+    var authorName: String {
+        if let name = author.name, !name.isEmpty { return name }
+        return "Anonymous"
     }
 }
 

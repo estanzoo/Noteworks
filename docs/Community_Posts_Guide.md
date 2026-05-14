@@ -650,6 +650,80 @@ Results are sorted by `post_count` (most popular first) — so the most relevant
 
 ---
 
+## Searching posts
+
+Free-text substring search over public community posts. Matches `q`
+(case-insensitive) against:
+
+- `posts.title`
+- `posts.body`
+- the **title** of any note attached to a post (via `post_attachments`)
+
+Use this to power the global search bar. The response is shaped exactly
+like `get-posts`, so the same card renderers and pagination cursor work
+for both feeds.
+
+**Request:**
+```
+GET https://app.noteworks.studio/functions/v1/search-posts?q=calc&limit=20
+
+Headers:
+  apikey: <anon_key>
+  Authorization: Bearer <access_token>
+```
+
+**Query parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `q` | string | **required** | Substring to match (1–200 chars; treated literally — `%` and `_` are NOT wildcards) |
+| `limit` | integer | 20 | Number of posts per page (max 50) |
+| `cursor` | string (ISO timestamp) | none | Pass `next_cursor` from the previous response for the next page |
+
+**Scope:** only `visibility = 'public'` posts that have not been
+soft-deleted. Private posts are never returned, even for their author.
+
+**Response (success — 200):** identical to `get-posts`.
+```json
+{
+  "posts": [
+    {
+      "id": "p0000000-...",
+      "user_id": "u0000000-...",
+      "author": { "id": "u0000000-...", "name": "Jane Smith" },
+      "title": "Calculus midterm review",
+      "body": "Posting my notes from the Friday session...",
+      "visibility": "public",
+      "course_id": "c0000000-...",
+      "likes_count": 12,
+      "comments_count": 3,
+      "has_liked": false,
+      "hashtags": ["calc", "midterm"],
+      "attachments": [
+        { "note_id": "n-uuid-1", "title": "Calc chapter 5 review", "has_pdf": true, "pdf_filename": "calc5.pdf" }
+      ],
+      "created_at": "2026-05-13T19:05:58Z",
+      "updated_at": "2026-05-13T19:05:58Z"
+    }
+  ],
+  "next_cursor": "2026-05-10T11:21:00Z"
+}
+```
+
+**Errors:**
+- `400` — `q` is missing, empty, or longer than 200 characters.
+- `401` — missing/invalid auth.
+- `500` — query failure (rare; usually a malformed cursor).
+
+**Implementation notes (UI):**
+- Debounce keystrokes by ~300ms before firing the request.
+- Show the previous result set during the debounce so the list doesn't
+  flash empty between every character.
+- Sort within a page is by `created_at` DESC, the same as `get-posts`.
+- Empty `posts` with `next_cursor: null` means the search is done.
+
+---
+
 ## Typical UI scenarios
 
 ### Scenario 1: User opens the community tab
@@ -730,6 +804,7 @@ Results are sorted by `post_count` (most popular first) — so the most relevant
 | Get comments | GET | `/functions/v1/get-comments?post_id=ID` | Yes |
 | Delete comment | DELETE | `/functions/v1/delete-comment?comment_id=ID` | Yes |
 | Search hashtags | GET | `/functions/v1/search-hashtags?q=TERM` | Yes |
+| Search posts | GET | `/functions/v1/search-posts?q=TERM` | Yes |
 
 All endpoints require both the `apikey` header and `Authorization: Bearer <access_token>`.
 

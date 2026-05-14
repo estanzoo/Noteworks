@@ -22,6 +22,7 @@ protocol CommunityServiceProtocol {
     func createComment(_ request: CreateCommentRequest, accessToken: String) async throws -> CommunityComment
     func deleteComment(id: String, accessToken: String) async throws -> DeleteResponse
     func searchHashtags(prefix: String, limit: Int, accessToken: String) async throws -> [HashtagSuggestion]
+    func searchPosts(query: String, cursor: String?, limit: Int, accessToken: String) async throws -> FeedPage
 }
 
 final class CommunityService: CommunityServiceProtocol {
@@ -124,5 +125,22 @@ final class CommunityService: CommunityServiceProtocol {
             accessToken: accessToken
         )
         return response.hashtags
+    }
+
+    // MARK: - Search
+
+    /// `GET /search-posts`. Substring-matches `query` against post title,
+    /// body, and attached-note titles; returns a `FeedPage` so the same
+    /// renderers/pagination as the main feed apply.
+    func searchPosts(
+        query: String,
+        cursor: String? = nil,
+        limit: Int = 20,
+        accessToken: String
+    ) async throws -> FeedPage {
+        try await api.get(
+            SupabaseConfig.searchPostsURL(query: query, cursor: cursor, limit: limit),
+            accessToken: accessToken
+        )
     }
 }

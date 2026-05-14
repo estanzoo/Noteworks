@@ -13,6 +13,8 @@ struct InterestsStepView: View {
     let onBack: () -> Void
     @State private var visible = false
     @State private var customInput = ""
+    /// See `SignUpStepView.attemptedNext`.
+    @State private var attemptedNext = false
 
     var body: some View {
         ScrollView {
@@ -25,12 +27,17 @@ struct InterestsStepView: View {
                     VStack(alignment: .leading, spacing: 0) {
                         OnboardingHeader(title: "Any Field of Interests?", onBack: onBack)
 
-                        OnboardingRow(disabled: !data.isInterestsValid, onNext: onNext) {
+                        OnboardingRow(disabled: false, onNext: handleNext) {
                             Text("Select topics you're passionate about.")
                                 .font(.system(size: 15))
                                 .foregroundStyle(OnboardingTheme.textSecondary)
                                 .lineSpacing(4)
                                 .padding(.bottom, 20)
+
+                            OnboardingError(
+                                show: attemptedNext && data.interestsError != nil,
+                                text: data.interestsError ?? ""
+                            )
 
                             // Preset interest chips
                             FlowLayout(spacing: 10) {
@@ -120,6 +127,14 @@ struct InterestsStepView: View {
         guard !trimmed.isEmpty, !data.customInterests.contains(trimmed) else { return }
         data.customInterests.append(trimmed)
         customInput = ""
+    }
+
+    private func handleNext() {
+        if data.isInterestsValid {
+            onNext()
+        } else {
+            attemptedNext = true
+        }
     }
 }
 

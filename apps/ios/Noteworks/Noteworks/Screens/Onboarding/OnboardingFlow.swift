@@ -29,6 +29,12 @@ enum OnboardingStep: Int, CaseIterable {
 struct OnboardingFlow: View {
     @EnvironmentObject var appState: AppState
     @StateObject private var data = OnboardingData()
+    /// Owned at the flow level (instead of inside `CollegeStepView`) so the
+    /// full schools list can start downloading the moment the user enters
+    /// onboarding — by the time they reach the college step the cache is
+    /// usually warm and the dropdown filters locally with no network round
+    /// trip per keystroke.
+    @StateObject private var schoolSearch = SchoolSearchService()
     @State private var step: OnboardingStep
     @State private var isLoading = false
     @State private var errorMessage: String?
@@ -91,13 +97,16 @@ struct OnboardingFlow: View {
                     SignInDoneView(
                         email: signInEmail,
                         onContinue: {
-                            // Profile drives routing now. Refresh, and if the
-                            // user hasn't finished onboarding, drop them at
-                            // the college step inside this same flow.
-                            // Otherwise `ContentView` flips to `MainTabView`.
+                            // `handleSignIn` only routes here once the
+                            // profile reports `hasCompletedOnboarding`, so
+                            // `ContentView` already has everything it needs
+                            // to flip over to `MainTabView`. Re-fetch
+                            // defensively in case the profile was cleared
+                            // by a transient error while this view was
+                            // visible.
                             Task {
-                                if let next = await appState.refreshProfile(),
-                                   !next.hasCompletedOnboarding {
+                                let next = await appState.refreshProfile()
+                                if let next, !next.hasCompletedOnboarding {
                                     step = .college
                                 }
                             }
@@ -113,9 +122,14 @@ struct OnboardingFlow: View {
                         onResend: { handleResendVerification() }
                     )
                 case .college:
-                    CollegeStepView(data: data, onNext: { step = .major }, onBack: {
-                        step = data.isOAuthUser ? .welcome : .verifyEmail
-                    })
+                    CollegeStepView(
+                        data: data,
+                        schoolSearch: schoolSearch,
+                        onNext: { step = .major },
+                        onBack: {
+                            step = data.isOAuthUser ? .welcome : .verifyEmail
+                        }
+                    )
                 case .major:
                     MajorStepView(data: data, onNext: { step = .interests }, onBack: { step = .college })
                 case .interests:
@@ -200,6 +214,21 @@ struct OnboardingFlow: View {
         } message: {
             Text(errorMessage ?? "")
         }
+        // Start downloading the full schools list as soon as we have a
+        // valid session. On the `resumeOnboardingAtCollege` path the
+        // token is already present at first render; for the sign-up /
+        // sign-in / OAuth paths the `onChange` below catches the
+        // transition from `nil` to a real token.
+        .onAppear {
+            if let token = appState.accessToken {
+                schoolSearch.prefetchAll(accessToken: token)
+            }
+        }
+        .onChange(of: appState.accessToken) { _, newToken in
+            if let newToken {
+                schoolSearch.prefetchAll(accessToken: newToken)
+            }
+        }
     }
 
     // MARK: - Auth actions (mock for now, real later)
@@ -213,7 +242,21 @@ struct OnboardingFlow: View {
                     password: signInPassword
                 )
                 appState.handleAuthResult(result)
-                step = .signInDone
+                // Fetch the profile BEFORE deciding where to send the user.
+                // Returning users with `onboarding_completed_at` set should
+                // see the "Welcome Back" splash (which then drops them into
+                // `MainTabView` via `ContentView`); users with a valid
+                // session but unfinished onboarding (e.g. interrupted
+                // submission, or sign-up that was confirmed out-of-band)
+                // should resume the onboarding form at `.college` instead
+                // of being greeted as if they'd been here before.
+                let refreshed = await appState.refreshProfile()
+                if let refreshed, !refreshed.hasCompletedOnboarding {
+                    data.email = refreshed.email
+                    step = .college
+                } else {
+                    step = .signInDone
+                }
             } catch {
                 errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }
@@ -229,7 +272,7 @@ struct OnboardingFlow: View {
                 appState.handleAuthResult(result)
                 data.isOAuthUser = true
                 data.email = result.email
-                step = .college
+                await routeAfterOAuth()
             } catch {
                 if !isUserCancellation(error) {
                     errorMessage = (error as? LocalizedError)?.errorDescription
@@ -248,7 +291,7 @@ struct OnboardingFlow: View {
                 appState.handleAuthResult(result)
                 data.isOAuthUser = true
                 data.email = result.email
-                step = .college
+                await routeAfterOAuth()
             } catch {
                 if !isUserCancellation(error) {
                     errorMessage = (error as? LocalizedError)?.errorDescription
@@ -257,6 +300,20 @@ struct OnboardingFlow: View {
             }
             isLoading = false
         }
+    }
+
+    /// After OAuth succeeds we refresh the profile and only drop the user
+    /// into the onboarding form (`.college`) when `onboarding_completed_at`
+    /// is still null. If the user has already onboarded, the profile fetch
+    /// causes `ContentView` to flip over to `MainTabView` on the next
+    /// render — no local step change required.
+    private func routeAfterOAuth() async {
+        let refreshed = await appState.refreshProfile()
+        if let refreshed, refreshed.hasCompletedOnboarding {
+            // ContentView will route to MainTabView; nothing to do locally.
+            return
+        }
+        step = .college
     }
 
     private func isUserCancellation(_ error: Error) -> Bool {
@@ -365,6 +422,7 @@ struct OnboardingFlow: View {
                     name: resolvedName,
                     yearOfGraduation: data.resolvedYearOfGraduation,
                     schoolAffiliation: data.schoolAffiliationForSubmit,
+                    schoolId: data.notAStudent ? nil : data.selectedSchoolId,
                     schoolEmail: resolvedSchoolEmail,
                     courseCodes: data.selectedCourseCodes
                 )
