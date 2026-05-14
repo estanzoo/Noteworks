@@ -51,6 +51,14 @@ struct NoteEditorView: View {
     /// button opened it — so the AI dropdown is just under the AI pill
     /// instead of below the entire chrome.
     @State private var toolAnchors: [NoteEditorPanel: CGRect] = [:]
+    /// Largest full-editor height seen this session. When the title field
+    /// focuses, the navigation host often shrinks the vertical proposal;
+    /// pinning layout to this max (top-aligned) keeps the chrome and title
+    /// under the status bar while the keyboard covers the bottom.
+    @State private var editorStableMaxHeight: CGFloat = 0
+    /// Largest canvas-area height seen this session — keeps `pageSize(...)`
+    /// stable when the canvas `GeometryReader` gets a shorter proposal.
+    @State private var canvasStableMaxHeight: CGFloat = 0
 
     // MARK: - Overlay editor state
 
@@ -75,71 +83,77 @@ struct NoteEditorView: View {
     }
 
     var body: some View {
-        ZStack {
-            // `.ignoresSafeArea()` mirrors every other screen using
-            // `OnboardingBackground` (Home, Profile, Community). Without it
-            // the status-bar and home-indicator regions show through as a
-            // white band above the chrome and below the page footer.
-            OnboardingBackground()
-                .ignoresSafeArea()
+        GeometryReader { outerGeo in
+            let stableEditorH = max(outerGeo.size.height, editorStableMaxHeight)
+            ZStack {
+                // `.ignoresSafeArea()` mirrors every other screen using
+                // `OnboardingBackground` (Home, Profile, Community). Without it
+                // the status-bar and home-indicator regions show through as a
+                // white band above the chrome and below the page footer.
+                OnboardingBackground()
+                    .ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                chromeCard
-                    // Chrome hugs the screen edges (just a couple of pts
-                    // so the rounded corners don't kiss the bezel) to
-                    // match the GoodNotes-style "full-bleed" feel the
-                    // user is asking for.
-                    .padding(.horizontal, 6)
-                    .padding(.top, 4)
-                    .padding(.bottom, 4)
+                VStack(spacing: 0) {
+                    chromeCard
+                        // Chrome hugs the screen edges (just a couple of pts
+                        // so the rounded corners don't kiss the bezel) to
+                        // match the GoodNotes-style "full-bleed" feel the
+                        // user is asking for.
+                        .padding(.horizontal, 6)
+                        .padding(.top, 4)
+                        .padding(.bottom, 4)
 
-                canvasArea
-                    .padding(.horizontal, 0)
-                    .padding(.bottom, 0)
-            }
-            // Push the bottom of the editor past the home-indicator /
-            // bottom safe area so the page card actually reaches the
-            // edge of the screen — without this, a thin gradient strip
-            // peeks through under the page (the "downside is still not
-            // full screen" the user is reporting). The chrome stays in
-            // its safe spot at the top because we don't ignore safe
-            // areas there.
-            .ignoresSafeArea(.container, edges: .bottom)
-            // Critical: pin the editor layout regardless of keyboard.
-            // Without this, focusing the title field shrinks the canvas
-            // to make room for the keyboard, the page rescales mid-edit,
-            // and the user sees the whole UI jump. The title field
-            // lives at the very top of the chrome so the keyboard never
-            // actually obscures it — we just want the layout to stay
-            // put while the keyboard overlays.
-            .ignoresSafeArea(.keyboard, edges: .bottom)
-
-            VStack {
-                Spacer()
-                HStack(alignment: .bottom, spacing: 12) {
-                    statusStrip
-                    Spacer()
-                    NotePageFooter(viewModel: viewModel)
+                    canvasArea
+                        .padding(.horizontal, 0)
+                        .padding(.bottom, 0)
                 }
-                .padding(.horizontal, 18)
-                .padding(.bottom, 12)
-            }
-            .ignoresSafeArea(.keyboard, edges: .bottom)
-
-            // Floating dropdowns layer — drawn ABOVE the chrome and
-            // canvas so they're never clipped behind the page card.
-            // Each panel positions itself directly under whichever
-            // button opened it (the three-dots menu under the
-            // ellipsis, the AI panel under the AI pill, the pen /
-            // highlighter / eraser panels under their respective tool
-            // icons), using the frames published via
-            // `ToolButtonAnchorKey`.
-            dropdownsLayer
+                // Push the bottom of the editor past the home-indicator /
+                // bottom safe area so the page card actually reaches the
+                // edge of the screen — without this, a thin gradient strip
+                // peeks through under the page (the "downside is still not
+                // full screen" the user is reporting). The chrome stays in
+                // its safe spot at the top because we don't ignore safe
+                // areas there.
+                .ignoresSafeArea(.container, edges: .bottom)
+                // Pin the chrome + canvas stack against keyboard-driven
+                // shrink in the canvas; the outer `stableEditorH` frame
+                // handles keeping the whole editor top-aligned.
                 .ignoresSafeArea(.keyboard, edges: .bottom)
-        }
-        .coordinateSpace(name: "NoteEditorCoord")
-        .onPreferenceChange(ToolButtonAnchorKey.self) { anchors in
-            toolAnchors = anchors
+
+                VStack {
+                    Spacer()
+                    HStack(alignment: .bottom, spacing: 12) {
+                        statusStrip
+                        Spacer()
+                        NotePageFooter(viewModel: viewModel)
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 12)
+                }
+                .ignoresSafeArea(.keyboard, edges: .bottom)
+
+                // Floating dropdowns layer — drawn ABOVE the chrome and
+                // canvas so they're never clipped behind the page card.
+                // Each panel positions itself directly under whichever
+                // button opened it (the three-dots menu under the
+                // ellipsis, the AI panel under the AI pill, the pen /
+                // highlighter / eraser panels under their respective tool
+                // icons), using the frames published via
+                // `ToolButtonAnchorKey`.
+                dropdownsLayer
+                    .ignoresSafeArea(.keyboard, edges: .bottom)
+            }
+            .frame(width: outerGeo.size.width, height: stableEditorH, alignment: .top)
+            .coordinateSpace(name: "NoteEditorCoord")
+            .onPreferenceChange(ToolButtonAnchorKey.self) { anchors in
+                toolAnchors = anchors
+            }
+            .onChange(of: outerGeo.size.height) { _, h in
+                editorStableMaxHeight = max(editorStableMaxHeight, h)
+            }
+            .onAppear {
+                editorStableMaxHeight = max(editorStableMaxHeight, outerGeo.size.height)
+            }
         }
         .navigationBarHidden(true)
         .toolbar(.hidden, for: .navigationBar)
@@ -170,6 +184,8 @@ struct NoteEditorView: View {
             // then load the freshly-active one.
             viewModel.switchActiveNote(newId)
             openPanel = nil
+            canvasStableMaxHeight = 0
+            editorStableMaxHeight = 0
         }
         .onChange(of: viewModel.drawing) { _, _ in
             viewModel.handleDrawingChange()
@@ -179,7 +195,10 @@ struct NoteEditorView: View {
             viewModel.handleTitleChange(newValue)
         }
         .sheet(isPresented: $showShareSheet) {
-            ShareSheet(data: viewModel.exportPDFLocally(), filename: "\(viewModel.noteTitle).pdf")
+            ShareSheet(
+                data: viewModel.exportPDFLocally(store: store),
+                filename: sharePDFFilename(title: viewModel.noteTitle)
+            )
         }
         .sheet(isPresented: $showSubjectPicker) {
             BubblePickerSheet(
@@ -241,6 +260,20 @@ struct NoteEditorView: View {
             // PencilKit interaction for no reason.
             selectedOverlayId = nil
         }
+        .onChange(of: viewModel.currentPageRotation) { _, _ in
+            canvasStableMaxHeight = 0
+        }
+    }
+
+    /// Sanitized filename for PDF export / share sheet.
+    private func sharePDFFilename(title: String) -> String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = trimmed.isEmpty ? "Note" : trimmed
+        let forbidden = CharacterSet(charactersIn: "/:\\?%*|\"<>")
+        let cleaned = base.components(separatedBy: forbidden).joined(separator: "-")
+        let capped = String(cleaned.prefix(120))
+        let stem = capped.isEmpty ? "Note" : capped
+        return stem.hasSuffix(".pdf") ? stem : "\(stem).pdf"
     }
 
     // MARK: - Photo picker handling
@@ -588,13 +621,18 @@ struct NoteEditorView: View {
     private var canvasArea: some View {
         GeometryReader { geometry in
             let rotation = viewModel.currentPageRotation
+            // Use the max height we've seen so keyboard-driven shrink in
+            // the layout proposal doesn't rescale the page. Width
+            // follows live geometry (split view); height stays pinned.
+            let stableHeight = max(geometry.size.height, canvasStableMaxHeight)
+            let basisSize = CGSize(width: geometry.size.width, height: stableHeight)
             // Logical page size — what the page "is". At zoom 1 the
-            // whole page fits inside `geometry.size` so the user sees
+            // whole page fits inside `basisSize` so the user sees
             // the entire page on first render. Pinching in via the
             // outer `ZoomablePageScrollView` scales the page beyond
             // the viewport and two-finger pan navigates the detail —
             // exactly the GoodNotes flow.
-            let logicalPageSize = pageSize(in: geometry.size, rotation: rotation)
+            let logicalPageSize = pageSize(in: basisSize, rotation: rotation)
             ZoomablePageScrollView(contentSize: logicalPageSize, maxScale: 3.0) {
                 pageCard(logicalPageSize: logicalPageSize, rotation: rotation)
             }
@@ -602,6 +640,12 @@ struct NoteEditorView: View {
             .contentShape(Rectangle())
             .onTapGesture {
                 if openPanel != nil { openPanel = nil }
+            }
+            .onAppear {
+                canvasStableMaxHeight = max(canvasStableMaxHeight, geometry.size.height)
+            }
+            .onChange(of: geometry.size.height) { _, newH in
+                canvasStableMaxHeight = max(canvasStableMaxHeight, newH)
             }
         }
     }
@@ -757,7 +801,8 @@ private struct ShareSheet: UIViewControllerRepresentable {
     let filename: String
 
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+        let unique = "\(UUID().uuidString.prefix(8))-\(filename)"
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(unique)
         try? data.write(to: tempURL)
         return UIActivityViewController(activityItems: [tempURL], applicationActivities: nil)
     }

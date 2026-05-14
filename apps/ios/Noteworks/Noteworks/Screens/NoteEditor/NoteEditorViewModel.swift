@@ -928,13 +928,14 @@ final class NoteEditorViewModel: ObservableObject {
 
     // MARK: - Upload
 
+    @MainActor
     func uploadDrawing(accessToken: String) async {
         guard let noteId else {
             uploadError = "No note ID set — save the note first."
             return
         }
-        guard !drawing.bounds.isEmpty else {
-            uploadError = "The canvas is empty. Draw something first."
+        guard let store, let note = store.note(id: noteId) else {
+            uploadError = "Note not found."
             return
         }
 
@@ -943,8 +944,11 @@ final class NoteEditorViewModel: ObservableObject {
 
         do {
             let filename = "\(noteTitle).pdf"
-            let response = try await pdfService.uploadDrawing(
-                drawing,
+            let response = try await pdfService.uploadNotePDF(
+                note: note,
+                store: store,
+                livePage: currentPage,
+                liveDrawing: drawing,
                 noteId: noteId,
                 filename: filename,
                 accessToken: accessToken
@@ -979,7 +983,16 @@ final class NoteEditorViewModel: ObservableObject {
         isDownloading = false
     }
 
-    func exportPDFLocally() -> Data {
-        pdfService.exportDrawingToPDF(drawing)
+    @MainActor
+    func exportPDFLocally(store: NotesStore) -> Data {
+        guard let id = noteId, let note = store.note(id: id) else {
+            return pdfService.exportDrawingToPDF(drawing)
+        }
+        return pdfService.exportNoteToPDF(
+            note: note,
+            store: store,
+            livePage: currentPage,
+            liveDrawing: drawing
+        )
     }
 }
