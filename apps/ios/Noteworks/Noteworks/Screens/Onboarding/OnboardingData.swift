@@ -17,6 +17,12 @@ class OnboardingData: ObservableObject {
     @Published var email = ""
     @Published var password = ""
     @Published var verifyPassword = ""
+    /// Server-side sign-up error attached to the Email field (e.g.
+    /// "An account with this email already exists."). Set by
+    /// `OnboardingFlow.handleSignUp` after the auth call returns, and
+    /// cleared automatically the moment the user edits the email so
+    /// they can correct it without the stale error lingering.
+    @Published var signUpEmailServerError: String?
 
     // Step 2: Verify Email (Supabase email OTP is typically 6 digits)
     @Published var verificationCode = ["", "", "", "", "", ""]

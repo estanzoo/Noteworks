@@ -203,6 +203,69 @@ struct CommunityPostDetailPopup: View {
         }
     }
 
+    /// Flips the heart on a comment (top-level or nested reply) immediately,
+    /// fires the like-comment edge function, then reconciles with the
+    /// server-returned count. Reverts on error.
+    private func toggleCommentLike(id: String) async {
+        let snapshot = comments
+        comments = CommunityPostDetailPopup.applyLikeChange(
+            commentId: id,
+            in: comments,
+            transform: { existing in
+                var copy = existing
+                let wasLiked = copy.liked
+                copy.hasLiked = !wasLiked
+                copy.likesCount = max(0, copy.likesCount + (wasLiked ? -1 : 1))
+                return copy
+            }
+        )
+
+        do {
+            let response = try await CommunityService.shared.toggleCommentLike(
+                commentId: id,
+                accessToken: accessToken
+            )
+            comments = CommunityPostDetailPopup.applyLikeChange(
+                commentId: id,
+                in: comments,
+                transform: { existing in
+                    var copy = existing
+                    copy.hasLiked = response.liked
+                    copy.likesCount = response.likesCount
+                    return copy
+                }
+            )
+        } catch {
+            comments = snapshot
+            loadError = mapCommunityError(error, notFound: "That comment is no longer available.").userMessage
+        }
+    }
+
+    /// Walks the thread tree and replaces the comment matching `commentId`
+    /// with the result of `transform`. Used by the optimistic like flow so
+    /// nested replies update in place without rebuilding the whole tree.
+    private static func applyLikeChange(
+        commentId: String,
+        in thread: [CommunityComment],
+        transform: (CommunityComment) -> CommunityComment
+    ) -> [CommunityComment] {
+        thread.map { existing in
+            if existing.id == commentId {
+                var changed = transform(existing)
+                changed.replies = existing.replies
+                return changed
+            }
+            guard !existing.replies.isEmpty else { return existing }
+            var copy = existing
+            copy.replies = applyLikeChange(
+                commentId: commentId,
+                in: existing.replies,
+                transform: transform
+            )
+            return copy
+        }
+    }
+
     private func deleteComment(id: String) async {
         // Find how many descendants the comment has so we can decrement
         // the comments_count by the correct amount (the server cascades).
@@ -510,6 +573,9 @@ struct CommunityPostDetailPopup: View {
                         },
                         onDelete: { id in
                             Task { await deleteComment(id: id) }
+                        },
+                        onToggleLike: { id in
+                            Task { await toggleCommentLike(id: id) }
                         }
                     )
                 }

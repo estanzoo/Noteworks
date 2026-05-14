@@ -54,8 +54,11 @@ struct SignUpStepView: View {
 
                             OnboardingField(label: "Email", placeholder: "name@university.edu", isEmail: true, text: $data.email)
                             OnboardingError(
-                                show: attemptedNext && data.signUpEmailError != nil,
-                                text: data.signUpEmailError ?? ""
+                                show: data.signUpEmailServerError != nil
+                                    || (attemptedNext && data.signUpEmailError != nil),
+                                text: data.signUpEmailServerError
+                                    ?? data.signUpEmailError
+                                    ?? ""
                             )
 
                             OnboardingField(label: "Password", placeholder: "Min. 8 characters", isSecure: true, text: $data.password)
@@ -80,6 +83,14 @@ struct SignUpStepView: View {
         .offset(y: visible ? 0 : 16)
         .onAppear {
             withAnimation(.easeOut(duration: 0.5)) { visible = true }
+        }
+        // Clear the "email already exists" server error the moment the
+        // user edits the email field, so they're not staring at a stale
+        // error while typing the corrected address.
+        .onChange(of: data.email) { _, _ in
+            if data.signUpEmailServerError != nil {
+                data.signUpEmailServerError = nil
+            }
         }
     }
 

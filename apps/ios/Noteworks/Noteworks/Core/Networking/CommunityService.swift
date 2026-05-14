@@ -18,6 +18,7 @@ protocol CommunityServiceProtocol {
     func updatePost(_ request: UpdatePostRequest, accessToken: String) async throws -> CommunityPost
     func deletePost(id: String, accessToken: String) async throws -> DeleteResponse
     func togglePostLike(postId: String, accessToken: String) async throws -> LikeResponse
+    func toggleCommentLike(commentId: String, accessToken: String) async throws -> LikeResponse
     func fetchComments(postId: String, cursor: String?, limit: Int, accessToken: String) async throws -> CommentPage
     func createComment(_ request: CreateCommentRequest, accessToken: String) async throws -> CommunityComment
     func deleteComment(id: String, accessToken: String) async throws -> DeleteResponse
@@ -91,6 +92,14 @@ final class CommunityService: CommunityServiceProtocol {
         try await api.post(
             SupabaseConfig.likePostURL,
             body: LikePostRequest(postId: postId),
+            accessToken: accessToken
+        )
+    }
+
+    func toggleCommentLike(commentId: String, accessToken: String) async throws -> LikeResponse {
+        try await api.post(
+            SupabaseConfig.likeCommentURL,
+            body: LikeCommentRequest(commentId: commentId),
             accessToken: accessToken
         )
     }

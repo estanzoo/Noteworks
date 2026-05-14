@@ -108,6 +108,10 @@ enum SupabaseConfig {
         URL(string: "\(functionsBase)/like-post")!
     }
 
+    static var likeCommentURL: URL {
+        URL(string: "\(functionsBase)/like-comment")!
+    }
+
     static func getCommentsURL(postId: String, cursor: String? = nil, limit: Int = 50) -> URL {
         var components = URLComponents(string: "\(functionsBase)/get-comments")!
         var items: [URLQueryItem] = [

@@ -344,6 +344,12 @@ struct OnboardingFlow: View {
                 } else {
                     step = .verifyEmail
                 }
+            } catch AuthError.emailAlreadyRegistered {
+                // Stay on the sign-up step and surface the message
+                // inline under the Email field instead of as a modal
+                // alert. The view clears this on the next email edit.
+                data.signUpEmailServerError =
+                    AuthError.emailAlreadyRegistered.errorDescription
             } catch {
                 errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }
