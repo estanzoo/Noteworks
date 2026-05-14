@@ -21,6 +21,7 @@ struct CommunityCommentItem: View {
     let postAuthorId: String
     let onSubmitReply: (_ parentCommentId: String, _ text: String) -> Void
     let onDelete: (_ commentId: String) -> Void
+    let onToggleLike: (_ commentId: String) -> Void
 
     @State private var expandedReplies: Bool = false
     @State private var replyOpen: Bool = false
@@ -124,22 +125,35 @@ struct CommunityCommentItem: View {
                 CommentBody(text: entry.body, nested: nested)
 
                 HStack(spacing: 8) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "heart")
-                            .font(.system(size: 11, weight: .semibold))
-                        Text("\(entry.likesCount)")
-                            .font(.system(size: 12, weight: .bold))
-                    }
-                    .foregroundStyle(CommunityTheme.textMuted)
-                    .padding(.horizontal, 10)
-                    .frame(minHeight: 26)
-                    .background(Capsule().fill(Color.white.opacity(0.56)))
-                    .overlay(
-                        Capsule().strokeBorder(
-                            Color(red: 220/255, green: 228/255, blue: 236/255).opacity(0.9),
-                            lineWidth: 1
+                    Button {
+                        onToggleLike(entry.id)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: entry.liked ? "heart.fill" : "heart")
+                                .font(.system(size: 11, weight: .semibold))
+                            Text("\(entry.likesCount)")
+                                .font(.system(size: 12, weight: .bold))
+                        }
+                        .foregroundStyle(entry.liked ? CommunityTheme.accent : CommunityTheme.textMuted)
+                        .padding(.horizontal, 10)
+                        .frame(minHeight: 26)
+                        .background(
+                            Capsule().fill(
+                                entry.liked
+                                    ? CommunityTheme.accent.opacity(0.10)
+                                    : Color.white.opacity(0.56)
+                            )
                         )
-                    )
+                        .overlay(
+                            Capsule().strokeBorder(
+                                entry.liked
+                                    ? CommunityTheme.accent.opacity(0.26)
+                                    : Color(red: 220/255, green: 228/255, blue: 236/255).opacity(0.9),
+                                lineWidth: 1
+                            )
+                        )
+                    }
+                    .buttonStyle(CommunityReactionPressStyle())
 
                     if !nested {
                         Button {

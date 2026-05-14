@@ -24,6 +24,24 @@ struct SignUpOutcome: Sendable {
     let accessToken: String?
 }
 
+// MARK: - Auth errors
+
+/// Typed errors thrown by `AuthServiceProtocol` so callers can branch on
+/// specific failure modes (vs. just surfacing a generic alert).
+enum AuthError: LocalizedError {
+    /// The email passed to `signUp` already belongs to an existing account.
+    /// Detected via Supabase's "fake user" response (no `identities`) when
+    /// the project has email-enumeration protection enabled.
+    case emailAlreadyRegistered
+
+    var errorDescription: String? {
+        switch self {
+        case .emailAlreadyRegistered:
+            return "An account with this email already exists."
+        }
+    }
+}
+
 // MARK: - Onboarding API
 
 struct OnboardingPayload: Encodable, Sendable {
@@ -112,6 +130,18 @@ final class SupabaseAuthService: AuthServiceProtocol {
             data: ["name": .string(name)]
         )
         let user = response.user
+        // When the Supabase project has email-enumeration protection on
+        // (the default), signing up with an already-registered email
+        // returns a 200 with a "fake" user that has no linked identities
+        // and no session — instead of a 4xx — so phishing tools can't
+        // probe the auth API. Detect that shape here and surface it as
+        // a typed error so the sign-up screen can show an inline
+        // "account already exists" message under the Email field
+        // instead of routing the user to a verify-email screen whose
+        // OTP will never arrive.
+        if response.session == nil, (user.identities?.isEmpty ?? true) {
+            throw AuthError.emailAlreadyRegistered
+        }
         let userId = user.id.uuidString
         let resolvedEmail = user.email ?? email
         if let session = response.session {

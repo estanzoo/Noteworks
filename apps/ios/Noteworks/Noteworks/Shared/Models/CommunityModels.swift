@@ -158,6 +158,9 @@ struct CommunityComment: Codable, Equatable, Identifiable {
     let parentCommentId: String?
     var body: String
     var likesCount: Int
+    /// `create-comment` doesn't include `has_liked` (the user just made the
+    /// comment, so it's implicitly false); `get-comments` always does.
+    var hasLiked: Bool?
     var visibility: String
     let createdAt: Date
     var updatedAt: Date
@@ -167,7 +170,7 @@ struct CommunityComment: Codable, Equatable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case id, postId, userId, author, parentCommentId
-        case body, likesCount, visibility, createdAt, updatedAt, replies
+        case body, likesCount, hasLiked, visibility, createdAt, updatedAt, replies
     }
 
     init(from decoder: Decoder) throws {
@@ -179,6 +182,7 @@ struct CommunityComment: Codable, Equatable, Identifiable {
         parentCommentId = try c.decodeIfPresent(String.self, forKey: .parentCommentId)
         body = try c.decode(String.self, forKey: .body)
         likesCount = try c.decode(Int.self, forKey: .likesCount)
+        hasLiked = try c.decodeIfPresent(Bool.self, forKey: .hasLiked)
         visibility = try c.decode(String.self, forKey: .visibility)
         createdAt = try c.decode(Date.self, forKey: .createdAt)
         updatedAt = try c.decode(Date.self, forKey: .updatedAt)
@@ -193,6 +197,7 @@ struct CommunityComment: Codable, Equatable, Identifiable {
         parentCommentId: String?,
         body: String,
         likesCount: Int,
+        hasLiked: Bool? = nil,
         visibility: String,
         createdAt: Date,
         updatedAt: Date,
@@ -205,6 +210,7 @@ struct CommunityComment: Codable, Equatable, Identifiable {
         self.parentCommentId = parentCommentId
         self.body = body
         self.likesCount = likesCount
+        self.hasLiked = hasLiked
         self.visibility = visibility
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -213,6 +219,10 @@ struct CommunityComment: Codable, Equatable, Identifiable {
 }
 
 extension CommunityComment {
+    /// True if the current user has liked this comment. Defaults to false
+    /// when the server omits `has_liked` (e.g. on `create-comment` responses).
+    var liked: Bool { hasLiked ?? false }
+
     /// Recursive count of this comment + all nested replies.
     var threadCount: Int {
         1 + replies.reduce(0) { $0 + $1.threadCount }
@@ -336,6 +346,14 @@ struct LikePostRequest: Encodable {
 
     enum CodingKeys: String, CodingKey {
         case postId = "post_id"
+    }
+}
+
+struct LikeCommentRequest: Encodable {
+    let commentId: String
+
+    enum CodingKeys: String, CodingKey {
+        case commentId = "comment_id"
     }
 }
 
