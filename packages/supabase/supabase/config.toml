@@ -117,6 +117,9 @@ verify_jwt = true
 [functions.like-post]
 verify_jwt = true
 
+[functions.like-comment]
+verify_jwt = true
+
 [functions.create-comment]
 verify_jwt = true
 
