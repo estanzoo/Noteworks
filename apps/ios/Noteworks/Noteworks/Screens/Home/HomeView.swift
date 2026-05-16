@@ -23,6 +23,7 @@ struct NewNoteRoute: Hashable, Identifiable {
 
 struct HomeView: View {
     @Binding var selectedTab: AppTab?
+    @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var store: NotesStore
 
     @State private var bubblesVisible = false
@@ -136,10 +137,12 @@ struct HomeView: View {
                         if let error = store.addBubble(name: name) {
                             return .failure(message: error)
                         }
+                        resolveBubbleCourse(name)
                     case .rename(let original):
                         if let error = store.renameBubble(from: original, to: name) {
                             return .failure(message: error)
                         }
+                        resolveBubbleCourse(name)
                     }
                     return .success
                 }
@@ -242,6 +245,7 @@ struct HomeView: View {
                         // MainTabView's `.animation(_, value:)` modifier
                         // — a `withAnimation` here would conflict.
                         store.libraryFilter = course.name
+                        resolveBubbleCourse(course.name)
                         selectedTab = .notebook
                     } label: {
                         BubbleView(course: course)
@@ -259,6 +263,32 @@ struct HomeView: View {
                         value: bubblesVisible
                     )
                 }
+            }
+        }
+    }
+
+    private func resolveBubbleCourse(_ name: String) {
+        guard let accessToken = appState.accessToken, !accessToken.isEmpty else { return }
+        let bubble = store.bubble(named: name)
+        guard bubble?.courseId == nil else { return }
+        Task {
+            do {
+                let response = try await CourseResolutionService.shared.resolveCourse(
+                    code: bubble?.courseCode ?? name,
+                    name: name,
+                    accessToken: accessToken
+                )
+                await MainActor.run {
+                    store.setCourseMetadata(
+                        forBubbleNamed: name,
+                        courseId: response.id,
+                        courseCode: response.code
+                    )
+                }
+            } catch {
+                #if DEBUG
+                print("[CourseResolution] Failed to resolve bubble '\(name)': \(error.localizedDescription)")
+                #endif
             }
         }
     }
@@ -310,8 +340,10 @@ struct HomeView: View {
 }
 
 #Preview {
+    let store = NotesStore.preview()
     NavigationStack {
         HomeView(selectedTab: .constant(AppTab.home))
-            .environmentObject(NotesStore.preview())
+            .environmentObject(AppState(notesStore: store))
+            .environmentObject(store)
     }
 }

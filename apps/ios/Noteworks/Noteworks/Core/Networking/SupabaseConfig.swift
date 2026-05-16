@@ -18,6 +18,10 @@ enum SupabaseConfig {
         URL(string: "\(functionsBase)/submit-onboarding")!
     }
 
+    static var resolveCourseURL: URL {
+        URL(string: "\(functionsBase)/resolve-course")!
+    }
+
     static var getUserProfileURL: URL {
         URL(string: "\(functionsBase)/get-user-profile")!
     }
@@ -42,10 +46,11 @@ enum SupabaseConfig {
         return components.url!
     }
 
-    static func uploadNotePDFURL(noteId: String, filename: String? = nil) -> URL {
+    static func uploadNotePDFURL(noteId: String, filename: String? = nil, courseId: String? = nil) -> URL {
         var components = URLComponents(string: "\(functionsBase)/upload-note-pdf")!
         var items = [URLQueryItem(name: "note_id", value: noteId)]
         if let filename { items.append(URLQueryItem(name: "filename", value: filename)) }
+        if let courseId { items.append(URLQueryItem(name: "course_id", value: courseId)) }
         components.queryItems = items
         return components.url!
     }
@@ -56,6 +61,10 @@ enum SupabaseConfig {
         if let expiresIn { items.append(URLQueryItem(name: "expires_in", value: "\(expiresIn)")) }
         components.queryItems = items
         return components.url!
+    }
+
+    static var gapDetectURL: URL {
+        URL(string: "\(functionsBase)/gap-detect")!
     }
 
     // MARK: - Community endpoints

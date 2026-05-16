@@ -1,0 +1,220 @@
+//
+//  GapSummaryRenderer.swift
+//  Noteworks
+//
+
+import UIKit
+
+struct GapSummaryRenderResult {
+    let data: Data
+    let pixelSize: CGSize
+}
+
+enum GapSummaryRenderer {
+    static func render(_ response: GapDetectionResponse) throws -> GapSummaryRenderResult {
+        let size = CGSize(width: 1800, height: 2520)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+
+        let renderer = UIGraphicsImageRenderer(size: size, format: format)
+        let image = renderer.image { context in
+            drawBackground(in: CGRect(origin: .zero, size: size), context: context.cgContext)
+            drawContent(response, in: CGRect(x: 120, y: 120, width: 1560, height: 2280))
+        }
+
+        guard let data = image.pngData() else {
+            throw APIError.serverError("Could not render Gap Detection summary.")
+        }
+        return GapSummaryRenderResult(data: data, pixelSize: size)
+    }
+
+    private static func drawBackground(in rect: CGRect, context cg: CGContext) {
+        UIColor(red: 0.98, green: 0.97, blue: 0.91, alpha: 1).setFill()
+        cg.fill(rect)
+
+        cg.setFillColor(UIColor(red: 0.36, green: 0.68, blue: 0.83, alpha: 0.10).cgColor)
+        for y in stride(from: CGFloat(42), through: rect.height, by: 52) {
+            for x in stride(from: CGFloat(42), through: rect.width, by: 52) {
+                cg.fillEllipse(in: CGRect(x: x, y: y, width: 3, height: 3))
+            }
+        }
+
+        let halo = CGGradient(
+            colorsSpace: CGColorSpaceCreateDeviceRGB(),
+            colors: [
+                UIColor(red: 0.36, green: 0.68, blue: 0.83, alpha: 0.24).cgColor,
+                UIColor(red: 0.36, green: 0.68, blue: 0.83, alpha: 0.00).cgColor
+            ] as CFArray,
+            locations: [0, 1]
+        )
+        if let halo {
+            cg.drawRadialGradient(
+                halo,
+                startCenter: CGPoint(x: rect.maxX - 220, y: 200),
+                startRadius: 20,
+                endCenter: CGPoint(x: rect.maxX - 220, y: 200),
+                endRadius: 640,
+                options: []
+            )
+        }
+    }
+
+    private static func drawContent(_ response: GapDetectionResponse, in rect: CGRect) {
+        let titleColor = UIColor(red: 0.12, green: 0.15, blue: 0.18, alpha: 1)
+        let bodyColor = UIColor(red: 0.30, green: 0.36, blue: 0.42, alpha: 1)
+        let accent = UIColor(red: 0.36, green: 0.68, blue: 0.83, alpha: 1)
+
+        drawCard(rect, radius: 56, fill: UIColor.white.withAlphaComponent(0.88), stroke: UIColor.white)
+
+        var cursor = rect.minY + 78
+        drawText(
+            "GAP DETECTION",
+            in: CGRect(x: rect.minX + 78, y: cursor, width: rect.width - 156, height: 42),
+            font: .systemFont(ofSize: 30, weight: .black),
+            color: UIColor(red: 0.48, green: 0.56, blue: 0.62, alpha: 1),
+            tracking: 4
+        )
+        cursor += 58
+
+        drawText(
+            response.title,
+            in: CGRect(x: rect.minX + 78, y: cursor, width: rect.width - 156, height: 112),
+            font: .systemFont(ofSize: 64, weight: .bold),
+            color: titleColor
+        )
+        cursor += 124
+
+        drawConfidenceBadge(response.confidence, at: CGPoint(x: rect.minX + 78, y: cursor))
+        cursor += 88
+
+        drawText(
+            response.overview,
+            in: CGRect(x: rect.minX + 78, y: cursor, width: rect.width - 156, height: 230),
+            font: .systemFont(ofSize: 34, weight: .medium),
+            color: bodyColor,
+            lineSpacing: 10
+        )
+        cursor += 265
+
+        let left = rect.minX + 78
+        let right = rect.midX + 28
+        let columnWidth = (rect.width - 184) / 2
+        let sectionHeight: CGFloat = 420
+
+        drawSection(
+            title: "Missing From Your Note",
+            items: response.missingTopics,
+            accent: accent,
+            in: CGRect(x: left, y: cursor, width: columnWidth, height: sectionHeight)
+        )
+        drawSection(
+            title: "Needs More Detail",
+            items: response.weakAreas,
+            accent: UIColor(red: 0.86, green: 0.47, blue: 0.67, alpha: 1),
+            in: CGRect(x: right, y: cursor, width: columnWidth, height: sectionHeight)
+        )
+        cursor += sectionHeight + 36
+
+        drawSection(
+            title: "Extra Or Different",
+            items: response.extraTopics + response.contradictions,
+            accent: UIColor(red: 0.91, green: 0.63, blue: 0.25, alpha: 1),
+            in: CGRect(x: left, y: cursor, width: columnWidth, height: sectionHeight)
+        )
+        drawSection(
+            title: "Recommended Additions",
+            items: response.recommendedAdditions,
+            accent: UIColor(red: 0.38, green: 0.69, blue: 0.47, alpha: 1),
+            in: CGRect(x: right, y: cursor, width: columnWidth, height: sectionHeight)
+        )
+
+        drawText(
+            "Generated by Noteworks AI. Review before using in assignments or study guides.",
+            in: CGRect(x: rect.minX + 78, y: rect.maxY - 98, width: rect.width - 156, height: 34),
+            font: .systemFont(ofSize: 24, weight: .semibold),
+            color: UIColor(red: 0.48, green: 0.56, blue: 0.62, alpha: 1)
+        )
+    }
+
+    private static func drawSection(title: String, items: [String], accent: UIColor, in rect: CGRect) {
+        drawCard(rect, radius: 34, fill: UIColor.white.withAlphaComponent(0.72), stroke: UIColor(red: 0.86, green: 0.89, blue: 0.92, alpha: 1))
+
+        accent.setFill()
+        UIBezierPath(roundedRect: CGRect(x: rect.minX + 28, y: rect.minY + 30, width: 12, height: 44), cornerRadius: 6).fill()
+
+        drawText(
+            title,
+            in: CGRect(x: rect.minX + 58, y: rect.minY + 26, width: rect.width - 86, height: 54),
+            font: .systemFont(ofSize: 28, weight: .bold),
+            color: UIColor(red: 0.12, green: 0.15, blue: 0.18, alpha: 1)
+        )
+
+        let visibleItems = items.isEmpty ? ["No major items found here."] : Array(items.prefix(5))
+        var y = rect.minY + 104
+        for item in visibleItems {
+            drawBullet(item, accent: accent, in: CGRect(x: rect.minX + 32, y: y, width: rect.width - 64, height: 58))
+            y += 60
+        }
+    }
+
+    private static func drawBullet(_ text: String, accent: UIColor, in rect: CGRect) {
+        accent.withAlphaComponent(0.18).setFill()
+        UIBezierPath(ovalIn: CGRect(x: rect.minX, y: rect.minY + 14, width: 26, height: 26)).fill()
+        accent.setFill()
+        UIBezierPath(ovalIn: CGRect(x: rect.minX + 8, y: rect.minY + 22, width: 10, height: 10)).fill()
+
+        drawText(
+            text,
+            in: CGRect(x: rect.minX + 44, y: rect.minY, width: rect.width - 44, height: rect.height),
+            font: .systemFont(ofSize: 23, weight: .medium),
+            color: UIColor(red: 0.30, green: 0.36, blue: 0.42, alpha: 1),
+            lineSpacing: 4
+        )
+    }
+
+    private static func drawConfidenceBadge(_ confidence: GapDetectionConfidence, at point: CGPoint) {
+        let text = "Confidence: \(confidence.rawValue.capitalized)"
+        let rect = CGRect(x: point.x, y: point.y, width: 320, height: 52)
+        drawCard(rect, radius: 26, fill: UIColor(red: 0.36, green: 0.68, blue: 0.83, alpha: 0.14), stroke: UIColor(red: 0.36, green: 0.68, blue: 0.83, alpha: 0.22))
+        drawText(
+            text,
+            in: rect.insetBy(dx: 22, dy: 10),
+            font: .systemFont(ofSize: 24, weight: .bold),
+            color: UIColor(red: 0.27, green: 0.56, blue: 0.71, alpha: 1)
+        )
+    }
+
+    private static func drawCard(_ rect: CGRect, radius: CGFloat, fill: UIColor, stroke: UIColor) {
+        let path = UIBezierPath(roundedRect: rect, cornerRadius: radius)
+        fill.setFill()
+        path.fill()
+        stroke.setStroke()
+        path.lineWidth = 2
+        path.stroke()
+    }
+
+    private static func drawText(
+        _ text: String,
+        in rect: CGRect,
+        font: UIFont,
+        color: UIColor,
+        lineSpacing: CGFloat = 0,
+        tracking: CGFloat = 0
+    ) {
+        let style = NSMutableParagraphStyle()
+        style.lineBreakMode = .byWordWrapping
+        style.lineSpacing = lineSpacing
+
+        let attributed = NSAttributedString(
+            string: text,
+            attributes: [
+                .font: font,
+                .foregroundColor: color,
+                .paragraphStyle: style,
+                .kern: tracking
+            ]
+        )
+        attributed.draw(with: rect, options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
+    }
+}

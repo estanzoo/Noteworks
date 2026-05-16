@@ -80,6 +80,17 @@ Deno.serve(async (req) => {
   const validated = validate(raw)
   if (validated instanceof Response) return validated
 
+  if (!validated.course_id && validated.attachment_note_ids.length > 0) {
+    const { data: firstNote, error: noteErr } = await supabase
+      .from('notes')
+      .select('course_id')
+      .eq('id', validated.attachment_note_ids[0])
+      .eq('user_id', user.id)
+      .maybeSingle()
+    if (noteErr) return errorResponse('Query failed', noteErr.message, 500)
+    validated.course_id = firstNote?.course_id ?? null
+  }
+
   // Verify course exists if provided
   if (validated.course_id) {
     const { data: course, error: courseErr } = await supabase

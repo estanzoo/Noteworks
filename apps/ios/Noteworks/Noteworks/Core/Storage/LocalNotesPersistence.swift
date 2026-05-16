@@ -209,7 +209,7 @@ final class LocalNotesPersistence {
         }
     }
 
-    // MARK: - v1 → v2 schema migration (inside one user's folder)
+    // MARK: - v1 → current schema migration (inside one user's folder)
 
     /// Decodes the snapshot using the lenient pre-`pageSettings` shape and
     /// hydrates the new fields (`bookmarked`, `currentPage`, `pageSettings`)
@@ -230,6 +230,7 @@ final class LocalNotesPersistence {
         }
         struct LegacySnapshot: Decodable {
             var bubbleNames: [String]
+            var bubbles: [NoteBubble]?
             var notes: [LegacyNote]
             var schemaVersion: Int
         }
@@ -262,6 +263,7 @@ final class LocalNotesPersistence {
         }
         return StoreSnapshot(
             bubbleNames: legacy.bubbleNames,
+            bubbles: legacy.bubbles ?? legacy.bubbleNames.map { NoteBubble(name: $0, courseCode: $0) },
             notes: migratedNotes,
             schemaVersion: StoreSnapshot.currentSchemaVersion
         )

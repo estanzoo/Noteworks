@@ -14,6 +14,7 @@ import Foundation
 import PencilKit
 import Combine
 import SwiftUI
+import UIKit
 
 // MARK: - Tool state
 
@@ -153,6 +154,32 @@ enum AIEnhancementPanel: Equatable {
     case smartOrganization
 }
 
+enum GapDetectionMode: Equatable {
+    case config
+    case running
+    case completed
+}
+
+enum GapDetectionConfigPanel: Equatable {
+    case root
+    case communityBrowser
+    case preview
+}
+
+enum GapDetectionOutputMode: String, Equatable, CaseIterable, Identifiable {
+    case newNote
+    case appendPages
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .newNote: return "Make it as a new note"
+        case .appendPages: return "Attach to current note"
+        }
+    }
+}
+
 /// One swatch in the canvas color palette. Mirrors the JSX `palette`
 /// (L2489) without the custom hex slot — that's tracked separately as
 /// `customColor` so the user can pick anything.
@@ -220,6 +247,8 @@ final class NoteEditorViewModel: ObservableObject {
     @Published var totalPages: Int = 1
     @Published var currentPageBackground: NotePageBackground = .blank
     @Published var currentPageRotation: Int = 0
+    @Published var currentPageBackgroundImageFilename: String?
+    @Published var currentPageAspectHeightOverWidth: CGFloat = 1.4
     @Published var bookmarked: Bool = false
 
     // MARK: - Tool state
@@ -247,21 +276,35 @@ final class NoteEditorViewModel: ObservableObject {
     /// fires (mirrors JSX `clearPageArmed` L2454).
     @Published var clearPageArmed: Bool = false
 
-    // MARK: - AI Enhancements (UI-only v1)
+    // MARK: - AI Enhancements
 
     /// Two parallel jobs the user can trigger from the AI Enhancements
     /// dropdown — mirrors the JSX `activeGapIndicatorJob` /
     /// `smartOrganizationState` pair at noteworks-library.jsx L5117.
-    /// The actual Edge Function calls are deferred to a follow-up; for
-    /// now `startGapDetection` / `startSmartOrganization` run a local
-    /// timer so the UI exercises every state.
     @Published var gapJob: AIEnhancementJob = .idle
     @Published var smartJob: AIEnhancementJob = .idle
     @Published var aiEnhancementPanel: AIEnhancementPanel = .root
     @Published var aiEnhancementNotice: String = ""
+    @Published var showGapDetectionPopup: Bool = false
+    @Published var gapDetectionMode: GapDetectionMode = .config
+    @Published var gapDetectionConfigPanel: GapDetectionConfigPanel = .root
+    /// Panel to return to when leaving the peer-note preview (root vs community browser).
+    @Published var gapPreviewReturnPanel: GapDetectionConfigPanel = .root
+    @Published var gapOutputMode: GapDetectionOutputMode = .newNote
+    @Published var gapSelectedOwnNoteId: String?
+    @Published var gapOwnNotePickerOpen: Bool = false
+    @Published var gapPreviewNoteId: String?
+    @Published var selectedGapSourceIds: Set<String> = []
+    @Published var gapClassMaterialNames: [String] = []
+    @Published var gapMaterialNotice: String = ""
+    @Published var gapDetectionError: String?
+    @Published var gapDetectionResponse: GapDetectionResponse?
+    @Published var gapResultNoteId: String?
+    @Published var gapResultPage: Int?
 
     private var gapJobTask: Task<Void, Never>?
     private var smartJobTask: Task<Void, Never>?
+    private let gapDetectionService: GapDetectionServiceProtocol
     private static let aiBusyMessage = "Another AI enhancement is already running. Please wait for it to finish first."
 
     // MARK: - Overlay-action signals
@@ -311,6 +354,10 @@ final class NoteEditorViewModel: ObservableObject {
     /// strokes onto the next page's file.
     private var drawingGeneration: Int = 0
     private var cancellables = Set<AnyCancellable>()
+    /// Last pen / highlighter / lasso — used when leaving eraser via Apple Pencil double-tap.
+    private var lastInkToolForPencil: NoteEditorTool = .pen
+    /// Tool before the current one — matches Settings "switch to last used tool".
+    private var previousToolForPencil: NoteEditorTool = .pen
 
     // MARK: - Derived
 
@@ -366,7 +413,8 @@ final class NoteEditorViewModel: ObservableObject {
 
     // MARK: - Init
 
-    init() {
+    init(gapDetectionService: GapDetectionServiceProtocol = GapDetectionService.shared) {
+        self.gapDetectionService = gapDetectionService
         // The eraser dropdown auto-disarms its "Clear page" button when the
         // tool changes — wire that here so the view doesn't have to.
         $activeTool
@@ -396,6 +444,10 @@ final class NoteEditorViewModel: ObservableObject {
     /// stroke can't bleed into the freshly-loaded one.
     func switchActiveNote(_ newNoteId: String?) {
         guard newNoteId != noteId else { return }
+        if newNoteId == gapResultNoteId, gapJob.isRunning || gapJob.isCompleted {
+            loadNote(newNoteId)
+            return
+        }
         if hasLoaded { flushPendingSave() }
         // Reset AI panel state — jobs are scoped to a single note.
         gapJobTask?.cancel()
@@ -425,9 +477,7 @@ final class NoteEditorViewModel: ObservableObject {
         totalPages = max(1, note.pageSettings.count)
         currentPage = max(1, min(note.currentPage, totalPages))
 
-        let setting = note.pageSettings[currentPage - 1]
-        currentPageBackground = setting.background
-        currentPageRotation = setting.rotation
+        applyPageSetting(note.pageSettings[currentPage - 1])
 
         loadDrawing(for: currentPage)
         hasLoaded = true
@@ -499,8 +549,7 @@ final class NoteEditorViewModel: ObservableObject {
         currentPage = clamped
         store.setCurrentPage(noteId: id, page: clamped)
         if let setting = store.note(id: id)?.pageSettings[clamped - 1] {
-            currentPageBackground = setting.background
-            currentPageRotation = setting.rotation
+            applyPageSetting(setting)
         }
         loadDrawing(for: clamped)
         flashStatus("Page \(clamped) of \(totalPages)")
@@ -528,8 +577,11 @@ final class NoteEditorViewModel: ObservableObject {
         if let landed = store.addPage(noteId: id) {
             totalPages = store.note(id: id)?.pageSettings.count ?? totalPages + 1
             currentPage = landed
-            currentPageBackground = .blank
-            currentPageRotation = 0
+            if let setting = store.note(id: id)?.pageSettings[landed - 1] {
+                applyPageSetting(setting)
+            } else {
+                applyPageSetting(NotePageSetting())
+            }
             loadDrawing(for: landed)
             flashStatus("Page \(landed) added")
         }
@@ -542,8 +594,7 @@ final class NoteEditorViewModel: ObservableObject {
             totalPages = store.note(id: id)?.pageSettings.count ?? totalPages + 1
             currentPage = landed
             if let setting = store.note(id: id)?.pageSettings[landed - 1] {
-                currentPageBackground = setting.background
-                currentPageRotation = setting.rotation
+                applyPageSetting(setting)
             }
             loadDrawing(for: landed)
             flashStatus("Page \(landed) copied")
@@ -562,8 +613,7 @@ final class NoteEditorViewModel: ObservableObject {
             totalPages = updated.pageSettings.count
             currentPage = updated.currentPage
             let setting = updated.pageSettings[currentPage - 1]
-            currentPageBackground = setting.background
-            currentPageRotation = setting.rotation
+            applyPageSetting(setting)
         }
         loadDrawing(for: currentPage)
         flashStatus("Page \(deleted) deleted")
@@ -581,6 +631,13 @@ final class NoteEditorViewModel: ObservableObject {
         store.setBackground(noteId: id, background: background)
         currentPageBackground = background
         flashStatus("\(background.label) applied")
+    }
+
+    private func applyPageSetting(_ setting: NotePageSetting) {
+        currentPageBackground = setting.background
+        currentPageRotation = setting.rotation
+        currentPageBackgroundImageFilename = setting.backgroundImageFilename
+        currentPageAspectHeightOverWidth = max(0.2, min(5.0, setting.aspectHeightOverWidth))
     }
 
     /// Two-tap clear: first call arms it, second call wipes the drawing.
@@ -610,6 +667,57 @@ final class NoteEditorViewModel: ObservableObject {
 
     // MARK: - Tool actions
 
+    private func assignActiveToolTracksPencil(_ newTool: NoteEditorTool) {
+        let old = activeTool
+        guard old != newTool else { return }
+        previousToolForPencil = old
+        if newTool == .pen || newTool == .highlighter || newTool == .lasso {
+            lastInkToolForPencil = newTool
+        }
+        activeTool = newTool
+    }
+
+    /// Apple Pencil double-tap — respects Settings → Apple Pencil (eraser / last tool / ignore).
+    func handlePencilDoubleTap(interaction _: UIPencilInteraction) {
+        let action = UIPencilInteraction.preferredTapAction
+        switch action {
+        case .ignore:
+            return
+        case .switchEraser:
+            if activeTool == .eraser {
+                assignActiveToolTracksPencil(lastInkToolForPencil)
+            } else {
+                assignActiveToolTracksPencil(.eraser)
+            }
+            flashStatus(toolReadyStatus(for: activeTool))
+        case .switchPrevious:
+            if previousToolForPencil == activeTool {
+                if activeTool == .eraser {
+                    assignActiveToolTracksPencil(lastInkToolForPencil)
+                } else {
+                    assignActiveToolTracksPencil(.eraser)
+                }
+            } else {
+                assignActiveToolTracksPencil(previousToolForPencil)
+            }
+            flashStatus(toolReadyStatus(for: activeTool))
+        case .showColorPalette, .showInkAttributes, .showContextualPalette, .runSystemShortcut:
+            if activeTool == .eraser {
+                assignActiveToolTracksPencil(lastInkToolForPencil)
+            } else {
+                assignActiveToolTracksPencil(.eraser)
+            }
+            flashStatus(toolReadyStatus(for: activeTool))
+        @unknown default:
+            if activeTool == .eraser {
+                assignActiveToolTracksPencil(lastInkToolForPencil)
+            } else {
+                assignActiveToolTracksPencil(.eraser)
+            }
+            flashStatus(toolReadyStatus(for: activeTool))
+        }
+    }
+
     /// Tap-to-toggle behaviour from the JSX (`handleConfigurableToolPress`
     /// L3047): tapping the active tool's button opens its dropdown,
     /// tapping a different tool just switches to it. The view owns the
@@ -624,7 +732,7 @@ final class NoteEditorViewModel: ObservableObject {
             return
         }
         if activeTool != tool {
-            activeTool = tool
+            assignActiveToolTracksPencil(tool)
         }
         // Text + image tools are one-shot: every tap reopens the
         // insertion sheet/picker so the user can add multiple items
@@ -643,52 +751,52 @@ final class NoteEditorViewModel: ObservableObject {
     func selectPenSwatch(_ id: String) {
         penUsesCustomColor = false
         penSwatchId = id
-        activeTool = .pen
+        assignActiveToolTracksPencil(.pen)
         flashStatus(penStatus())
     }
 
     func selectPenBrush(_ brush: NotePenBrush) {
         penBrush = brush
-        activeTool = .pen
+        assignActiveToolTracksPencil(.pen)
         flashStatus(penStatus())
     }
 
     func setPenCustomColor(_ color: Color) {
         penCustomColor = color
         penUsesCustomColor = true
-        activeTool = .pen
+        assignActiveToolTracksPencil(.pen)
         flashStatus(penStatus())
     }
 
     func selectHighlighterSwatch(_ id: String) {
         highlighterUsesCustomColor = false
         highlighterSwatchId = id
-        activeTool = .highlighter
+        assignActiveToolTracksPencil(.highlighter)
         flashStatus(highlighterStatus())
     }
 
     func setHighlighterCustomColor(_ color: Color) {
         highlighterCustomColor = color
         highlighterUsesCustomColor = true
-        activeTool = .highlighter
+        assignActiveToolTracksPencil(.highlighter)
         flashStatus(highlighterStatus())
     }
 
     func setPenThickness(_ value: CGFloat) {
         penThickness = max(2, min(12, value))
-        activeTool = .pen
+        assignActiveToolTracksPencil(.pen)
         flashStatus(penStatus())
     }
 
     func setEraserMode(_ mode: NoteEraserMode) {
         eraserMode = mode
-        activeTool = .eraser
+        assignActiveToolTracksPencil(.eraser)
         flashStatus(eraserStatus())
     }
 
     func setEraserSize(_ value: CGFloat) {
         eraserSize = max(10, min(34, value))
-        activeTool = .eraser
+        assignActiveToolTracksPencil(.eraser)
         flashStatus(eraserStatus())
     }
 
@@ -767,12 +875,107 @@ final class NoteEditorViewModel: ObservableObject {
         }
         if gapJob.isRunning {
             aiEnhancementPanel = .taskStatus
+            showGapDetectionPopup = true
+            gapDetectionMode = .running
             return
         }
+        if gapJob.isCompleted {
+            showGapDetectionPopup = true
+            gapDetectionMode = .completed
+            return
+        }
+        showGapDetectionConfigurator()
+    }
+
+    func showGapDetectionConfigurator() {
+        if smartJob.isRunning {
+            aiEnhancementNotice = Self.aiBusyMessage
+            aiEnhancementPanel = .taskStatus
+            flashStatus("Smart Organization is already running")
+            return
+        }
+        showGapDetectionPopup = true
+        gapDetectionMode = .config
+        gapDetectionConfigPanel = .root
+        gapPreviewReturnPanel = .root
+        gapOwnNotePickerOpen = false
+        gapPreviewNoteId = nil
+        gapDetectionError = nil
+        flashStatus("Configure Gap Detection")
+    }
+
+    func closeGapDetectionPopup() {
+        showGapDetectionPopup = false
+        gapDetectionConfigPanel = .root
+        gapPreviewReturnPanel = .root
+        gapPreviewNoteId = nil
+        if !gapJob.isRunning {
+            gapDetectionError = nil
+        }
+    }
+
+    /// Opens the peer-note preview, remembering whether we came from root or the community browser.
+    func pushGapPreview(noteId: String) {
+        gapPreviewReturnPanel = gapDetectionConfigPanel
+        gapPreviewNoteId = noteId
+        gapDetectionConfigPanel = .preview
+    }
+
+    /// Returns from preview to the panel that opened it.
+    func popGapPreview() {
+        gapDetectionConfigPanel = gapPreviewReturnPanel
+        gapPreviewNoteId = nil
+    }
+
+    func minimizeGapDetectionPopup() {
+        showGapDetectionPopup = false
+        openAIEnhancements()
+    }
+
+    func confirmGapDetectionRun(accessToken: String) async {
+        if smartJob.isRunning {
+            aiEnhancementNotice = Self.aiBusyMessage
+            aiEnhancementPanel = .taskStatus
+            flashStatus("Smart Organization is already running")
+            return
+        }
+        guard let store else {
+            gapDetectionError = "The note store is not ready yet."
+            flashStatus("Gap Detection unavailable")
+            return
+        }
+        guard let sourceNote = gapSourceNote(in: store) else {
+            gapDetectionError = "Choose a source note first."
+            flashStatus("Choose a source note")
+            return
+        }
+        guard let comparisonNote = gapComparisonNote(in: store) else {
+            gapDetectionError = "Choose at least one peer note to compare."
+            flashStatus("Choose a comparison note")
+            return
+        }
+
         aiEnhancementNotice = ""
+        gapDetectionError = nil
+        gapDetectionResponse = nil
+        gapResultNoteId = nil
+        gapResultPage = nil
+        showGapDetectionPopup = true
+        gapDetectionMode = .running
         aiEnhancementPanel = .taskStatus
-        flashStatus("Gap Detection started")
-        runFakeJob(.gap, statusName: "Gap Detection")
+        gapJobTask?.cancel()
+        setJob(.gap, to: .running(progress: 0.05))
+        flashStatus("Exporting PDFs")
+
+        gapJobTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.runGapDetection(
+                sourceNote: sourceNote,
+                comparisonNote: comparisonNote,
+                accessToken: accessToken,
+                store: store
+            )
+        }
     }
 
     /// Smart Organization always shows the confirmation step first
@@ -814,8 +1017,177 @@ final class NoteEditorViewModel: ObservableObject {
 
     func acknowledgeGapJobResult() {
         gapJob = .idle
+        gapDetectionMode = .config
+        showGapDetectionPopup = false
         aiEnhancementPanel = .root
         aiEnhancementNotice = ""
+    }
+
+    func toggleGapClassMaterialPlaceholder() {
+        if gapClassMaterialNames.count >= 5 {
+            gapMaterialNotice = "You can attach up to five class materials."
+            return
+        }
+        let next = "Class material \(gapClassMaterialNames.count + 1).pdf"
+        gapClassMaterialNames.append(next)
+        gapMaterialNotice = ""
+    }
+
+    private func runGapDetection(
+        sourceNote: Note,
+        comparisonNote: Note,
+        accessToken: String,
+        store: NotesStore
+    ) async {
+        do {
+            setJob(.gap, to: .running(progress: 0.16))
+            flashStatus("Preparing comparison")
+
+            let sourcePDF = exportPDFData(for: sourceNote, store: store)
+            let comparisonPDF = exportPDFData(for: comparisonNote, store: store)
+
+            try validateGapPDF(sourcePDF, label: "Current note")
+            try validateGapPDF(comparisonPDF, label: "Comparison note")
+
+            setJob(.gap, to: .running(progress: 0.34))
+            flashStatus("Sending PDFs to Gemini")
+
+            let request = GapDetectionRequest(
+                sourcePDFBase64: sourcePDF.base64EncodedString(),
+                comparisonPDFBase64: comparisonPDF.base64EncodedString(),
+                sourceFilename: safePDFFilename(sourceNote.title, fallback: "current-note.pdf"),
+                comparisonFilename: safePDFFilename(comparisonNote.title, fallback: "comparison-note.pdf"),
+                sourceTitle: displayTitle(sourceNote),
+                comparisonTitle: displayTitle(comparisonNote),
+                courseContext: sourceNote.subject ?? comparisonNote.subject
+            )
+            let response = try await gapDetectionService.compare(request, accessToken: accessToken)
+            gapDetectionResponse = response
+
+            setJob(.gap, to: .running(progress: 0.74))
+            flashStatus("Rendering summary")
+
+            let rendered = try GapSummaryRenderer.render(response)
+
+            setJob(.gap, to: .running(progress: 0.90))
+            flashStatus("Inserting summary")
+
+            insertGapSummary(rendered, store: store)
+
+            setJob(.gap, to: .completed)
+            gapDetectionMode = .completed
+            showGapDetectionPopup = true
+            flashStatus("Gap Detection complete")
+            try? await Task.sleep(nanoseconds: 850_000_000)
+            if !Task.isCancelled {
+                acknowledgeGapJobResult()
+                flashStatus("Gap summary inserted")
+            }
+        } catch {
+            setJob(.gap, to: .idle)
+            gapDetectionMode = .config
+            showGapDetectionPopup = true
+            gapDetectionError = error.localizedDescription
+            aiEnhancementNotice = error.localizedDescription
+            flashStatus("Gap Detection failed")
+        }
+    }
+
+    private func exportPDFData(for note: Note, store: NotesStore) -> Data {
+        pdfService.exportNoteToPDF(
+            note: note,
+            store: store,
+            livePage: note.id == noteId ? currentPage : nil,
+            liveDrawing: note.id == noteId ? drawing : nil
+        )
+    }
+
+    private func validateGapPDF(_ data: Data, label: String) throws {
+        let maxBytes = 16 * 1024 * 1024
+        guard !data.isEmpty else {
+            throw APIError.badRequest("\(label) exported as an empty PDF.")
+        }
+        guard data.count <= maxBytes else {
+            throw APIError.badRequest("\(label) is larger than 16 MB. Try a shorter note first.")
+        }
+    }
+
+    private func insertGapSummary(_ rendered: GapSummaryRenderResult, store: NotesStore) {
+        switch gapOutputMode {
+        case .appendPages:
+            guard let id = noteId else { return }
+            flushPendingSave()
+            let page = store.addPage(noteId: id) ?? totalPages
+            totalPages = store.note(id: id)?.pageSettings.count ?? max(totalPages, page)
+            currentPage = page
+            if let setting = store.note(id: id)?.pageSettings[page - 1] {
+                applyPageSetting(setting)
+            }
+            loadDrawing(for: page)
+            saveGapImage(rendered, to: id, page: page, store: store)
+            if let setting = store.note(id: id)?.pageSettings[page - 1] {
+                applyPageSetting(setting)
+            }
+            gapResultNoteId = id
+            gapResultPage = page
+
+        case .newNote:
+            let generated = store.createDraftNote(
+                subject: subject,
+                title: "Gap Detection - \(noteTitle)"
+            )
+            saveGapImage(rendered, to: generated.id, page: 1, store: store)
+            gapResultNoteId = generated.id
+            gapResultPage = 1
+            store.openNoteInEditor(generated.id)
+            switchActiveNote(generated.id)
+        }
+    }
+
+    private func saveGapImage(
+        _ rendered: GapSummaryRenderResult,
+        to noteId: String,
+        page: Int,
+        store: NotesStore
+    ) {
+        let filename = "\(UUID().uuidString)-gap-summary.png"
+        store.saveOverlayImageData(rendered.data, for: noteId, filename: filename)
+        store.setPageBackgroundImage(
+            noteId: noteId,
+            page: page,
+            filename: filename,
+            aspectHeightOverWidth: rendered.pixelSize.height / max(1, rendered.pixelSize.width)
+        )
+    }
+
+    private func gapSourceNote(in store: NotesStore) -> Note? {
+        if let id = gapSelectedOwnNoteId, let note = store.note(id: id) {
+            return note
+        }
+        guard let noteId else { return nil }
+        return store.note(id: noteId)
+    }
+
+    private func gapComparisonNote(in store: NotesStore) -> Note? {
+        let currentSourceId = gapSelectedOwnNoteId ?? noteId
+        return selectedGapSourceIds
+            .sorted()
+            .compactMap { store.note(id: $0) }
+            .first { $0.id != currentSourceId }
+    }
+
+    private func displayTitle(_ note: Note) -> String {
+        let trimmed = note.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "Untitled Note" : trimmed
+    }
+
+    private func safePDFFilename(_ title: String, fallback: String) -> String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = trimmed.isEmpty ? fallback.replacingOccurrences(of: ".pdf", with: "") : trimmed
+        let forbidden = CharacterSet(charactersIn: "/:\\?%*|\"<>")
+        let cleaned = base.components(separatedBy: forbidden).joined(separator: "-")
+        let stem = String(cleaned.prefix(120))
+        return stem.lowercased().hasSuffix(".pdf") ? stem : "\(stem).pdf"
     }
 
     private enum AIJobSlot { case gap, smart }
@@ -834,6 +1206,10 @@ final class NoteEditorViewModel: ObservableObject {
             }
             if Task.isCancelled { return }
             self.setJob(slot, to: .completed)
+            if slot == .gap {
+                self.gapDetectionMode = .completed
+                self.showGapDetectionPopup = true
+            }
             self.flashStatus("\(statusName) complete")
         }
         switch slot {
@@ -951,9 +1327,10 @@ final class NoteEditorViewModel: ObservableObject {
                 liveDrawing: drawing,
                 noteId: noteId,
                 filename: filename,
+                courseId: note.courseId,
                 accessToken: accessToken
             )
-            lastUploadedAt = ISO8601DateFormatter().date(from: response.updatedAt) ?? Date()
+            lastUploadedAt = response.updatedAt.flatMap { ISO8601DateFormatter().date(from: $0) } ?? Date()
             flashStatus("Saved to cloud")
         } catch {
             uploadError = error.localizedDescription

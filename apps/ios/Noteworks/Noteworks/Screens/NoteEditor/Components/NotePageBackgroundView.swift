@@ -13,21 +13,33 @@
 //
 
 import SwiftUI
+import UIKit
 
 struct NotePageBackgroundView: View {
     let background: NotePageBackground
+    var imageData: Data? = nil
 
     var body: some View {
-        Canvas { context, size in
-            switch background {
-            case .blank:
-                break
-            case .dots:
-                drawDotGrid(context: context, size: size)
-            case .singleColumn:
-                drawSingleColumn(context: context, size: size)
+        ZStack {
+            if let imageData,
+               let image = UIImage(data: imageData) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            }
+
+            Canvas { context, size in
+                switch background {
+                case .blank:
+                    break
+                case .dots:
+                    drawDotGrid(context: context, size: size)
+                case .singleColumn:
+                    drawSingleColumn(context: context, size: size)
+                }
             }
         }
+        .clipped()
     }
 
     private func drawDotGrid(context: GraphicsContext, size: CGSize) {

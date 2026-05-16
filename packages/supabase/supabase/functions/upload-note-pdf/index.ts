@@ -79,24 +79,21 @@ interface NewNoteArgs {
 async function handleNewNote({
   supabase, user, noteId, courseId, title, filename, pdfBytes, now,
 }: NewNoteArgs) {
-  if (!courseId) {
-    return errorResponse(
-      'Validation failed',
-      'course_id is required when uploading to a new note',
-      400,
-    )
-  }
+  // TEMP: course_id is optional for now so the community flow can upload
+  // PDFs without forcing the user to pick a course. We still validate the
+  // course exists if one was supplied. Re-tighten this once course pickers
+  // are wired into the community upload UI.
+  if (courseId) {
+    const { data: course, error: courseErr } = await supabase
+      .from('courses')
+      .select('id')
+      .eq('id', courseId)
+      .maybeSingle()
 
-  // Verify course exists
-  const { data: course, error: courseErr } = await supabase
-    .from('courses')
-    .select('id')
-    .eq('id', courseId)
-    .maybeSingle()
-
-  if (courseErr) return errorResponse('Query failed', courseErr.message, 500)
-  if (!course) {
-    return errorResponse('Not found', `Course ${courseId} does not exist`, 404)
+    if (courseErr) return errorResponse('Query failed', courseErr.message, 500)
+    if (!course) {
+      return errorResponse('Not found', `Course ${courseId} does not exist`, 404)
+    }
   }
 
   const storagePath = `${user.id}/${noteId}/v_1.pdf`
@@ -132,7 +129,7 @@ async function handleNewNote({
     return errorResponse('Insert failed', insertErr.message, 500)
   }
 
-  return json({ success: true }, 201)
+  return json(await fetchNoteRow(supabase, noteId), 201)
 }
 
 // ── Existing note: archive old version + upload new ─────────────
@@ -185,5 +182,20 @@ async function handleExistingNote({
     return errorResponse('Metadata update failed', updateErr.message, 500)
   }
 
-  return json({ success: true })
+  return json(await fetchNoteRow(supabase, existingNote.id))
+}
+
+// Returns the full notes row in the shape the iOS `NoteResponse` decoder
+// expects (id, user_id, course_id, title, metadata, created_at, updated_at).
+async function fetchNoteRow(
+  supabase: ReturnType<typeof import('https://esm.sh/@supabase/supabase-js@2').createClient>,
+  noteId: string,
+) {
+  const { data } = await supabase
+    .from('notes')
+    .select('id, user_id, course_id, title, metadata, created_at, updated_at')
+    .eq('id', noteId)
+    .maybeSingle()
+
+  return data ?? { id: noteId }
 }

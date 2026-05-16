@@ -16,7 +16,8 @@ build/
 .branches/
 .temp/
 
-# iOS
+# iOS / Xcode (repo-root DerivedData when -derivedDataPath is used)
+.derivedData/
 apps/ios/.build/
 apps/ios/DerivedData/
 apps/ios/**/xcuserdata/

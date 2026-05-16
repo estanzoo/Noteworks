@@ -35,10 +35,13 @@ private let accentGradient = LinearGradient(
 struct PendingPostAttachment: Identifiable, Equatable {
     let id: String
     let filename: String
-    let data: Data
+    var data: Data
+    var courseId: String?
+    var isLocked: Bool = false
     var status: Status
 
     enum Status: Equatable {
+        case preparing
         case pending
         case uploading
         case uploaded
@@ -51,11 +54,16 @@ struct PendingPostAttachment: Identifiable, Equatable {
 struct PostEditorPopup: View {
     @Binding var isPresented: Bool
     let accessToken: String
+    var initialAttachments: [PendingPostAttachment] = []
+    var initialTitle: String? = nil
+    var initialBody: String? = nil
+    var initialCourseId: String? = nil
+    var prepareInitialAttachments: (() async -> [PendingPostAttachment])? = nil
     let onPublished: (CommunityPost) -> Void
     let submit: (CreatePostRequest) async throws -> CommunityPost
 
-    @State private var postTitle = ""
-    @State private var postBody = ""
+    @State private var postTitle: String
+    @State private var postBody: String
     @State private var hashtags: [String] = []
     @State private var hashtagInput = ""
     @State private var hashtagSuggestions: [HashtagSuggestion] = []
@@ -67,7 +75,33 @@ struct PostEditorPopup: View {
     @State private var titleError: String?
     @State private var bodyError: String?
     @State private var isPublishing: Bool = false
+    @State private var isPreparingInitialAttachments = false
     @FocusState private var titleFocused: Bool
+
+    init(
+        isPresented: Binding<Bool>,
+        accessToken: String,
+        initialAttachments: [PendingPostAttachment] = [],
+        initialTitle: String? = nil,
+        initialBody: String? = nil,
+        initialCourseId: String? = nil,
+        prepareInitialAttachments: (() async -> [PendingPostAttachment])? = nil,
+        onPublished: @escaping (CommunityPost) -> Void,
+        submit: @escaping (CreatePostRequest) async throws -> CommunityPost
+    ) {
+        self._isPresented = isPresented
+        self.accessToken = accessToken
+        self.initialAttachments = initialAttachments
+        self.initialTitle = initialTitle
+        self.initialBody = initialBody
+        self.initialCourseId = initialCourseId
+        self.prepareInitialAttachments = prepareInitialAttachments
+        self.onPublished = onPublished
+        self.submit = submit
+        self._postTitle = State(initialValue: initialTitle ?? "")
+        self._postBody = State(initialValue: initialBody ?? "")
+        self._attachments = State(initialValue: initialAttachments)
+    }
 
     private static let maxAttachments = 10
     private static let maxHashtags = 20
@@ -78,7 +112,11 @@ struct PostEditorPopup: View {
     private var trimmedBody: String { postBody.trimmingCharacters(in: .whitespaces) }
 
     private var canPublish: Bool {
-        !trimmedTitle.isEmpty && !trimmedBody.isEmpty && !isPublishing
+        !trimmedTitle.isEmpty
+            && !trimmedBody.isEmpty
+            && !isPublishing
+            && !isPreparingInitialAttachments
+            && !attachments.contains { $0.status == .preparing }
     }
 
     var body: some View {
@@ -129,9 +167,21 @@ struct PostEditorPopup: View {
         }
         .ignoresSafeArea(.keyboard)
         .onAppear {
+            if attachments.isEmpty && !initialAttachments.isEmpty {
+                attachments = initialAttachments
+            }
+            if postTitle.isEmpty, let initialTitle {
+                postTitle = initialTitle
+            }
+            if postBody.isEmpty, let initialBody {
+                postBody = initialBody
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                 titleFocused = true
             }
+        }
+        .task {
+            await prepareInitialAttachmentsIfNeeded()
         }
         .fileImporter(
             isPresented: $showFileImporter,
@@ -297,10 +347,10 @@ struct PostEditorPopup: View {
 
             Spacer(minLength: 0)
 
-            if attachment.status == .uploading {
+            if attachment.status == .preparing || attachment.status == .uploading {
                 ProgressView()
                     .scaleEffect(0.7)
-            } else {
+            } else if !attachment.isLocked {
                 Button {
                     attachments.removeAll { $0.id == attachment.id }
                 } label: {
@@ -311,6 +361,11 @@ struct PostEditorPopup: View {
                         .background(Circle().fill(Color.black.opacity(0.05)))
                 }
                 .buttonStyle(.plain)
+            } else {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(editorAccent.opacity(0.7))
+                    .frame(width: 22, height: 22)
             }
         }
         .padding(10)
@@ -320,6 +375,7 @@ struct PostEditorPopup: View {
 
     private func statusLabel(_ status: PendingPostAttachment.Status) -> String {
         switch status {
+        case .preparing: return "Preparing current note..."
         case .pending: return "Ready to upload"
         case .uploading: return "Uploading…"
         case .uploaded: return "Uploaded"
@@ -329,10 +385,28 @@ struct PostEditorPopup: View {
 
     private func statusColor(_ status: PendingPostAttachment.Status) -> Color {
         switch status {
-        case .pending, .uploading: return editorTextMuted
+        case .preparing, .pending, .uploading: return editorTextMuted
         case .uploaded: return editorAccent
         case .failed: return Color(red: 0xC4/255, green: 0x44/255, blue: 0x44/255)
         }
+    }
+
+    @MainActor
+    private func prepareInitialAttachmentsIfNeeded() async {
+        guard let prepareInitialAttachments else { return }
+        guard !isPreparingInitialAttachments else { return }
+        guard attachments.contains(where: { $0.status == .preparing }) else { return }
+
+        isPreparingInitialAttachments = true
+        let prepared = await prepareInitialAttachments()
+        for item in prepared {
+            if let idx = attachments.firstIndex(where: { $0.id == item.id }) {
+                attachments[idx] = item
+            } else if attachments.count < Self.maxAttachments {
+                attachments.append(item)
+            }
+        }
+        isPreparingInitialAttachments = false
     }
 
     private func handleFileImport(_ result: Result<[URL], Error>) {
@@ -613,7 +687,7 @@ struct PostEditorPopup: View {
                 title: trimmedTitle,
                 body: trimmedBody,
                 visibility: visibility,
-                courseId: nil,
+                courseId: initialCourseId ?? attachments.first(where: { $0.courseId != nil })?.courseId,
                 attachmentNoteIds: uploadedIds.isEmpty ? nil : uploadedIds,
                 hashtags: hashtags.isEmpty ? nil : hashtags
             )
@@ -638,6 +712,8 @@ struct PostEditorPopup: View {
             switch item.status {
             case .uploaded:
                 ids.append(item.id)
+            case .preparing:
+                throw APIError.serverError("Still preparing the current note. Please wait.")
             case .pending, .failed:
                 attachments[index].status = .uploading
                 do {
@@ -645,6 +721,7 @@ struct PostEditorPopup: View {
                         item.data,
                         noteId: item.id,
                         filename: item.filename,
+                        courseId: item.courseId ?? initialCourseId,
                         accessToken: accessToken
                     )
                     attachments[index].status = .uploaded

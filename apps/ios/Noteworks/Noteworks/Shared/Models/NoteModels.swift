@@ -10,12 +10,12 @@ import Foundation
 /// Matches the `notes` row returned by Edge Functions.
 struct NoteResponse: Decodable {
     let id: String
-    let userId: String
-    let courseId: String
-    let title: String
+    let userId: String?
+    let courseId: String?
+    let title: String?
     let metadata: NotePdfMetadata?
-    let createdAt: String
-    let updatedAt: String
+    let createdAt: String?
+    let updatedAt: String?
 }
 
 /// PDF metadata stored in `notes.metadata` JSONB column.

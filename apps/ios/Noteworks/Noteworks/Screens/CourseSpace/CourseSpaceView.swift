@@ -7,6 +7,8 @@
 
 import SwiftUI
 import PencilKit
+import PDFKit
+import UniformTypeIdentifiers
 
 // MARK: - Theme
 
@@ -20,6 +22,7 @@ private let accent = Color(red: 0x5E/255, green: 0xAD/255, blue: 0xD3/255)
 
 struct CourseSpaceView: View {
     @Binding var selectedTab: AppTab?
+    @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var store: NotesStore
     @StateObject private var viewModel = CourseSpaceViewModel()
     @State private var activeTab: LibraryTab = .notes
@@ -317,7 +320,36 @@ struct CourseSpaceView: View {
         withAnimation(.easeInOut(duration: 0.2)) {
             filterSubject = pending
         }
+        resolveCourseIfNeeded(for: pending)
         store.libraryFilter = nil
+    }
+
+    private func resolveCourseIfNeeded(for subject: String?) {
+        guard let subject,
+              let accessToken = appState.accessToken,
+              !accessToken.isEmpty else { return }
+        let bubble = store.bubble(named: subject)
+        guard bubble?.courseId == nil else { return }
+        Task {
+            do {
+                let response = try await CourseResolutionService.shared.resolveCourse(
+                    code: bubble?.courseCode ?? subject,
+                    name: subject,
+                    accessToken: accessToken
+                )
+                await MainActor.run {
+                    store.setCourseMetadata(
+                        forBubbleNamed: subject,
+                        courseId: response.id,
+                        courseCode: response.code
+                    )
+                }
+            } catch {
+                #if DEBUG
+                print("[CourseResolution] Failed to resolve library subject '\(subject)': \(error.localizedDescription)")
+                #endif
+            }
+        }
     }
 
     // MARK: - Placeholder while the store has no active user
@@ -343,21 +375,29 @@ struct CourseSpaceView: View {
     private var notesGrid: some View {
         LazyVGrid(columns: gridColumns, spacing: 20) {
             // + New card always available so an empty bubble can grow notes.
-            LibraryNewCard {
-                let subjectForDraft: String? = {
+            LibraryNewCard(
+                subjectForDraft: {
                     guard let subject = filterSubject else { return nil }
                     return NotesStore.isReservedName(subject) ? nil : subject
-                }()
-                let note = store.createDraftNote(subject: subjectForDraft)
-                newNoteId = note.id
-                navigateToNewNote = true
-            }
+                }(),
+                onNavigateToNewNote: { id in
+                    newNoteId = id
+                    navigateToNewNote = true
+                }
+            )
 
             ForEach(filteredNotes) { note in
                 NavigationLink(value: note.id) {
                     LibraryNoteCard(note: note)
                 }
                 .buttonStyle(CardPressStyle())
+                .contextMenu {
+                    Button(role: .destructive) {
+                        store.deleteNote(id: note.id)
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
             }
         }
         .padding(.horizontal, 32)
@@ -688,62 +728,298 @@ private struct LibraryNoteCard: View {
 
 // MARK: - New Card (+)
 
+@ViewBuilder
+private func libraryNewNoteMenuRow(title: String, detail: String, systemImage: String) -> some View {
+    HStack(alignment: .center, spacing: 12) {
+        Image(systemName: systemImage)
+            .font(.system(size: 17, weight: .medium))
+            .frame(width: 24)
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+            Text(detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
 private struct LibraryNewCard: View {
-    let action: () -> Void
+    @EnvironmentObject private var store: NotesStore
+    let subjectForDraft: String?
+    let onNavigateToNewNote: (String) -> Void
+
+    @State private var showCreateMenu = false
+    @State private var showPDFImporter = false
+    @State private var importErrorMessage: String?
+    @State private var showImportError = false
+
+    private var newCardChrome: some View {
+        VStack {
+            Spacer()
+            Image(systemName: "plus")
+                .font(.system(size: 36, weight: .light))
+                .foregroundStyle(textMuted)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, minHeight: 200)
+        .background {
+            RoundedRectangle(cornerRadius: 24)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(0.5),
+                            Color.white.opacity(0.1),
+                            Color.white.opacity(0.35)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .padding(-1)
+        }
+        .background {
+            RoundedRectangle(cornerRadius: 24)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(0.45),
+                            Color.white.opacity(0.2),
+                            Color(red: 245/255, green: 248/255, blue: 252/255).opacity(0.3)
+                        ],
+                        startPoint: UnitPoint(x: 0.15, y: 0),
+                        endPoint: UnitPoint(x: 0.85, y: 1)
+                    )
+                )
+        }
+        .background {
+            RoundedRectangle(cornerRadius: 24)
+                .fill(.ultraThinMaterial)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 24))
+        .overlay {
+            RoundedRectangle(cornerRadius: 24)
+                .strokeBorder(glassBorder, lineWidth: 1)
+        }
+        .shadow(color: .white.opacity(0.6), radius: 0, x: 0, y: -0.5)
+        .shadow(color: .black.opacity(0.04), radius: 10, y: 4)
+    }
 
     var body: some View {
+        ZStack(alignment: .center) {
+            Button {
+                withAnimation(.spring(response: 0.24, dampingFraction: 0.86)) {
+                    showCreateMenu.toggle()
+                }
+            } label: {
+                newCardChrome
+            }
+            .buttonStyle(CardPressStyle())
+
+            if showCreateMenu {
+                createMenu
+                    .frame(width: 258)
+                    .transition(.scale(scale: 0.96, anchor: .top).combined(with: .opacity))
+                    .zIndex(20)
+            }
+        }
+        .zIndex(showCreateMenu ? 20 : 0)
+        .fileImporter(
+            isPresented: $showPDFImporter,
+            allowedContentTypes: [.pdf],
+            allowsMultipleSelection: false
+        ) { result in
+            Task { @MainActor in
+                switch result {
+                case .success(let urls):
+                    guard let url = urls.first else { return }
+                    do {
+                        let id = try importPDFIntoNewNote(from: url, subject: subjectForDraft, store: store)
+                        onNavigateToNewNote(id)
+                    } catch {
+                        importErrorMessage = error.localizedDescription
+                        showImportError = true
+                    }
+                case .failure(let error):
+                    importErrorMessage = error.localizedDescription
+                    showImportError = true
+                }
+            }
+        }
+        .alert("Could not import", isPresented: $showImportError, actions: {
+            Button("OK", role: .cancel) {}
+        }, message: {
+            Text(importErrorMessage ?? "Unknown error.")
+        })
+    }
+
+    private var createMenu: some View {
+        VStack(spacing: 10) {
+            createOption(
+                title: "Blank note",
+                detail: "Start with an empty page",
+                systemImage: "doc.text"
+            ) {
+                showCreateMenu = false
+                let note = store.createDraftNote(subject: subjectForDraft)
+                onNavigateToNewNote(note.id)
+            }
+
+            createOption(
+                title: "Import from device",
+                detail: "Open a local file as a note",
+                systemImage: "tray.and.arrow.up"
+            ) {
+                showCreateMenu = false
+                showPDFImporter = true
+            }
+        }
+        .padding(10)
+        .background {
+            RoundedRectangle(cornerRadius: 24)
+                .fill(Color.white.opacity(0.78))
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 24)
+                .strokeBorder(glassBorder, lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.09), radius: 18, x: 0, y: 10)
+    }
+
+    private func createOption(
+        title: String,
+        detail: String,
+        systemImage: String,
+        action: @escaping () -> Void
+    ) -> some View {
         Button(action: action) {
-            VStack {
-                Spacer()
-                Image(systemName: "plus")
-                    .font(.system(size: 36, weight: .light))
-                    .foregroundStyle(textMuted)
-                Spacer()
-            }
-            .frame(maxWidth: .infinity, minHeight: 200)
-            .background {
-                RoundedRectangle(cornerRadius: 24)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color.white.opacity(0.5),
-                                Color.white.opacity(0.1),
-                                Color.white.opacity(0.35)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
+            HStack(spacing: 12) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 17, weight: .medium))
+                    .foregroundStyle(Color(red: 0x5E/255, green: 0xAD/255, blue: 0xD3/255))
+                    .frame(width: 38, height: 38)
+                    .background(
+                        RoundedRectangle(cornerRadius: 14)
+                            .fill(Color(red: 0x5E/255, green: 0xAD/255, blue: 0xD3/255).opacity(0.10))
                     )
-                    .padding(-1)
-            }
-            .background {
-                RoundedRectangle(cornerRadius: 24)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color.white.opacity(0.45),
-                                Color.white.opacity(0.2),
-                                Color(red: 245/255, green: 248/255, blue: 252/255).opacity(0.3)
-                            ],
-                            startPoint: UnitPoint(x: 0.15, y: 0),
-                            endPoint: UnitPoint(x: 0.85, y: 1)
-                        )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14)
+                            .strokeBorder(Color(red: 0x5E/255, green: 0xAD/255, blue: 0xD3/255).opacity(0.18), lineWidth: 1)
                     )
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(textPrimary)
+                    Text(detail)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(textSecondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
             }
-            .background {
-                RoundedRectangle(cornerRadius: 24)
-                    .fill(.ultraThinMaterial)
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 24))
-            .overlay {
-                RoundedRectangle(cornerRadius: 24)
+            .padding(.horizontal, 12)
+            .frame(height: 62)
+            .background(
+                RoundedRectangle(cornerRadius: 18)
+                    .fill(Color.white.opacity(0.82))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18)
                     .strokeBorder(glassBorder, lineWidth: 1)
-            }
-            .shadow(color: .white.opacity(0.6), radius: 0, x: 0, y: -0.5)
-            .shadow(color: .black.opacity(0.04), radius: 10, y: 4)
+            )
         }
         .buttonStyle(CardPressStyle())
     }
+}
+
+// MARK: - PDF → note import (Library)
+
+private enum PDFLibraryImportError: LocalizedError {
+    case unreadable
+    case empty
+    case renderFailed(page: Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .unreadable:
+            return "That file could not be read as a PDF."
+        case .empty:
+            return "The PDF has no pages."
+        case .renderFailed(let page):
+            return "Could not render page \(page)."
+        }
+    }
+}
+
+@MainActor
+private func renderPDFPageImage(_ page: PDFPage) -> UIImage? {
+    let media = page.bounds(for: .mediaBox)
+    guard media.width > 0, media.height > 0 else { return nil }
+    let pixelWidth: CGFloat = 2048
+    let pixelHeight = pixelWidth * media.height / media.width
+    let size = CGSize(width: pixelWidth, height: pixelHeight)
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = 1
+    format.opaque = true
+    let renderer = UIGraphicsImageRenderer(size: size, format: format)
+    return renderer.image { ctx in
+        UIColor.white.setFill()
+        ctx.fill(CGRect(origin: .zero, size: size))
+        ctx.cgContext.saveGState()
+        ctx.cgContext.translateBy(x: 0, y: size.height)
+        ctx.cgContext.scaleBy(x: size.width / media.width, y: -size.height / media.height)
+        page.draw(with: .mediaBox, to: ctx.cgContext)
+        ctx.cgContext.restoreGState()
+    }
+}
+
+/// Builds a new draft note with one canvas page per PDF page. Each PDF slice
+/// becomes the page background so users can annotate above it with PencilKit.
+@MainActor
+private func importPDFIntoNewNote(from url: URL, subject: String?, store: NotesStore) throws -> String {
+    let accessing = url.startAccessingSecurityScopedResource()
+    defer {
+        if accessing { url.stopAccessingSecurityScopedResource() }
+    }
+    guard let document = PDFDocument(url: url) else {
+        throw PDFLibraryImportError.unreadable
+    }
+    let total = document.pageCount
+    guard total > 0 else { throw PDFLibraryImportError.empty }
+
+    let baseTitle = url.deletingPathExtension().lastPathComponent
+    let note = store.createDraftNote(subject: subject, title: baseTitle.isEmpty ? "Imported PDF" : baseTitle)
+    let noteId = note.id
+
+    for _ in 1..<total {
+        _ = store.addPage(noteId: noteId)
+    }
+
+    for index in 0..<total {
+        guard let pdfPage = document.page(at: index) else {
+            throw PDFLibraryImportError.renderFailed(page: index + 1)
+        }
+        guard let image = renderPDFPageImage(pdfPage), let data = image.pngData() else {
+            throw PDFLibraryImportError.renderFailed(page: index + 1)
+        }
+        let filename = "\(UUID().uuidString).png"
+        store.saveOverlayImageData(data, for: noteId, filename: filename)
+        let pageNumber = index + 1
+        let bounds = pdfPage.bounds(for: .mediaBox)
+        let aspect = bounds.width > 0
+            ? bounds.height / bounds.width
+            : image.size.height / max(1, image.size.width)
+        store.setPageBackgroundImage(
+            noteId: noteId,
+            page: pageNumber,
+            filename: filename,
+            aspectHeightOverWidth: aspect
+        )
+    }
+
+    store.setCurrentPage(noteId: noteId, page: 1)
+    return noteId
 }
 
 // MARK: - Card Press Style
@@ -771,8 +1047,10 @@ private struct AnyShape: Shape {
 }
 
 #Preview {
+    let store = NotesStore.preview()
     NavigationStack {
         CourseSpaceView(selectedTab: .constant(AppTab.notebook))
-            .environmentObject(NotesStore.preview())
+            .environmentObject(AppState(notesStore: store))
+            .environmentObject(store)
     }
 }

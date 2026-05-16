@@ -17,6 +17,7 @@
 //
 
 import SwiftUI
+import UIKit
 import PencilKit
 
 struct PencilCanvasView: UIViewRepresentable {
@@ -42,6 +43,10 @@ struct PencilCanvasView: UIViewRepresentable {
     /// real canvas `UndoManager` once the view exists.
     var onCanvasReady: ((PKCanvasView) -> Void)? = nil
 
+    /// Apple Pencil double-tap (Settings → Apple Pencil). Without
+    /// `PKToolPicker`, the app must handle `UIPencilInteraction` explicitly.
+    var onPencilDoubleTap: ((UIPencilInteraction) -> Void)? = nil
+
     func makeUIView(context: Context) -> PKCanvasView {
         let canvasView = PKCanvasView()
         canvasView.drawingPolicy = drawingPolicy
@@ -61,9 +66,14 @@ struct PencilCanvasView: UIViewRepresentable {
         // expose a drawing-content view we can pick — so we let the
         // outer scroll view handle it.
         canvasView.pinchGestureRecognizer?.isEnabled = false
+        canvasView.panGestureRecognizer.isEnabled = false
         canvasView.minimumZoomScale = 1
         canvasView.maximumZoomScale = 1
         canvasView.bouncesZoom = false
+
+        let pencil = UIPencilInteraction()
+        pencil.delegate = context.coordinator
+        canvasView.addInteraction(pencil)
 
         // We're not showing PKToolPicker; nothing else to set up here.
         DispatchQueue.main.async {
@@ -94,7 +104,7 @@ struct PencilCanvasView: UIViewRepresentable {
 
     // MARK: - Coordinator
 
-    class Coordinator: NSObject, PKCanvasViewDelegate {
+    class Coordinator: NSObject, PKCanvasViewDelegate, UIPencilInteractionDelegate {
         var parent: PencilCanvasView
         var isDrawing: Bool = false
 
@@ -102,12 +112,19 @@ struct PencilCanvasView: UIViewRepresentable {
             self.parent = parent
         }
 
+        func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveTap tap: UIPencilInteraction.Tap) {
+            parent.onPencilDoubleTap?(interaction)
+        }
+
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                if self.parent.drawing != canvasView.drawing {
-                    self.parent.drawing = canvasView.drawing
-                }
+            // Must update the SwiftUI binding synchronously. If we defer with
+            // `DispatchQueue.main.async`, `updateUIView` can run first (e.g.
+            // after `canvasViewDidEndUsingTool` clears `isDrawing`) with a
+            // stale `drawing` binding and assign `canvasView.drawing = drawing`,
+            // which replaces the live canvas, clears undo history, and breaks
+            // toolbar undo / three-finger undo.
+            if parent.drawing != canvasView.drawing {
+                parent.drawing = canvasView.drawing
             }
         }
 

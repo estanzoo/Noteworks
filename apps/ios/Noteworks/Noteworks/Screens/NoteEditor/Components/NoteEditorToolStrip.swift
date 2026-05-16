@@ -51,27 +51,26 @@ struct NoteEditorToolStrip: View {
     @ObservedObject var viewModel: NoteEditorViewModel
 
     @Binding var openPanel: NoteEditorPanel?
-    /// Wired up to the live `PKCanvasView.undoManager` so undo/redo work
-    /// against PencilKit's own stack.
-    var undoManager: UndoManager?
+    var canUndo: Bool = false
+    var canRedo: Bool = false
+    var onUndo: () -> Void = {}
+    var onRedo: () -> Void = {}
 
     var body: some View {
         HStack(spacing: 0) {
             // Left cluster — undo / redo
             HStack(spacing: 4) {
                 ChromeIconButton(symbol: "arrow.uturn.backward") {
-                    undoManager?.undo()
-                    viewModel.flashStatus("Undo")
+                    onUndo()
                 }
-                .disabled(!(undoManager?.canUndo ?? false))
-                .opacity((undoManager?.canUndo ?? false) ? 1 : 0.35)
+                .disabled(!canUndo)
+                .opacity(canUndo ? 1 : 0.35)
 
                 ChromeIconButton(symbol: "arrow.uturn.forward") {
-                    undoManager?.redo()
-                    viewModel.flashStatus("Redo")
+                    onRedo()
                 }
-                .disabled(!(undoManager?.canRedo ?? false))
-                .opacity((undoManager?.canRedo ?? false) ? 1 : 0.35)
+                .disabled(!canRedo)
+                .opacity(canRedo ? 1 : 0.35)
             }
 
             Spacer(minLength: 8)

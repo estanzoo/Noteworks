@@ -28,10 +28,35 @@ import Combine
 struct NotePageSetting: Codable, Equatable, Hashable {
     var background: NotePageBackground
     var rotation: Int
+    /// Optional page-sized image rendered underneath PencilKit. Used for
+    /// imported PDFs so ink appears above the document instead of behind it.
+    var backgroundImageFilename: String?
+    /// Height ÷ width for this logical page. Blank notes use the reference
+    /// editor aspect; imported PDF pages preserve their original shape.
+    var aspectHeightOverWidth: CGFloat
 
-    init(background: NotePageBackground = .blank, rotation: Int = 0) {
+    init(
+        background: NotePageBackground = .blank,
+        rotation: Int = 0,
+        backgroundImageFilename: String? = nil,
+        aspectHeightOverWidth: CGFloat = 1.4
+    ) {
         self.background = background
         self.rotation = rotation
+        self.backgroundImageFilename = backgroundImageFilename
+        self.aspectHeightOverWidth = aspectHeightOverWidth
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case background, rotation, backgroundImageFilename, aspectHeightOverWidth
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        background = (try c.decodeIfPresent(NotePageBackground.self, forKey: .background)) ?? .blank
+        rotation = (try c.decodeIfPresent(Int.self, forKey: .rotation)) ?? 0
+        backgroundImageFilename = try c.decodeIfPresent(String.self, forKey: .backgroundImageFilename)
+        aspectHeightOverWidth = (try c.decodeIfPresent(CGFloat.self, forKey: .aspectHeightOverWidth)) ?? 1.4
     }
 }
 
@@ -48,6 +73,27 @@ enum NotePageBackground: String, Codable, CaseIterable, Hashable {
         case .dots: return "Dots"
         case .singleColumn: return "Single column"
         }
+    }
+}
+
+/// Local bubble metadata. `name` remains the user-facing bubble label while
+/// `courseId` stores the backend `courses.id` used by notes/posts.
+struct NoteBubble: Codable, Identifiable, Equatable, Hashable {
+    let id: String
+    var name: String
+    var courseId: String?
+    var courseCode: String?
+
+    init(
+        id: String = UUID().uuidString,
+        name: String,
+        courseId: String? = nil,
+        courseCode: String? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.courseId = courseId
+        self.courseCode = courseCode
     }
 }
 
@@ -138,6 +184,9 @@ struct Note: Codable, Identifiable, Equatable, Hashable {
     /// `note.subject` semantics (L23–L31). `nil` means the note sits in the
     /// "Unnamed" bucket.
     var subject: String?
+    /// Backend course linkage. New notes inherit these from their bubble.
+    var courseId: String?
+    var courseCode: String?
     /// UI badge ("Draft", "Course", "Public", …). Independent of `subject`.
     var tag: String?
     var sharedBy: String?
@@ -173,6 +222,8 @@ struct Note: Codable, Identifiable, Equatable, Hashable {
         id: String,
         title: String,
         subject: String? = nil,
+        courseId: String? = nil,
+        courseCode: String? = nil,
         tag: String? = nil,
         sharedBy: String? = nil,
         pageCount: Int,
@@ -186,6 +237,8 @@ struct Note: Codable, Identifiable, Equatable, Hashable {
         self.id = id
         self.title = title
         self.subject = subject
+        self.courseId = courseId
+        self.courseCode = courseCode
         self.tag = tag
         self.sharedBy = sharedBy
         self.pageCount = pageCount
@@ -198,7 +251,7 @@ struct Note: Codable, Identifiable, Equatable, Hashable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, subject, tag, sharedBy, pageCount, createdAt, updatedAt,
+        case id, title, subject, courseId, courseCode, tag, sharedBy, pageCount, createdAt, updatedAt,
              bookmarked, currentPage, pageSettings, overlays
     }
 
@@ -209,6 +262,8 @@ struct Note: Codable, Identifiable, Equatable, Hashable {
         id = try c.decode(String.self, forKey: .id)
         title = try c.decode(String.self, forKey: .title)
         subject = try c.decodeIfPresent(String.self, forKey: .subject)
+        courseId = try c.decodeIfPresent(String.self, forKey: .courseId)
+        courseCode = try c.decodeIfPresent(String.self, forKey: .courseCode)
         tag = try c.decodeIfPresent(String.self, forKey: .tag)
         sharedBy = try c.decodeIfPresent(String.self, forKey: .sharedBy)
         pageCount = try c.decode(Int.self, forKey: .pageCount)
@@ -225,15 +280,16 @@ struct Note: Codable, Identifiable, Equatable, Hashable {
 /// Persisted shape of the whole local store.
 struct StoreSnapshot: Codable, Equatable {
     var bubbleNames: [String]
+    var bubbles: [NoteBubble] = []
     var notes: [Note]
     /// Bumped by `LocalNotesPersistence` so we can migrate the JSON format
     /// later without nuking user data.
     var schemaVersion: Int
 
-    /// v2 — adds `bookmarked`, `currentPage`, `pageSettings` to each note.
+    /// v3 — adds structured bubble course metadata and note course fields.
     /// Older snapshots are loaded with the missing fields defaulted in
     /// `LocalNotesPersistence.loadStore`.
-    static let currentSchemaVersion = 2
+    static let currentSchemaVersion = 3
 }
 
 // MARK: - NotesStore
@@ -246,6 +302,7 @@ final class NotesStore: ObservableObject {
     /// Bubble name list — equivalent to JSX `bubbleCategories` (L6912).
     /// Order is preserved so the home bubble field is stable across launches.
     @Published private(set) var bubbleNames: [String] = []
+    @Published private(set) var bubbles: [NoteBubble] = []
 
     @Published private(set) var notes: [Note] = []
 
@@ -300,13 +357,18 @@ final class NotesStore: ObservableObject {
         // Clear first so previously-displayed notes from another user never
         // leak through even for a single frame while disk IO is in flight.
         bubbleNames = []
+        bubbles = []
         notes = []
         libraryFilter = nil
 
         let snapshot = persistence.setActiveUser(userId)
         if let snapshot {
             bubbleNames = snapshot.bubbleNames
+            bubbles = snapshot.bubbles.isEmpty
+                ? snapshot.bubbleNames.map { NoteBubble(name: $0, courseCode: $0) }
+                : snapshot.bubbles
             notes = snapshot.notes
+            syncBubbleNamesFromBubbles()
         }
         activeUserId = userId
         isReady = true
@@ -318,6 +380,7 @@ final class NotesStore: ObservableObject {
     func deactivate() {
         persistence.clearActiveUser()
         bubbleNames = []
+        bubbles = []
         notes = []
         libraryFilter = nil
         activeUserId = nil
@@ -382,6 +445,7 @@ final class NotesStore: ObservableObject {
     private var snapshot: StoreSnapshot {
         StoreSnapshot(
             bubbleNames: bubbleNames,
+            bubbles: bubbles,
             notes: notes,
             schemaVersion: StoreSnapshot.currentSchemaVersion
         )
@@ -409,7 +473,8 @@ final class NotesStore: ObservableObject {
         if bubbleNameTaken(name) {
             return "A bubble with this name already exists."
         }
-        bubbleNames.append(name)
+        bubbles.append(NoteBubble(name: name, courseCode: name))
+        syncBubbleNamesFromBubbles()
         saveDebounced()
         return nil
     }
@@ -430,8 +495,14 @@ final class NotesStore: ObservableObject {
             return "A bubble with this name already exists."
         }
 
-        bubbleNames = bubbleNames.map {
-            $0.caseInsensitiveCompare(currentName) == .orderedSame ? nextName : $0
+        bubbles = bubbles.map { bubble in
+            guard bubble.name.caseInsensitiveCompare(currentName) == .orderedSame else { return bubble }
+            var copy = bubble
+            copy.name = nextName
+            if copy.courseId == nil {
+                copy.courseCode = nextName
+            }
+            return copy
         }
         for idx in notes.indices {
             if notes[idx].subject?.caseInsensitiveCompare(currentName) == .orderedSame {
@@ -442,6 +513,7 @@ final class NotesStore: ObservableObject {
         if libraryFilter?.caseInsensitiveCompare(currentName) == .orderedSame {
             libraryFilter = nextName
         }
+        syncBubbleNamesFromBubbles()
         saveDebounced()
         return nil
     }
@@ -467,17 +539,23 @@ final class NotesStore: ObservableObject {
                 result.append(trimmed)
             }
         }
-        bubbleNames = result
+        bubbles = result.map { name in
+            bubble(named: name) ?? NoteBubble(name: name, courseCode: name)
+        }
+        syncBubbleNamesFromBubbles()
         saveDebounced()
     }
 
     /// Removes a bubble and sets matching notes' `subject` to nil so they
     /// fall into the Unnamed bucket (mirrors JSX `deleteBubble` L7026–L7030).
     func deleteBubble(name: String) {
-        bubbleNames.removeAll { $0.caseInsensitiveCompare(name) == .orderedSame }
+        bubbles.removeAll { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+        syncBubbleNamesFromBubbles()
         for idx in notes.indices {
             if notes[idx].subject?.caseInsensitiveCompare(name) == .orderedSame {
                 notes[idx].subject = nil
+                notes[idx].courseId = nil
+                notes[idx].courseCode = nil
                 notes[idx].updatedAt = Date()
             }
         }
@@ -495,10 +573,13 @@ final class NotesStore: ObservableObject {
     @discardableResult
     func createDraftNote(subject: String? = nil, title: String? = nil) -> Note {
         let now = Date()
+        let linkedBubble = bubble(named: subject)
         let note = Note(
             id: UUID().uuidString,
             title: title ?? "Untitled Note",
             subject: subject,
+            courseId: linkedBubble?.courseId,
+            courseCode: linkedBubble?.courseCode ?? subject,
             tag: "Draft",
             sharedBy: nil,
             pageCount: 1,
@@ -528,8 +609,16 @@ final class NotesStore: ObservableObject {
         if let title { notes[idx].title = title }
         switch subject {
         case .keep: break
-        case .clear: notes[idx].subject = nil
-        case .set(let value): notes[idx].subject = value
+        case .clear:
+            notes[idx].subject = nil
+            notes[idx].courseId = nil
+            notes[idx].courseCode = nil
+        case .set(let value):
+            notes[idx].subject = value
+            if let linkedBubble = bubble(named: value) {
+                notes[idx].courseId = linkedBubble.courseId
+                notes[idx].courseCode = linkedBubble.courseCode ?? value
+            }
         }
         switch tag {
         case .keep: break
@@ -644,6 +733,7 @@ final class NotesStore: ObservableObject {
         }
         let page = notes[idx].currentPage
         let clamped = max(1, min(page, total))
+        let deletedBackgroundImage = notes[idx].pageSettings[clamped - 1].backgroundImageFilename
         notes[idx].pageSettings.remove(at: clamped - 1)
         notes[idx].pageCount = notes[idx].pageSettings.count
         notes[idx].currentPage = min(clamped, notes[idx].pageSettings.count)
@@ -659,6 +749,9 @@ final class NotesStore: ObservableObject {
             if let filename = overlay.imageFilename {
                 persistence.deleteOverlayImage(for: noteId, filename: filename)
             }
+        }
+        if let deletedBackgroundImage {
+            persistence.deleteOverlayImage(for: noteId, filename: deletedBackgroundImage)
         }
         persistence.deleteDrawing(for: noteId, page: clamped - 1)
         // Shift any remaining drawings beyond the deleted one up by one.
@@ -682,6 +775,15 @@ final class NotesStore: ObservableObject {
         let page = notes[idx].currentPage
         let clamped = max(1, min(page, notes[idx].pageSettings.count))
         notes[idx].pageSettings[clamped - 1].background = background
+        notes[idx].updatedAt = Date()
+        saveDebounced()
+    }
+
+    func setPageBackgroundImage(noteId: String, page: Int, filename: String, aspectHeightOverWidth: CGFloat) {
+        guard let idx = notes.firstIndex(where: { $0.id == noteId }) else { return }
+        let clamped = max(1, min(page, notes[idx].pageSettings.count))
+        notes[idx].pageSettings[clamped - 1].backgroundImageFilename = filename
+        notes[idx].pageSettings[clamped - 1].aspectHeightOverWidth = max(0.2, min(5.0, aspectHeightOverWidth))
         notes[idx].updatedAt = Date()
         saveDebounced()
     }
@@ -795,6 +897,41 @@ final class NotesStore: ObservableObject {
         }
     }
 
+    func bubble(named name: String?) -> NoteBubble? {
+        guard let name else { return nil }
+        return bubbles.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+    }
+
+    func setCourseMetadata(forBubbleNamed name: String, courseId: String, courseCode: String?) {
+        let normalized = NotesStore.normalizeBubbleName(name)
+        guard !normalized.isEmpty else { return }
+        if let idx = bubbles.firstIndex(where: { $0.name.caseInsensitiveCompare(normalized) == .orderedSame }) {
+            bubbles[idx].courseId = courseId
+            bubbles[idx].courseCode = courseCode ?? bubbles[idx].courseCode ?? normalized
+        } else {
+            bubbles.append(NoteBubble(name: normalized, courseId: courseId, courseCode: courseCode ?? normalized))
+        }
+        for idx in notes.indices where notes[idx].subject?.caseInsensitiveCompare(normalized) == .orderedSame {
+            notes[idx].courseId = courseId
+            notes[idx].courseCode = courseCode ?? notes[idx].courseCode ?? normalized
+            notes[idx].updatedAt = Date()
+        }
+        syncBubbleNamesFromBubbles()
+        saveDebounced()
+    }
+
+    func setCourseMetadata(forNoteId noteId: String, courseId: String, courseCode: String?) {
+        guard let idx = notes.firstIndex(where: { $0.id == noteId }) else { return }
+        notes[idx].courseId = courseId
+        notes[idx].courseCode = courseCode ?? notes[idx].courseCode
+        notes[idx].updatedAt = Date()
+        saveDebounced()
+    }
+
+    private func syncBubbleNamesFromBubbles() {
+        bubbleNames = bubbles.map(\.name)
+    }
+
     static func normalizeBubbleName(_ raw: String) -> String {
         raw.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -871,6 +1008,7 @@ extension NotesStore {
 
         return StoreSnapshot(
             bubbleNames: bubbleNames,
+            bubbles: bubbleNames.map { NoteBubble(name: $0, courseCode: $0) },
             notes: notes,
             schemaVersion: StoreSnapshot.currentSchemaVersion
         )
@@ -892,6 +1030,7 @@ extension NotesStore {
         if store.notes.isEmpty && store.bubbleNames.isEmpty {
             let seed = NotesStore.firstRunSeed()
             store.bubbleNames = seed.bubbleNames
+            store.bubbles = seed.bubbles
             store.notes = seed.notes
         }
         return store

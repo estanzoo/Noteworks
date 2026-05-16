@@ -7,8 +7,8 @@
 //  Layout (top to bottom):
 //
 //    1. Chrome card (single glass surface, two rows):
-//        a. Header row: Back/Home/Search · Title-block · Bookmark/Share/
-//           Gap-detection/More.
+//        a. Header row: Back/Home/Search · Title-block · + / Bookmark /
+//           Share (upload menu) / AI / More — aligned with NoteWorks_UI 2.
 //           Title block stacks the editable title on top of a subject /
 //           tag pill (matching JSX L3548–L3556).
 //        b. 1px divider.
@@ -35,11 +35,14 @@ struct NoteEditorView: View {
     @StateObject private var viewModel = NoteEditorViewModel()
 
     @State private var showShareSheet = false
+    @State private var showCommunityUpload = false
     @State private var showSubjectPicker = false
     @State private var openPanel: NoteEditorPanel? = nil
     /// Live `PKCanvasView` reference — used by the chrome's undo/redo
     /// buttons. Captured once via `onCanvasReady`.
     @State private var liveCanvas: PKCanvasView? = nil
+    @State private var canUndoCanvas = false
+    @State private var canRedoCanvas = false
     /// Counter that ticks every time the canvas reports a change so undo /
     /// redo enabled-state in the chrome stays in sync.
     @State private var canvasRevision: Int = 0
@@ -142,6 +145,48 @@ struct NoteEditorView: View {
                 // `ToolButtonAnchorKey`.
                 dropdownsLayer
                     .ignoresSafeArea(.keyboard, edges: .bottom)
+
+                if viewModel.showGapDetectionPopup {
+                    GapDetectionPopup(
+                        viewModel: viewModel,
+                        currentNote: currentEditorNote,
+                        notes: store.notes,
+                        accessToken: appState.accessToken ?? "",
+                        onClose: { viewModel.closeGapDetectionPopup() }
+                    )
+                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                    .zIndex(450)
+                }
+
+                if showCommunityUpload {
+                    PostEditorPopup(
+                        isPresented: $showCommunityUpload,
+                        accessToken: appState.accessToken ?? "",
+                        initialAttachments: currentNotePlaceholderAttachments(),
+                        initialTitle: sharePostTitle(),
+                        initialBody: sharePostBody(),
+                        initialCourseId: currentEditorNote?.courseId,
+                        prepareInitialAttachments: {
+                            await MainActor.run {
+                                currentNoteShareAttachments()
+                            }
+                        },
+                        onPublished: { _ in
+                            viewModel.flashStatus("Uploaded to Community")
+                        },
+                        submit: { request in
+                            let token = appState.accessToken ?? ""
+                            guard !token.isEmpty else { throw CommunityError.unauthorized }
+                            var created = try await CommunityService.shared.createPost(request, accessToken: token)
+                            if let me = appState.profile {
+                                created.author = PostAuthor(id: me.id, name: me.displayName)
+                            }
+                            return created
+                        }
+                    )
+                    .transition(.opacity)
+                    .zIndex(400)
+                }
             }
             .frame(width: outerGeo.size.width, height: stableEditorH, alignment: .top)
             .coordinateSpace(name: "NoteEditorCoord")
@@ -190,6 +235,7 @@ struct NoteEditorView: View {
         .onChange(of: viewModel.drawing) { _, _ in
             viewModel.handleDrawingChange()
             canvasRevision &+= 1
+            refreshCanvasUndoState()
         }
         .onChange(of: viewModel.noteTitle) { _, newValue in
             viewModel.handleTitleChange(newValue)
@@ -276,6 +322,50 @@ struct NoteEditorView: View {
         return stem.hasSuffix(".pdf") ? stem : "\(stem).pdf"
     }
 
+    private func currentNotePlaceholderAttachments() -> [PendingPostAttachment] {
+        guard let noteId = viewModel.noteId,
+              store.note(id: noteId) != nil else {
+            return []
+        }
+        return [
+            PendingPostAttachment(
+                id: noteId,
+                filename: sharePDFFilename(title: viewModel.noteTitle),
+                data: Data(),
+                courseId: store.note(id: noteId)?.courseId,
+                isLocked: true,
+                status: .preparing
+            )
+        ]
+    }
+
+    private func currentNoteShareAttachments() -> [PendingPostAttachment] {
+        guard let noteId = viewModel.noteId,
+              store.note(id: noteId) != nil else {
+            return []
+        }
+        return [
+            PendingPostAttachment(
+                id: noteId,
+                filename: sharePDFFilename(title: viewModel.noteTitle),
+                data: viewModel.exportPDFLocally(store: store),
+                courseId: store.note(id: noteId)?.courseId,
+                isLocked: true,
+                status: .pending
+            )
+        ]
+    }
+
+    private func sharePostTitle() -> String {
+        let trimmed = viewModel.noteTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "Untitled Note" : trimmed
+    }
+
+    private func sharePostBody() -> String {
+        let title = sharePostTitle()
+        return "Sharing my \(title) notes from Noteworks."
+    }
+
     // MARK: - Photo picker handling
 
     /// Loads the selected photo's bytes, downscales if necessary, and
@@ -319,6 +409,11 @@ struct NoteEditorView: View {
         store.openNoteIds.compactMap { store.note(id: $0) }
     }
 
+    private var currentEditorNote: Note? {
+        guard let id = viewModel.noteId else { return nil }
+        return store.note(id: id)
+    }
+
     /// Closes a tab. If it was the last one we pop back to Home; if it
     /// was the active tab the store automatically picks a neighbour and
     /// the editor reacts via `.onChange(of: store.activeOpenNoteId)`.
@@ -341,29 +436,6 @@ struct NoteEditorView: View {
 
     private var chromeCard: some View {
         VStack(spacing: 0) {
-            // Tab strip — only rendered when more than one note is open
-            // so a single-tab session keeps the chrome compact.
-            if store.openNoteIds.count > 1 {
-                NoteTabBar(
-                    notes: openTabNotes,
-                    activeId: store.activeOpenNoteId,
-                    onSelect: { id in
-                        store.setActiveOpenNote(id)
-                        openPanel = nil
-                    },
-                    onClose: handleCloseTab,
-                    onCreateNew: handleNewTab
-                )
-                .padding(.horizontal, 10)
-                .padding(.top, 5)
-                .padding(.bottom, 4)
-
-                Rectangle()
-                    .fill(NoteEditorTheme.chromeBorder.opacity(0.4))
-                    .frame(height: 1)
-                    .padding(.horizontal, 10)
-            }
-
             headerRow
                 .padding(.horizontal, 10)
                 .padding(.top, 5)
@@ -458,8 +530,25 @@ struct NoteEditorView: View {
             HighlighterDropdownPanel(viewModel: viewModel)
         case .eraser:
             EraserDropdownPanel(viewModel: viewModel)
-        case .bookmark, .share:
+        case .bookmark:
             EmptyView()
+        case .share:
+            ShareUploadDropdown(
+                onUploadToCommunity: {
+                    openPanel = nil
+                    guard appState.accessToken != nil else {
+                        viewModel.flashStatus("Sign in to upload to Community")
+                        return
+                    }
+                    showCommunityUpload = true
+                    viewModel.flashStatus("Upload to Community")
+                },
+                onUploadToOtherApps: {
+                    openPanel = nil
+                    showShareSheet = true
+                    viewModel.flashStatus("Preparing PDF for sharing")
+                }
+            )
         }
     }
 
@@ -471,7 +560,8 @@ struct NoteEditorView: View {
         case .ai:                        return 308
         case .more, .background, .rotate: return 220
         case .pen, .highlighter, .eraser: return 248
-        case .bookmark, .share:           return 0
+        case .bookmark:                   return 0
+        case .share:                      return 272
         }
     }
 
@@ -488,13 +578,27 @@ struct NoteEditorView: View {
             }
             .opacity(0.55)
 
-            // Center title block — TITLE on top, SUBJECT/TAG pill below.
-            // Matches JSX `note-app-title-shell` (L3548).
-            titleBlock
+            NoteTabBar(
+                notes: openTabNotes,
+                activeId: store.activeOpenNoteId,
+                onSelect: { id in
+                    store.setActiveOpenNote(id)
+                    openPanel = nil
+                },
+                onClose: handleCloseTab,
+                onCreateNew: handleNewTab,
+                onRename: { id, title in
+                    if id == viewModel.noteId {
+                        viewModel.noteTitle = title
+                    } else {
+                        store.updateNote(id: id, title: title)
+                    }
+                }
+            )
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, 6)
 
-            // Right cluster
+            // Right cluster — bookmark, share (upload menu), AI, more
             ChromeIconButton(
                 symbol: viewModel.bookmarked ? "bookmark.fill" : "bookmark",
                 isActive: viewModel.bookmarked,
@@ -503,10 +607,19 @@ struct NoteEditorView: View {
                 viewModel.toggleBookmark()
             }
 
-            ChromeIconButton(symbol: "square.and.arrow.up") {
-                showShareSheet = true
-                openPanel = nil
+            ChromeIconButton(
+                symbol: "square.and.arrow.up",
+                isActive: openPanel == .share
+            ) {
+                if openPanel == .share {
+                    openPanel = nil
+                    viewModel.flashStatus("Share menu closed")
+                } else {
+                    openPanel = .share
+                    viewModel.flashStatus("Choose where to share")
+                }
             }
+            .background(anchorReporter(for: .share))
 
             // AI Enhancements pill — opens the Gap Detection / Smart
             // Organization dropdown. The pill visually morphs to a
@@ -611,9 +724,41 @@ struct NoteEditorView: View {
         NoteEditorToolStrip(
             viewModel: viewModel,
             openPanel: $openPanel,
-            undoManager: liveCanvas?.undoManager
+            canUndo: canUndoCanvas,
+            canRedo: canRedoCanvas,
+            onUndo: handleCanvasUndo,
+            onRedo: handleCanvasRedo
         )
         .id(canvasRevision)
+    }
+
+    private func refreshCanvasUndoState() {
+        canUndoCanvas = liveCanvas?.undoManager?.canUndo ?? false
+        canRedoCanvas = liveCanvas?.undoManager?.canRedo ?? false
+    }
+
+    private func handleCanvasUndo() {
+        guard let canvas = liveCanvas else { return }
+        canvas.undoManager?.undo()
+        // Keep the view model in sync if PencilKit did not emit
+        // `canvasViewDrawingDidChange` for this undo step (defensive).
+        if viewModel.drawing != canvas.drawing {
+            viewModel.drawing = canvas.drawing
+        }
+        refreshCanvasUndoState()
+        canvasRevision &+= 1
+        viewModel.flashStatus("Undo")
+    }
+
+    private func handleCanvasRedo() {
+        guard let canvas = liveCanvas else { return }
+        canvas.undoManager?.redo()
+        if viewModel.drawing != canvas.drawing {
+            viewModel.drawing = canvas.drawing
+        }
+        refreshCanvasUndoState()
+        canvasRevision &+= 1
+        viewModel.flashStatus("Redo")
     }
 
     // MARK: - Canvas area
@@ -633,10 +778,17 @@ struct NoteEditorView: View {
             // the viewport and two-finger pan navigates the detail —
             // exactly the GoodNotes flow.
             let logicalPageSize = pageSize(in: basisSize, rotation: rotation)
-            ZoomablePageScrollView(contentSize: logicalPageSize, maxScale: 3.0) {
-                pageCard(logicalPageSize: logicalPageSize, rotation: rotation)
+            ZStack {
+                ZoomablePageScrollView(
+                    contentSize: logicalPageSize,
+                    maxScale: 3.0,
+                    onSwipeNext: { viewModel.goToNextPage() },
+                    onSwipePrevious: { viewModel.goToPreviousPage() }
+                ) {
+                    pageCard(logicalPageSize: logicalPageSize, rotation: rotation)
+                }
+                .frame(width: geometry.size.width, height: geometry.size.height)
             }
-            .frame(width: geometry.size.width, height: geometry.size.height)
             .contentShape(Rectangle())
             .onTapGesture {
                 if openPanel != nil { openPanel = nil }
@@ -659,12 +811,22 @@ struct NoteEditorView: View {
     private func pageCard(logicalPageSize: CGSize, rotation: Int) -> some View {
         ZStack {
             Color.white
-            NotePageBackgroundView(background: viewModel.currentPageBackground)
+            NotePageBackgroundView(
+                background: viewModel.currentPageBackground,
+                imageData: currentPageBackgroundImageData()
+            )
             PencilCanvasView(
                 drawing: $viewModel.drawing,
                 tool: viewModel.pkTool,
+                drawingPolicy: .pencilOnly,
                 isDrawingEnabled: viewModel.activeTool.canDraw,
-                onCanvasReady: { canvas in self.liveCanvas = canvas }
+                onCanvasReady: { canvas in
+                    self.liveCanvas = canvas
+                    refreshCanvasUndoState()
+                },
+                onPencilDoubleTap: { interaction in
+                    viewModel.handlePencilDoubleTap(interaction: interaction)
+                }
             )
             if let noteId = viewModel.noteId {
                 NoteOverlayLayer(
@@ -717,7 +879,7 @@ struct NoteEditorView: View {
     /// aspect).
     private func pageSize(in available: CGSize, rotation: Int) -> CGSize {
         let isSideways = rotation == 90 || rotation == 270
-        let pageAspect: CGFloat = 1.4
+        let pageAspect = max(0.2, min(5.0, viewModel.currentPageAspectHeightOverWidth))
         let usableW = max(1, available.width)
         let usableH = max(1, available.height)
         if isSideways {
@@ -735,6 +897,14 @@ struct NoteEditorView: View {
             let maxH = min(usableH, usableW * pageAspect)
             return CGSize(width: maxH / pageAspect, height: maxH)
         }
+    }
+
+    private func currentPageBackgroundImageData() -> Data? {
+        guard let noteId = viewModel.noteId,
+              let filename = viewModel.currentPageBackgroundImageFilename else {
+            return nil
+        }
+        return store.loadOverlayImageData(for: noteId, filename: filename)
     }
 
     // MARK: - Status strip

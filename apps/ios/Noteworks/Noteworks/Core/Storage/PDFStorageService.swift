@@ -49,18 +49,18 @@ final class PDFStorageService {
         livePage: Int?,
         liveDrawing: PKDrawing?
     ) -> Data {
-        let pageSize = Self.pdfLogicalPageSize
         let pageCount = max(1, note.pageSettings.count)
-        let renderer = UIGraphicsPDFRenderer(bounds: CGRect(origin: .zero, size: pageSize))
+        let renderer = UIGraphicsPDFRenderer(bounds: CGRect(origin: .zero, size: Self.pdfLogicalPageSize))
 
         return renderer.pdfData { pdfContext in
             for pageIndex in 1...pageCount {
-                pdfContext.beginPage()
-                let cg = pdfContext.cgContext
-
                 let setting = (pageIndex <= note.pageSettings.count)
                     ? note.pageSettings[pageIndex - 1]
                     : NotePageSetting()
+                let pageSize = Self.logicalPageSize(for: setting)
+
+                pdfContext.beginPage(withBounds: CGRect(origin: .zero, size: pageSize), pageInfo: [:])
+                let cg = pdfContext.cgContext
 
                 let drawing: PKDrawing
                 if pageIndex == livePage, let live = liveDrawing {
@@ -79,6 +79,11 @@ final class PDFStorageService {
                 cg.rotate(by: rotation * (.pi / 180))
                 cg.translateBy(x: -cx, y: -cy)
 
+                if let filename = setting.backgroundImageFilename,
+                   let data = store.loadOverlayImageData(for: note.id, filename: filename),
+                   let image = UIImage(data: data) {
+                    image.draw(in: CGRect(origin: .zero, size: pageSize))
+                }
                 Self.drawBackground(setting.background, in: CGRect(origin: .zero, size: pageSize), context: cg)
 
                 let inkScale: CGFloat = 3
@@ -135,10 +140,11 @@ final class PDFStorageService {
         liveDrawing: PKDrawing?,
         noteId: String,
         filename: String = "note.pdf",
+        courseId: String? = nil,
         accessToken: String
     ) async throws -> NoteResponse {
         let pdfData = exportNoteToPDF(note: note, store: store, livePage: livePage, liveDrawing: liveDrawing)
-        return try await uploadPDFData(pdfData, noteId: noteId, filename: filename, accessToken: accessToken)
+        return try await uploadPDFData(pdfData, noteId: noteId, filename: filename, courseId: courseId, accessToken: accessToken)
     }
 
     /// Legacy: exports a single `PKDrawing` only.
@@ -157,9 +163,10 @@ final class PDFStorageService {
         _ pdfData: Data,
         noteId: String,
         filename: String = "upload.pdf",
+        courseId: String? = nil,
         accessToken: String
     ) async throws -> NoteResponse {
-        let url = SupabaseConfig.uploadNotePDFURL(noteId: noteId, filename: filename)
+        let url = SupabaseConfig.uploadNotePDFURL(noteId: noteId, filename: filename, courseId: courseId)
         return try await api.uploadPDF(url, pdfData: pdfData, accessToken: accessToken)
     }
 
@@ -196,6 +203,11 @@ final class PDFStorageService {
         cg.setFillColor(UIColor.white.cgColor)
         cg.fill(CGRect(origin: .zero, size: size))
         cg.restoreGState()
+    }
+
+    private static func logicalPageSize(for setting: NotePageSetting) -> CGSize {
+        let aspect = max(0.2, min(5.0, setting.aspectHeightOverWidth))
+        return CGSize(width: pdfPageWidthPoints, height: pdfPageWidthPoints * aspect)
     }
 
     /// Mirrors `NotePageBackgroundView` (dots / single column / blank).

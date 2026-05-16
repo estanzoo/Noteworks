@@ -182,3 +182,56 @@ struct DropdownSectionTitle: View {
             .padding(.horizontal, 12)
     }
 }
+
+// MARK: - Share / upload menu (matches NoteWorks_UI 2 header dropdown)
+
+/// Two-row panel opened from the share icon: community composer vs
+/// system share sheet (PDF).
+struct ShareUploadDropdown: View {
+    let onUploadToCommunity: () -> Void
+    let onUploadToOtherApps: () -> Void
+
+    var body: some View {
+        ChromeDropdownPanel(width: 272) {
+            VStack(spacing: 8) {
+                uploadRow(
+                    title: "Share to Community",
+                    detail: "Open a post composer with this note attached.",
+                    action: onUploadToCommunity
+                )
+                uploadRow(
+                    title: "Share to Other Apps",
+                    detail: "Use the iOS share sheet with a PDF export.",
+                    action: onUploadToOtherApps
+                )
+            }
+            .padding(.horizontal, 8)
+        }
+    }
+
+    private func uploadRow(title: String, detail: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(NoteEditorTheme.textPrimary)
+                Text(detail)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(NoteEditorTheme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(
+                RoundedRectangle(cornerRadius: 18)
+                    .fill(Color.white.opacity(0.94))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18)
+                    .strokeBorder(NoteEditorTheme.chromeBorder.opacity(0.92), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}

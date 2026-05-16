@@ -9,7 +9,7 @@
 //    - Each chip = one open note (title + meta line, optional X to close).
 //    - Active chip is brighter and slightly wider.
 //    - Trailing "+" button opens a fresh draft tab.
-//    - Hidden by the parent when only one note is open.
+//    - Always shown in the editor chrome (matches NoteWorks_UI 2).
 //
 
 import SwiftUI
@@ -23,6 +23,11 @@ struct NoteTabBar: View {
     var onSelect: (String) -> Void
     var onClose: (String) -> Void
     var onCreateNew: () -> Void
+    var onRename: (String, String) -> Void = { _, _ in }
+
+    @State private var editingId: String?
+    @State private var editingTitle = ""
+    @FocusState private var focusedEditingId: String?
 
     var body: some View {
         HStack(spacing: 8) {
@@ -33,8 +38,22 @@ struct NoteTabBar: View {
                             note: note,
                             isActive: note.id == activeId,
                             totalTabs: notes.count,
+                            editingTitle: editingId == note.id ? $editingTitle : nil,
+                            isEditing: editingId == note.id,
+                            isFocused: focusedEditingId == note.id,
                             onSelect: { onSelect(note.id) },
-                            onClose: { onClose(note.id) }
+                            onClose: { onClose(note.id) },
+                            onStartEditing: {
+                                editingId = note.id
+                                editingTitle = note.title.isEmpty ? "Untitled Note" : note.title
+                                focusedEditingId = note.id
+                            },
+                            onRename: { newTitle in
+                                commitRename(noteId: note.id, title: newTitle)
+                            },
+                            onCancelEditing: {
+                                stopEditing()
+                            }
                         )
                     }
                 }
@@ -61,6 +80,18 @@ struct NoteTabBar: View {
             .accessibilityLabel("Open new note tab")
         }
     }
+
+    private func commitRename(noteId: String, title: String) {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        onRename(noteId, trimmed.isEmpty ? "Untitled Note" : trimmed)
+        stopEditing()
+    }
+
+    private func stopEditing() {
+        editingId = nil
+        focusedEditingId = nil
+        editingTitle = ""
+    }
 }
 
 // MARK: - NoteSessionTab
@@ -69,16 +100,35 @@ private struct NoteSessionTab: View {
     let note: Note
     let isActive: Bool
     let totalTabs: Int
+    var editingTitle: Binding<String>?
+    let isEditing: Bool
+    let isFocused: Bool
     let onSelect: () -> Void
     let onClose: () -> Void
+    let onStartEditing: () -> Void
+    let onRename: (String) -> Void
+    let onCancelEditing: () -> Void
 
-    private var compact: Bool { totalTabs >= 3 }
-    private var hideMeta: Bool { totalTabs >= 4 }
+    @FocusState private var titleFieldFocused: Bool
+
+    private var compact: Bool { true }
+    private var hideMeta: Bool { true }
 
     var body: some View {
-        Button(action: onSelect) {
-            HStack(spacing: compact ? 8 : 10) {
-                VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: compact ? 8 : 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                if isEditing, let editingTitle {
+                    TextField("Untitled Note", text: editingTitle)
+                        .font(.system(size: isActive ? 12.5 : 12, weight: isActive ? .bold : .semibold))
+                        .foregroundStyle(isActive
+                                         ? Color(red: 0x35/255, green: 0x55/255, blue: 0x6F/255)
+                                         : Color(red: 69/255, green: 90/255, blue: 108/255).opacity(0.88))
+                        .textFieldStyle(.plain)
+                        .lineLimit(1)
+                        .submitLabel(.done)
+                        .focused($titleFieldFocused)
+                        .onSubmit { onRename(editingTitle.wrappedValue) }
+                } else {
                     Text(note.title.isEmpty ? "Untitled Note" : note.title)
                         .font(.system(size: compact ? (isActive ? 12.5 : 12)
                                                  : (isActive ? 13.5 : 13),
@@ -88,52 +138,77 @@ private struct NoteSessionTab: View {
                                          : Color(red: 69/255, green: 90/255, blue: 108/255).opacity(0.88))
                         .lineLimit(1)
                         .truncationMode(.tail)
-
-                    if !hideMeta {
-                        Text(metaLabel.uppercased())
-                            .font(.system(size: compact ? 9 : 10, weight: .bold))
-                            .tracking(0.06 * 10)
-                            .foregroundStyle(isActive
-                                             ? Color(red: 78/255, green: 102/255, blue: 124/255).opacity(0.66)
-                                             : Color(red: 90/255, green: 110/255, blue: 130/255).opacity(0.52))
-                            .lineLimit(1)
-                    }
                 }
-                .frame(minWidth: 60, alignment: .leading)
 
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 9, weight: .bold))
+                if !hideMeta {
+                    Text(metaLabel.uppercased())
+                        .font(.system(size: compact ? 9 : 10, weight: .bold))
+                        .tracking(0.06 * 10)
                         .foregroundStyle(isActive
-                                         ? Color(red: 82/255, green: 102/255, blue: 124/255).opacity(0.85)
-                                         : Color(red: 98/255, green: 116/255, blue: 133/255).opacity(0.7))
-                        .frame(width: compact ? 18 : 20, height: compact ? 18 : 20)
-                        .background(
-                            Circle().fill(isActive
-                                         ? Color.white.opacity(0.85)
-                                         : Color.white.opacity(0.2))
-                        )
+                                         ? Color(red: 78/255, green: 102/255, blue: 124/255).opacity(0.66)
+                                         : Color(red: 90/255, green: 110/255, blue: 130/255).opacity(0.52))
+                        .lineLimit(1)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Close \(note.title)")
             }
-            .padding(.horizontal, compact ? 10 : 14)
-            .padding(.vertical, compact ? 7 : 9)
-            .background(
-                RoundedRectangle(cornerRadius: 14)
-                    .fill(isActive
-                          ? Color.white.opacity(0.82)
-                          : Color.white.opacity(0.34))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 14)
-                    .strokeBorder(isActive
-                                  ? Color.white.opacity(0.92)
-                                  : NoteEditorTheme.chromeBorder.opacity(0.7),
-                                  lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(isActive ? 0.06 : 0.02), radius: isActive ? 6 : 2, y: isActive ? 3 : 1)
-            .frame(maxWidth: totalTabs <= 2 ? 260 : 200)
+            .frame(minWidth: 60, alignment: .leading)
+
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(isActive
+                                     ? Color(red: 82/255, green: 102/255, blue: 124/255).opacity(0.85)
+                                     : Color(red: 98/255, green: 116/255, blue: 133/255).opacity(0.7))
+                    .frame(width: compact ? 18 : 20, height: compact ? 18 : 20)
+                    .background(
+                        Circle().fill(isActive
+                                      ? Color.white.opacity(0.85)
+                                      : Color.white.opacity(0.2))
+                    )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close \(note.title)")
+        }
+        .padding(.horizontal, compact ? 10 : 14)
+        .padding(.vertical, compact ? 7 : 9)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(isActive
+                      ? Color.white.opacity(0.82)
+                      : Color.white.opacity(0.34))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(isActive
+                              ? Color.white.opacity(0.92)
+                              : NoteEditorTheme.chromeBorder.opacity(0.7),
+                              lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(isActive ? 0.06 : 0.02), radius: isActive ? 6 : 2, y: isActive ? 3 : 1)
+        .frame(maxWidth: totalTabs <= 2 ? 260 : 200)
+        .contentShape(RoundedRectangle(cornerRadius: 14))
+        .onTapGesture(count: 2) {
+            onSelect()
+            onStartEditing()
+        }
+        .onTapGesture {
+            if !isEditing { onSelect() }
+        }
+        .onChange(of: isFocused) { _, shouldFocus in
+            titleFieldFocused = shouldFocus
+        }
+        .onChange(of: titleFieldFocused) { _, focused in
+            if !focused && isEditing {
+                if let editingTitle {
+                    onRename(editingTitle.wrappedValue)
+                } else {
+                    onCancelEditing()
+                }
+            }
+        }
+        .onAppear {
+            if isFocused {
+                titleFieldFocused = true
+            }
         }
         .buttonStyle(.plain)
         .animation(.easeInOut(duration: 0.18), value: isActive)
