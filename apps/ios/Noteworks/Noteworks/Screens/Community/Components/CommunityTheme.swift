@@ -36,13 +36,43 @@ func nameToInitials(_ name: String) -> String {
 
 // MARK: - Avatar initials badge
 
-/// Circular glass avatar showing initials (JSX L4730–L4732, L4567–L4583).
+/// Circular glass avatar showing the author's photo (or initials when
+/// the user has not uploaded one). JSX parity: L4730–L4732, L4567–L4583.
+///
+/// `avatarUrl` is the public URL returned by `upload-avatar` and joined
+/// into community payloads via `users!*(id, name, avatar_url)`.
 struct CommunityAvatar: View {
     let name: String
     var size: CGFloat = 40
     var nested: Bool = false
+    var avatarUrl: String? = nil
 
     var body: some View {
+        Group {
+            if let avatarUrl, let url = URL(string: avatarUrl) {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image.resizable().scaledToFill()
+                    default:
+                        initialsBadge
+                    }
+                }
+                .frame(width: size, height: size)
+                .clipShape(Circle())
+                .overlay {
+                    Circle().strokeBorder(
+                        nested ? CommunityTheme.accent.opacity(0.12) : CommunityTheme.glassBorder,
+                        lineWidth: 1
+                    )
+                }
+            } else {
+                initialsBadge
+            }
+        }
+    }
+
+    private var initialsBadge: some View {
         ZStack {
             Circle()
                 .fill(nested ? CommunityTheme.accent.opacity(0.1) : Color(red: 222/255, green: 233/255, blue: 242/255).opacity(0.94))

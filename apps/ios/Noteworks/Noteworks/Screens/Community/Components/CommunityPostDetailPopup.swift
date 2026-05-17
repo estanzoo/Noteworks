@@ -32,6 +32,10 @@ struct CommunityPostDetailPopup: View {
     @State private var showDeleteConfirm: Bool = false
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    /// Used to mirror any Profile-screen edit (avatar / display name)
+    /// into the post header and the comment thread while this popup is
+    /// still open. See `.onChange(of: appState.profile)` below.
+    @EnvironmentObject private var appState: AppState
 
     init(
         initialPost: CommunityPost,
@@ -90,6 +94,13 @@ struct CommunityPostDetailPopup: View {
         }
         .transition(.opacity.combined(with: .scale(scale: 0.985)))
         .task { await loadDetail() }
+        // If the user edits their profile (avatar, display name, …) while
+        // the popup is open, patch the post header (if it's their post)
+        // and any of their own comments in this thread so the new info
+        // shows up instantly instead of waiting for a reopen / refresh.
+        .onChange(of: appState.profile) { _, newProfile in
+            applyProfileToThread(newProfile)
+        }
         .alert("Delete this post?", isPresented: $showDeleteConfirm) {
             Button("Cancel", role: .cancel) {}
             Button("Delete", role: .destructive) {
@@ -128,6 +139,26 @@ struct CommunityPostDetailPopup: View {
                 }
             }
         }
+    }
+
+    /// Mirror a freshly-edited user profile into this popup's local
+    /// state — the post header (if the post is mine) and any comments
+    /// in the thread that I authored, including nested replies.
+    private func applyProfileToThread(_ profile: UserProfile?) {
+        guard let profile else { return }
+        if post.userId == profile.id {
+            post.author = PostAuthor(
+                id: profile.id,
+                name: profile.displayName,
+                avatarUrl: profile.avatarUrl
+            )
+        }
+        comments = patchComments(
+            comments,
+            targetUserId: profile.id,
+            name: profile.displayName,
+            avatarUrl: profile.avatarUrl
+        )
     }
 
     // MARK: - Mutations
@@ -424,12 +455,19 @@ struct CommunityPostDetailPopup: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top, spacing: 12) {
-                CommunityAvatar(name: post.authorName, size: 42)
+                CommunityAvatar(
+                    name: post.authorName,
+                    size: 42,
+                    avatarUrl: post.author?.avatarUrl
+                )
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(post.authorName)
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(CommunityTheme.textPrimary)
+                    HStack(spacing: 8) {
+                        Text(post.authorName)
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundStyle(CommunityTheme.textPrimary)
+                        PostKindPill(kind: post.postKind)
+                    }
                     Text(relativeTime(post.createdAt))
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(CommunityTheme.textMuted)
@@ -459,6 +497,8 @@ struct CommunityPostDetailPopup: View {
                         .lineSpacing(6)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+
+                PostMediaCarousel(media: post.media)
             }
 
             FlowLayout(spacing: 8) {

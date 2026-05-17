@@ -55,6 +55,9 @@ struct OnboardingPayload: Encodable, Sendable {
     var schoolId: String? = nil
     let schoolEmail: String
     let courseCodes: [String]
+    /// Optional program of study. When non-nil and non-empty, the server
+    /// persists it onto `users.major`.
+    var major: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case name
@@ -63,6 +66,7 @@ struct OnboardingPayload: Encodable, Sendable {
         case schoolId = "school_id"
         case schoolEmail = "school_email"
         case courseCodes = "course_codes"
+        case major
     }
 }
 

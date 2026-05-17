@@ -1,5 +1,6 @@
 import { requireAuth } from '../_shared/auth.ts'
 import { corsResponse, json, errorResponse } from '../_shared/cors.ts'
+import { displayName } from '../_shared/author.ts'
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return corsResponse()
@@ -20,9 +21,8 @@ Deno.serve(async (req) => {
   const { data: post, error: postErr } = await supabase
     .from('posts')
     .select(`
-      id, user_id, title, body, visibility, course_id,
-      likes_count, comments_count, created_at, updated_at, deleted_at,
-      author:users!posts_user_id_fkey(id, name)
+      id, user_id, title, body, visibility, course_id, post_kind,
+      likes_count, comments_count, created_at, updated_at, deleted_at
     `)
     .eq('id', postId)
     .maybeSingle()
@@ -72,21 +72,49 @@ Deno.serve(async (req) => {
     .eq('user_id', user.id)
     .maybeSingle()
 
-  const author = post.author as unknown as { id: string; name: string | null } | null
+  // Image / video attachments
+  const { data: mediaRows } = await supabase
+    .from('post_media')
+    .select('kind, storage_path')
+    .eq('post_id', postId)
+
+  const media = (mediaRows ?? []).map(row => {
+    const { data: pub } = supabase.storage.from('post-media').getPublicUrl(row.storage_path as string)
+    return { kind: row.kind as string, url: pub.publicUrl }
+  })
+
+  // Author lookup via the `user_profiles` view — bypasses the
+  // per-user RLS on `public.users` so we always get the real name +
+  // avatar, not "Student" for everyone else.
+  const { data: profileRow } = await supabase
+    .from('user_profiles')
+    .select('id, name, avatar_url')
+    .eq('id', post.user_id)
+    .maybeSingle()
+
+  const author = profileRow
+    ? {
+        id: profileRow.id as string,
+        name: displayName(profileRow.name as string | null, null),
+        avatar_url: (profileRow.avatar_url as string | null) ?? null,
+      }
+    : { id: post.user_id, name: 'Student', avatar_url: null }
 
   return json({
     id: post.id,
     user_id: post.user_id,
-    author: author ?? { id: post.user_id, name: null },
+    author,
     title: post.title,
     body: post.body,
     visibility: post.visibility,
     course_id: post.course_id,
+    post_kind: post.post_kind,
     likes_count: post.likes_count,
     comments_count: post.comments_count,
     has_liked: !!likeRow,
     hashtags,
     attachments,
+    media,
     created_at: post.created_at,
     updated_at: post.updated_at,
   })

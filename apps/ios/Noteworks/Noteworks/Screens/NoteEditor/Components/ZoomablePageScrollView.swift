@@ -26,6 +26,18 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
     let contentSize: CGSize
     var minScale: CGFloat = 1.0
     var maxScale: CGFloat = 3.0
+    /// When `true`, a "next" swipe would create a brand-new page rather
+    /// than just navigate to an existing one. We use this signal to add
+    /// a progressive rubber-band feel during the drag, raise the commit
+    /// distance, and fire a subtle haptic when the finger enters the
+    /// "create" zone — so the user can _feel_ the difference between
+    /// navigating between existing pages and creating one.
+    var nextSwipeCreatesPage: Bool = false
+    /// When `true`, the user is on page 1 and a "previous" swipe can't
+    /// go anywhere. The drag rubber-bands at the boundary and the
+    /// callback still fires once enough commitment is shown so the
+    /// caller can surface a status notification.
+    var atFirstPage: Bool = false
     var onSwipeNext: (() -> Void)? = nil
     var onSwipePrevious: (() -> Void)? = nil
     @ViewBuilder var content: () -> Content
@@ -71,6 +83,8 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         context.coordinator.contentSize = contentSize
         context.coordinator.onSwipeNext = onSwipeNext
         context.coordinator.onSwipePrevious = onSwipePrevious
+        context.coordinator.nextSwipeCreatesPage = nextSwipeCreatesPage
+        context.coordinator.atFirstPage = atFirstPage
         context.coordinator.pagePanGesture = pagePan
 
         DispatchQueue.main.async {
@@ -84,6 +98,8 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         context.coordinator.maxZoom = maxScale
         context.coordinator.onSwipeNext = onSwipeNext
         context.coordinator.onSwipePrevious = onSwipePrevious
+        context.coordinator.nextSwipeCreatesPage = nextSwipeCreatesPage
+        context.coordinator.atFirstPage = atFirstPage
         context.coordinator.host?.rootView = content()
 
         if context.coordinator.contentSize != contentSize {
@@ -108,8 +124,15 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         var maxZoom: CGFloat = 3.0
         var onSwipeNext: (() -> Void)?
         var onSwipePrevious: (() -> Void)?
+        var nextSwipeCreatesPage: Bool = false
+        var atFirstPage: Bool = false
         weak var pagePanGesture: UIPanGestureRecognizer?
         private var isSlidingPage = false
+        /// One-shot guard so we don't buzz on every frame the finger sits
+        /// past the "create page" cue threshold — fires once per gesture
+        /// when entering the zone, resets when the gesture ends or the
+        /// finger pulls back below the threshold.
+        private var didFireBoundaryHaptic = false
 
         func viewForZooming(in scrollView: UIScrollView) -> UIView? {
             host?.view
@@ -133,6 +156,7 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
             switch sender.state {
             case .began:
                 isSlidingPage = false
+                didFireBoundaryHaptic = false
             case .changed:
                 if !isSlidingPage {
                     guard abs(translation.x) > 10,
@@ -140,20 +164,65 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
                     isSlidingPage = true
                 }
                 guard isSlidingPage else { return }
-                let resistance: CGFloat = 0.82
-                pageView.transform = CGAffineTransform(translationX: translation.x * resistance, y: 0)
+
+                let width = max(scrollView.bounds.width, 1)
+                let raw = translation.x
+                let isNextSwipe = raw < 0
+                let isPrevSwipe = raw > 0
+                // "Resistance zones": the swipe would either create a new
+                // page (next-direction past the last page) or rubber-band
+                // at the first-page boundary. In both cases we want the
+                // page to lag behind the finger so the user feels the
+                // boundary instead of breezing through it.
+                let creatingNewPage = isNextSwipe && nextSwipeCreatesPage
+                let atPrevBoundary = isPrevSwipe && atFirstPage
+                let displayedX: CGFloat
+                if creatingNewPage || atPrevBoundary {
+                    displayedX = Coordinator.rubberBand(raw, dimension: width)
+                    // Light haptic the first time the finger crosses
+                    // into the "create page" cue zone — small, intentional
+                    // nudge so the user feels they're past the edge of
+                    // existing pages, not a navigation tap.
+                    let cueThreshold = max(width * 0.22, 80)
+                    if creatingNewPage, !didFireBoundaryHaptic, abs(raw) > cueThreshold {
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred(intensity: 0.7)
+                        didFireBoundaryHaptic = true
+                    } else if abs(raw) < cueThreshold * 0.6 {
+                        didFireBoundaryHaptic = false
+                    }
+                } else {
+                    displayedX = raw * 0.82
+                    didFireBoundaryHaptic = false
+                }
+                pageView.transform = CGAffineTransform(translationX: displayedX, y: 0)
             case .ended, .cancelled, .failed:
                 guard isSlidingPage else {
                     resetPageSlide(animated: true)
+                    didFireBoundaryHaptic = false
                     return
                 }
-                let threshold = max(70, scrollView.bounds.width * 0.18)
+                let width = scrollView.bounds.width
+                let isNextSwipe = translation.x < 0
+                let creatingNewPage = isNextSwipe && nextSwipeCreatesPage
+                let atPrevBoundary = !isNextSwipe && atFirstPage
+                let inResistanceZone = creatingNewPage || atPrevBoundary
+
+                // Inside the resistance zone we require noticeably more
+                // commitment before committing — both a longer raw drag
+                // and a higher flick velocity. That makes the boundary
+                // _feel_ like a boundary instead of just being slightly
+                // stickier than usual.
+                let normalDistance = max(70, width * 0.18)
+                let resistDistance = max(140, width * 0.34)
+                let distanceThreshold = inResistanceZone ? resistDistance : normalDistance
+                let velocityThreshold: CGFloat = inResistanceZone ? 1050 : 650
+
                 // Match GoodNotes / Notability: swipe left → next page (page exits left);
                 // swipe right → previous page (page exits right).
-                let shouldGoNext = translation.x < -threshold || velocity.x < -650
-                let shouldGoPrevious = translation.x > threshold || velocity.x > 650
+                let shouldGoNext = translation.x < -distanceThreshold || velocity.x < -velocityThreshold
+                let shouldGoPrevious = translation.x > distanceThreshold || velocity.x > velocityThreshold
                 if shouldGoNext || shouldGoPrevious {
-                    let offscreen = (shouldGoNext ? -1 : 1) * max(scrollView.bounds.width, contentSize.width)
+                    let offscreen = (shouldGoNext ? -1 : 1) * max(width, contentSize.width)
                     UIView.animate(withDuration: 0.18, delay: 0, options: [.curveEaseOut]) {
                         pageView.transform = CGAffineTransform(translationX: offscreen, y: 0)
                     } completion: { [weak self] _ in
@@ -168,9 +237,25 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
                     resetPageSlide(animated: true)
                 }
                 isSlidingPage = false
+                didFireBoundaryHaptic = false
             default:
                 break
             }
+        }
+
+        /// Apple's standard rubber-band curve: small offsets pass through
+        /// almost linearly, large offsets are aggressively damped. Output
+        /// asymptotes at `dimension` so a full-screen finger drag still
+        /// only moves the page ~35 % of the way.
+        ///
+        ///     f(x) = sign(x) · d · (1 − 1 / (c · |x| / d + 1))
+        ///
+        /// `c = 0.55` matches `UIScrollView`'s default bounce feel.
+        static func rubberBand(_ offset: CGFloat, dimension: CGFloat, coefficient: CGFloat = 0.55) -> CGFloat {
+            guard dimension > 0 else { return offset }
+            let magnitude = Swift.abs(offset)
+            let damped = (1.0 - 1.0 / (magnitude * coefficient / dimension + 1.0)) * dimension
+            return offset >= 0 ? damped : -damped
         }
 
         func gestureRecognizer(

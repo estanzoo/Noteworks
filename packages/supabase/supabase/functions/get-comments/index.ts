@@ -1,5 +1,6 @@
 import { requireAuth } from '../_shared/auth.ts'
 import { corsResponse, json, errorResponse } from '../_shared/cors.ts'
+import { displayName } from '../_shared/author.ts'
 
 interface CommentRow {
   id: string
@@ -11,14 +12,15 @@ interface CommentRow {
   visibility: string
   created_at: string
   updated_at: string
-  author: { id: string; name: string | null } | null
 }
+
+type ResolvedAuthor = { id: string; name: string; avatar_url: string | null }
 
 interface CommentTree {
   id: string
   post_id: string
   user_id: string
-  author: { id: string; name: string | null }
+  author: { id: string; name: string; avatar_url: string | null }
   parent_comment_id: string | null
   body: string
   likes_count: number
@@ -29,17 +31,22 @@ interface CommentTree {
   replies: CommentTree[]
 }
 
-function buildTree(comments: CommentRow[], likedSet: Set<string>): CommentTree[] {
+function buildTree(
+  comments: CommentRow[],
+  likedSet: Set<string>,
+  authorById: Map<string, ResolvedAuthor>,
+): CommentTree[] {
   const map = new Map<string, CommentTree>()
   const roots: CommentTree[] = []
 
   for (const c of comments) {
-    const author = c.author as unknown as { id: string; name: string | null } | null
+    const author = authorById.get(c.user_id)
+      ?? { id: c.user_id, name: 'Student', avatar_url: null }
     map.set(c.id, {
       id: c.id,
       post_id: c.post_id,
       user_id: c.user_id,
-      author: author ?? { id: c.user_id, name: null },
+      author,
       parent_comment_id: c.parent_comment_id,
       body: c.body,
       likes_count: c.likes_count,
@@ -88,8 +95,7 @@ Deno.serve(async (req) => {
     .from('comments')
     .select(`
       id, post_id, user_id, parent_comment_id, body,
-      likes_count, visibility, created_at, updated_at,
-      author:users!comments_user_id_fkey(id, name)
+      likes_count, visibility, created_at, updated_at
     `)
     .eq('post_id', postId)
     .is('parent_comment_id', null)
@@ -123,8 +129,7 @@ Deno.serve(async (req) => {
       .from('comments')
       .select(`
         id, post_id, user_id, parent_comment_id, body,
-        likes_count, visibility, created_at, updated_at,
-        author:users!comments_user_id_fkey(id, name)
+        likes_count, visibility, created_at, updated_at
       `)
       .eq('post_id', postId)
       .in('parent_comment_id', parentIds)
@@ -148,7 +153,24 @@ Deno.serve(async (req) => {
     for (const row of userLikes ?? []) likedSet.add(row.comment_id)
   }
 
-  const tree = buildTree(allComments, likedSet)
+  // Authors via `user_profiles` view (see migration 20260516090000).
+  const authorIds = Array.from(new Set(allComments.map(c => c.user_id)))
+  const authorById = new Map<string, ResolvedAuthor>()
+  if (authorIds.length > 0) {
+    const { data: profiles } = await supabase
+      .from('user_profiles')
+      .select('id, name, avatar_url')
+      .in('id', authorIds)
+    for (const row of profiles ?? []) {
+      authorById.set(row.id as string, {
+        id: row.id as string,
+        name: displayName(row.name as string | null, null),
+        avatar_url: (row.avatar_url as string | null) ?? null,
+      })
+    }
+  }
+
+  const tree = buildTree(allComments, likedSet, authorById)
 
   return json({ comments: tree, next_cursor: nextCursor })
 })

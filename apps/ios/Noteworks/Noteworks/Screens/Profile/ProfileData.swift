@@ -12,7 +12,14 @@ import Foundation
 struct Profile: Equatable {
     var name: String
     var email: String
+    /// Optimistic local cache of the freshly-picked photo, used while
+    /// `upload-avatar` is in flight (so the UI updates instantly). Once
+    /// the server returns a URL we drop the bytes in favour of
+    /// `avatarUrl`, which is the canonical, shareable source.
     var photoData: Data?
+    /// Server-backed avatar URL (mirrors `users.avatar_url`). Set after a
+    /// successful upload-avatar response or on profile hydrate.
+    var avatarUrl: String?
     var bio: String
     var school: String
     var major: String
@@ -91,6 +98,7 @@ extension Profile {
         name: "",
         email: "",
         photoData: nil,
+        avatarUrl: nil,
         bio: "",
         school: "",
         major: "",
@@ -125,6 +133,7 @@ extension Profile {
         name: "Hao Guan Cheng",
         email: "haoguan@arts.ac.uk",
         photoData: nil,
+        avatarUrl: nil,
         bio: "Designing a calmer study flow with visual notes, quick recall, and a little bit of AI help.",
         school: "Royal Academy of Arts",
         major: "Information Experience Design",

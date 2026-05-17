@@ -24,6 +24,11 @@ enum AppTab: String, CaseIterable {
 struct MainTabView: View {
     @EnvironmentObject private var appState: AppState
     @State private var selectedTab: AppTab? = .home
+    /// Mirrors the JSX `lastMainPage` (noteworks-library.jsx L9346): the
+    /// previous Home/Library/Community tab the user was on before opening
+    /// Profile. Profile's back chevron pops back to here instead of
+    /// hard-coding `.home`.
+    @State private var lastMainTab: AppTab = .home
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -51,12 +56,23 @@ struct MainTabView: View {
                     NavigationStack { CommunityView(selectedTab: $selectedTab) }
                 }
                 tabContainer(nil, isActive: selectedTab == nil) {
-                    NavigationStack { ProfileView(selectedTab: $selectedTab) }
+                    NavigationStack {
+                        ProfileView(
+                            selectedTab: $selectedTab,
+                            previousTab: lastMainTab
+                        )
+                    }
                 }
             }
             // 0.22s mirrors the JSX `PageTransition` (L6893) which uses
             // `transition: opacity 0.24s cubic-bezier(0.22,0.61,0.36,1)`.
             .animation(.easeInOut(duration: 0.22), value: selectedTab)
+            // Remember the last main tab the user was on so Profile's
+            // back chevron knows where to return to (same `lastMainPage`
+            // pattern the JSX uses at L9688).
+            .onChange(of: selectedTab) { _, newValue in
+                if let tab = newValue { lastMainTab = tab }
+            }
 
             // Floating Home/Library/Community pill — hidden while the
             // user is inside the note editor so the writing surface gets

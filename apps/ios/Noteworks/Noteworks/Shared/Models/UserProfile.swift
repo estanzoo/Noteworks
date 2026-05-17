@@ -21,6 +21,15 @@ struct UserProfile: Codable, Equatable, Identifiable {
     var schoolAffiliation: String?
     var schoolEmail: String?
     var courseCodes: [String]?
+    /// Program of study (e.g. "Computer Science", "Information Experience
+    /// Design"). Captured in Onboarding Step 4 → persisted by
+    /// `submit-onboarding`. Distinct from `courseCodes`, which is currently
+    /// used as a free-form interests/tags list.
+    var major: String?
+    /// Public URL of the user's profile photo in the `avatars` storage
+    /// bucket. Written by `upload-avatar` and surfaced everywhere the
+    /// user appears (top-right pill, community posts, comments).
+    var avatarUrl: String?
     /// `nil` while onboarding has not been submitted yet. `ContentView`
     /// routes incomplete users back into `OnboardingFlow(startAt: .college)`.
     var onboardingCompletedAt: Date?

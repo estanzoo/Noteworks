@@ -29,17 +29,11 @@ struct HomeView: View {
     @State private var bubblesVisible = false
     @State private var showSearch = false
     @State private var showNotifications = false
-    // Brand-new users see an empty inbox until real notifications wire
-    // up to the server. The static `HomeNotification.samples` set still
-    // exists for SwiftUI previews and design-time tooling.
-    @State private var notifications: [HomeNotification] = []
     @State private var fabOpen = false
     @State private var bubbleEditorMode: BubbleEditorMode? = nil
     @State private var newNoteRoute: NewNoteRoute? = nil
 
-    private var unreadCount: Int {
-        notifications.filter(\.unread).count
-    }
+    private var unreadCount: Int { appState.notifications.unreadCount }
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
@@ -156,17 +150,13 @@ struct HomeView: View {
 
     private var titleRow: some View {
         HStack(alignment: .center) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("NoteWorks")
-                    .font(.custom("Inter_24pt-Bold", size: 40))
-                    .tracking(-0.02 * 40)
-                    .foregroundStyle(HomeTheme.textPrimary)
-                Text("BUBBLES OF THOUGHT")
-                    .font(.custom("Inter_24pt-SemiBold", size: 13))
-                    .tracking(0.15 * 13)
-                    .textCase(.uppercase)
-                    .foregroundStyle(HomeTheme.textMuted)
-            }
+            // Matches noteworks-library.jsx L2260: SF Pro (system) 40pt
+            // / 700, -0.02em tracking. The web mock has no "BUBBLES OF
+            // THOUGHT" subtitle, so neither does Home.
+            Text("NoteWorks")
+                .font(.system(size: 40, weight: .bold))
+                .tracking(-0.02 * 40)
+                .foregroundStyle(HomeTheme.textPrimary)
 
             Spacer()
 
@@ -203,7 +193,10 @@ struct HomeView: View {
                     }
                 }
 
-                HomeGlassIconButton(icon: "Icons/fluent_person-24-regular") {
+                AppAvatarTopBarButton(
+                    name: appState.profile?.displayName ?? "",
+                    avatarUrl: appState.profile?.avatarUrl
+                ) {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                         selectedTab = nil
                     }
@@ -298,7 +291,26 @@ struct HomeView: View {
     @ViewBuilder
     private var searchOverlay: some View {
         if showSearch {
-            SearchPopupView(isPresented: $showSearch)
+            SearchPopupView(
+                isPresented: $showSearch,
+                onSelectCommunityPost: { post in
+                    // Hand the post off to `CommunityView` and jump to
+                    // the Community tab so the detail popup opens
+                    // inside its native screen (where comments, likes,
+                    // and the post detail flow already live).
+                    appState.pendingCommunityPost = post
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                        selectedTab = .people
+                    }
+                },
+                onSelectLocalNote: { note in
+                    // Push the editor onto Home's nav stack. We reuse
+                    // `newNoteRoute` (already wired for the FAB) so the
+                    // existing `navigationDestination(item:)` handles the
+                    // push without a second destination.
+                    newNoteRoute = NewNoteRoute(noteId: note.id)
+                }
+            )
                 .transition(.opacity)
                 .zIndex(100)
         }
@@ -321,7 +333,7 @@ struct HomeView: View {
                 HStack {
                     Spacer()
                     NotificationDropdown(
-                        notifications: $notifications,
+                        store: appState.notifications,
                         onClose: {
                             withAnimation(.easeInOut(duration: 0.2)) {
                                 showNotifications = false

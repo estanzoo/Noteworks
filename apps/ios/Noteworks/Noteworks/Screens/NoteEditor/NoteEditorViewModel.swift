@@ -324,6 +324,13 @@ final class NoteEditorViewModel: ObservableObject {
     @Published var statusText: String = "Synced just now"
     private var statusTextResetTask: Task<Void, Never>?
 
+    /// One-shot pulse that drives the centered "New page" indicator
+    /// overlay (mirrors the JSX `newPageFlash` / `.new-page-indicator`).
+    /// Flips to `true` right after a new page is created and clears itself
+    /// shortly after so the indicator fades back out.
+    @Published var showNewPageFlash: Bool = false
+    private var newPageFlashTask: Task<Void, Never>?
+
     // MARK: - Upload state (preserved from previous version)
 
     @Published var isUploading = false
@@ -584,6 +591,20 @@ final class NoteEditorViewModel: ObservableObject {
             }
             loadDrawing(for: landed)
             flashStatus("Page \(landed) added")
+            triggerNewPageFlash()
+        }
+    }
+
+    /// Pops the centered "New page" indicator for ~900 ms, matching the
+    /// `flashNewPageIndicator` helper in the JSX reference.
+    private func triggerNewPageFlash() {
+        showNewPageFlash = true
+        newPageFlashTask?.cancel()
+        newPageFlashTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            if !Task.isCancelled {
+                self.showNewPageFlash = false
+            }
         }
     }
 

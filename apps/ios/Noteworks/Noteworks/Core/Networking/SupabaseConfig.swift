@@ -67,6 +67,20 @@ enum SupabaseConfig {
         URL(string: "\(functionsBase)/gap-detect")!
     }
 
+    /// `POST /upload-avatar` — uploads image bytes as the request body
+    /// (Content-Type must be the image's MIME type), writes the file to
+    /// the `avatars` storage bucket, and sets `users.avatar_url`.
+    static var uploadAvatarURL: URL {
+        URL(string: "\(functionsBase)/upload-avatar")!
+    }
+
+    /// `POST /upload-post-media` — uploads a single image as the request
+    /// body (Content-Type = image MIME). Returns the `storage_path` to
+    /// pass back to `create-post` in `media_paths[]`.
+    static var uploadPostMediaURL: URL {
+        URL(string: "\(functionsBase)/upload-post-media")!
+    }
+
     // MARK: - Community endpoints
 
     /// `GET /get-posts` with the filters described in

@@ -229,15 +229,16 @@ class OnboardingData: ObservableObject {
 
     var isInterestsValid: Bool { interestsError == nil }
 
-    /// Course-code-shaped list submitted to `submit-onboarding`.
+    /// Strings sent to `submit-onboarding` as `course_codes` (API shape).
     ///
-    /// The onboarding UI today collects free-form interests/tags; the API
-    /// accepts up to 50 strings of at most 50 characters each
-    /// (`docs/Frontend_Auth_and_Onboarding_Guide.md` step 6 table). We map
-    /// preset + custom interests through, trim whitespace, drop empties,
-    /// de-duplicate case-insensitively, and clamp lengths. Later product
-    /// work can replace this with a real course picker — the wire format
-    /// stays the same.
+    /// Today the UI sources these from the **Interests** chips — they are
+    /// hobbies/topics, not registrar course codes. The final onboarding
+    /// step (**CoursesStepView**) does **not** prefill from this list;
+    /// the user enters real classes there for Home bubbles only.
+    ///
+    /// Later product work can send a dedicated `interests` field and/or
+    /// a real course picker — the wire format for `course_codes` stays
+    /// whatever the edge function accepts.
     var selectedCourseCodes: [String] {
         var seen = Set<String>()
         var result: [String] = []

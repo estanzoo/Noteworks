@@ -38,8 +38,92 @@ struct HomeGlassIconButton: View {
                 }
                 .shadow(color: .black.opacity(0.04), radius: 2, x: 0, y: 1)
         }
+        // Avoid the default accent (system blue) press / focus ring on
+        // these custom glass chips — tint drives that chrome in iOS 18.
+        .tint(HomeTheme.textPrimary)
         .buttonStyle(.plain)
+        .focusEffectDisabled()
     }
+}
+
+// MARK: - Avatar Top-Bar Button
+
+/// 44×44 glass circle that shows the signed-in user's avatar (server
+/// URL → coloured initials fallback). Used as the top-right "go to
+/// Profile" button on Home, Library, and Community so the icon stays
+/// consistent with what's shown on the Profile screen itself.
+struct AppAvatarTopBarButton: View {
+    let name: String
+    let avatarUrl: String?
+    var action: () -> Void = {}
+
+    var body: some View {
+        Button(action: action) {
+            avatarContent
+                .frame(width: 44, height: 44)
+                .background(Color.white.opacity(0.35))
+                .background(.ultraThinMaterial)
+                .clipShape(Circle())
+                .overlay {
+                    Circle().strokeBorder(HomeTheme.glassBorder, lineWidth: 1)
+                }
+                .shadow(color: .black.opacity(0.04), radius: 2, x: 0, y: 1)
+        }
+        .tint(HomeTheme.textPrimary)
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
+    }
+
+    @ViewBuilder
+    private var avatarContent: some View {
+        if let avatarUrl, let url = URL(string: avatarUrl) {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image):
+                    image.resizable().scaledToFill()
+                default:
+                    initials
+                }
+            }
+            .frame(width: 44, height: 44)
+            .clipShape(Circle())
+        } else {
+            initials
+        }
+    }
+
+    private var initials: some View {
+        ZStack {
+            Circle()
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            HomeTheme.accent.opacity(0.18),
+                            Color.white.opacity(0.72),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+            Text(avatarInitials(from: name))
+                .font(.system(size: 12, weight: .bold))
+                .tracking(0.5)
+                .foregroundStyle(HomeTheme.accent)
+        }
+        .frame(width: 44, height: 44)
+    }
+}
+
+/// Two-letter initials (first letter of first + last name token), or "U"
+/// if the name is empty.
+func avatarInitials(from name: String) -> String {
+    let tokens = name
+        .split(whereSeparator: { $0.isWhitespace })
+        .compactMap { $0.first }
+        .map { String($0).uppercased() }
+    if tokens.isEmpty { return "U" }
+    if tokens.count == 1 { return tokens[0] }
+    return tokens.first! + tokens.last!
 }
 
 // MARK: - AnyShape helper

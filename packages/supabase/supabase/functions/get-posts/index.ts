@@ -1,5 +1,6 @@
 import { requireAuth } from '../_shared/auth.ts'
 import { corsResponse, json, errorResponse } from '../_shared/cors.ts'
+import { displayName } from '../_shared/author.ts'
 
 // Cursor format:
 //   When school-prioritized feed is active, the cursor encodes the phase:
@@ -122,9 +123,8 @@ Deno.serve(async (req) => {
     let q = supabase
       .from('posts')
       .select(`
-        id, user_id, title, body, visibility, course_id,
-        likes_count, comments_count, created_at, updated_at,
-        author:users!posts_user_id_fkey(id, name)
+        id, user_id, title, body, visibility, course_id, post_kind,
+        likes_count, comments_count, created_at, updated_at
       `)
       .is('deleted_at', null)
       .order('created_at', { ascending: false })
@@ -167,11 +167,11 @@ Deno.serve(async (req) => {
     body: string | null
     visibility: string
     course_id: string | null
+    post_kind: string
     likes_count: number
     comments_count: number
     created_at: string
     updated_at: string
-    author: unknown
   }
 
   let combined: PostRow[] = []
@@ -288,21 +288,59 @@ Deno.serve(async (req) => {
 
   const likedSet = new Set((userLikes ?? []).map(l => l.post_id))
 
+  // Authors — fetched via the public `user_profiles` view because the
+  // base `users` table has a strict per-user RLS policy that would
+  // strip joins for any author who isn't the caller.
+  const authorIds = Array.from(new Set(combined.map(p => p.user_id)))
+  const authorById = new Map<string, { id: string; name: string; avatar_url: string | null }>()
+  if (authorIds.length > 0) {
+    const { data: profiles } = await supabase
+      .from('user_profiles')
+      .select('id, name, avatar_url')
+      .in('id', authorIds)
+    for (const row of profiles ?? []) {
+      authorById.set(row.id as string, {
+        id: row.id as string,
+        name: displayName(row.name as string | null, null),
+        avatar_url: (row.avatar_url as string | null) ?? null,
+      })
+    }
+  }
+
+  // Batch-fetch image/video media attachments.
+  const { data: mediaRows } = await supabase
+    .from('post_media')
+    .select('post_id, kind, storage_path')
+    .in('post_id', postIds)
+
+  const mediaByPost: Record<string, { kind: string; url: string }[]> = {}
+  for (const row of mediaRows ?? []) {
+    const { data: pub } = supabase.storage.from('post-media').getPublicUrl(row.storage_path as string)
+    if (!mediaByPost[row.post_id as string]) mediaByPost[row.post_id as string] = []
+    mediaByPost[row.post_id as string].push({
+      kind: row.kind as string,
+      url: pub.publicUrl,
+    })
+  }
+
   const responsePosts = combined.map(p => {
-    const author = p.author as unknown as { id: string; name: string | null } | null
+    const author = authorById.get(p.user_id)
+      ?? { id: p.user_id, name: 'Student', avatar_url: null }
     return {
       id: p.id,
       user_id: p.user_id,
-      author: author ?? { id: p.user_id, name: null },
+      author,
       title: p.title,
       body: p.body,
       visibility: p.visibility,
       course_id: p.course_id,
+      post_kind: p.post_kind,
       likes_count: p.likes_count,
       comments_count: p.comments_count,
       has_liked: likedSet.has(p.id),
       hashtags: hashtagsByPost[p.id] ?? [],
       attachments: attachmentsByPost[p.id] ?? [],
+      media: mediaByPost[p.id] ?? [],
       created_at: p.created_at,
       updated_at: p.updated_at,
     }

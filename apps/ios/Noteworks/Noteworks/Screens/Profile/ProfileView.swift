@@ -13,6 +13,10 @@ import SwiftUI
 
 struct ProfileView: View {
     @Binding var selectedTab: AppTab?
+    /// Tab to return to when the user taps the back chevron. Driven by
+    /// `MainTabView.lastMainTab` so we mirror the JSX `lastMainPage`
+    /// behaviour (noteworks-library.jsx L9346 / L10827).
+    var previousTab: AppTab = .home
     @EnvironmentObject var appState: AppState
     @StateObject private var viewModel = ProfileViewModel()
 
@@ -20,12 +24,11 @@ struct ProfileView: View {
 
     @State private var showSearch: Bool = false
     @State private var showNotifications: Bool = false
-    // Brand-new users see an empty inbox until real notifications are
-    // wired to the server. `HomeNotification.samples` stays defined
-    // for SwiftUI previews only.
-    @State private var notifications: [HomeNotification] = []
+    /// Note id pushed onto the Profile nav stack when the user picks a
+    /// note from the search popup. `nil` means "no editor on screen".
+    @State private var searchedNoteId: String?
 
-    private var unreadCount: Int { notifications.filter(\.unread).count }
+    private var unreadCount: Int { appState.notifications.unreadCount }
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -53,6 +56,9 @@ struct ProfileView: View {
         }
         .overlay { notificationsOverlay }
         .overlay { searchOverlay }
+        .navigationDestination(item: $searchedNoteId) { noteId in
+            NoteEditorView(noteId: noteId)
+        }
         .navigationBarHidden(true)
         .onChange(of: viewModel.profile) { _, _ in
             viewModel.syncAboutDraftFromProfile()
@@ -76,6 +82,17 @@ struct ProfileView: View {
             ProfileBadgePill()
 
             HStack(alignment: .top, spacing: 16) {
+                // Back chevron — mirrors the GlassIconBtn rendered at
+                // noteworks-library.jsx L8913 immediately left of the
+                // "Profile" title. Returns to whichever main tab the
+                // user came from.
+                ProfileGlassIconButton(systemName: "chevron.left") {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                        selectedTab = previousTab
+                    }
+                }
+                .padding(.top, 4)
+
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Profile")
                         .font(.system(size: 36, weight: .bold))
@@ -126,8 +143,8 @@ struct ProfileView: View {
                 }
             }
 
-            // Active avatar — tap to leave Profile back to the previous tab.
-            ProfileAvatarTopBarButton(profile: viewModel.profile, active: true) {
+            // Same glass chip treatment as search / alerts — tap returns Home.
+            ProfileAvatarTopBarButton(profile: viewModel.profile) {
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                     selectedTab = .home
                 }
@@ -147,7 +164,7 @@ struct ProfileView: View {
                 HStack {
                     Spacer()
                     NotificationDropdown(
-                        notifications: $notifications,
+                        store: appState.notifications,
                         onClose: {
                             withAnimation(.easeInOut(duration: 0.2)) { showNotifications = false }
                         }
@@ -165,7 +182,20 @@ struct ProfileView: View {
     @ViewBuilder
     private var searchOverlay: some View {
         if showSearch {
-            SearchPopupView(isPresented: $showSearch)
+            SearchPopupView(
+                isPresented: $showSearch,
+                onSelectCommunityPost: { post in
+                    // Profile lives outside the main tab set, so we hop
+                    // back into Community to use its detail popup.
+                    appState.pendingCommunityPost = post
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                        selectedTab = .people
+                    }
+                },
+                onSelectLocalNote: { note in
+                    searchedNoteId = note.id
+                }
+            )
                 .transition(.opacity)
                 .zIndex(60)
         }
@@ -330,37 +360,33 @@ private struct ProfileTopBarIconButton: View {
                 }
                 .shadow(color: .black.opacity(0.04), radius: 2, x: 0, y: 1)
         }
+        .tint(ProfileTheme.textPrimary)
         .buttonStyle(PillPressStyle())
+        .focusEffectDisabled()
     }
 }
 
-/// Active-state avatar version used as the rightmost icon when on the
-/// Profile page (JSX L1197–L1218 — TopBar's avatar button uses
-/// `active=true` styling: tinted background, accent border, square-ish radius).
+/// Avatar in a 44×44 glass circle — matches `ProfileTopBarIconButton` so
+/// there is no extra accent “frame” around the initials / photo.
 private struct ProfileAvatarTopBarButton: View {
     let profile: Profile
-    var active: Bool = true
     var action: () -> Void = {}
 
     var body: some View {
         Button(action: action) {
             AvatarBadge(profile: profile, size: 44, fontSize: 12)
-                .overlay {
-                    RoundedRectangle(cornerRadius: active ? 12 : 22, style: .continuous)
-                        .strokeBorder(
-                            active ? ProfileTheme.accent.opacity(0.4) : ProfileTheme.glassBorder,
-                            lineWidth: active ? 1.5 : 1
-                        )
-                }
-                .background {
-                    RoundedRectangle(cornerRadius: active ? 12 : 22, style: .continuous)
-                        .fill(active ? ProfileTheme.accent.opacity(0.15) : Color.white.opacity(0.35))
-                }
-                .clipShape(RoundedRectangle(cornerRadius: active ? 12 : 22, style: .continuous))
                 .frame(width: 44, height: 44)
+                .background(Color.white.opacity(0.35))
+                .background(.ultraThinMaterial)
+                .clipShape(Circle())
+                .overlay {
+                    Circle().strokeBorder(ProfileTheme.glassBorder, lineWidth: 1)
+                }
                 .shadow(color: .black.opacity(0.04), radius: 2, x: 0, y: 1)
         }
+        .tint(ProfileTheme.textPrimary)
         .buttonStyle(PillPressStyle())
+        .focusEffectDisabled()
     }
 }
 

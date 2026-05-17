@@ -277,6 +277,28 @@ struct Note: Codable, Identifiable, Equatable, Hashable {
     }
 }
 
+extension Note {
+    /// Short label shown in the upper-right pill of library note cards
+    /// (and any other place we need a one-glance "where does this note
+    /// live" cue). Every note belongs to a bubble, so when one is set we
+    /// surface its name — that's the source of truth for the note. Only
+    /// notes in the **Unnamed** bucket fall back to the explicit `tag`
+    /// (e.g. "Draft", "Public"), so a fresh draft on the launchpad still
+    /// reads as a draft until the user files it into a bubble.
+    var displayBadge: String? {
+        if let trimmedSubject = subject?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !trimmedSubject.isEmpty,
+           !NotesStore.isReservedName(trimmedSubject) {
+            return trimmedSubject
+        }
+        if let trimmedTag = tag?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !trimmedTag.isEmpty {
+            return trimmedTag
+        }
+        return nil
+    }
+}
+
 /// Persisted shape of the whole local store.
 struct StoreSnapshot: Codable, Equatable {
     var bubbleNames: [String]
@@ -333,7 +355,7 @@ final class NotesStore: ObservableObject {
 
     // MARK: - Reserved names (match JSX L7002–L7004)
 
-    static let reservedBubbleNames: Set<String> = ["unnamed", "uncategorized"]
+    nonisolated static let reservedBubbleNames: Set<String> = ["unnamed", "uncategorized"]
 
     // MARK: - Dependencies
 
@@ -932,11 +954,14 @@ final class NotesStore: ObservableObject {
         bubbleNames = bubbles.map(\.name)
     }
 
-    static func normalizeBubbleName(_ raw: String) -> String {
+    nonisolated static func normalizeBubbleName(_ raw: String) -> String {
         raw.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    static func isReservedName(_ name: String) -> Bool {
+    /// Pure check against a constant set — safe to call from any actor
+    /// context (e.g. `Note.displayBadge`, background validation), so it
+    /// opts out of `NotesStore`'s `@MainActor` isolation.
+    nonisolated static func isReservedName(_ name: String) -> Bool {
         reservedBubbleNames.contains(name.lowercased())
     }
 }

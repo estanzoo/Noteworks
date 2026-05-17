@@ -16,7 +16,13 @@ struct ContentView: View {
                 // Cold-launch restore in flight — never flash Welcome
                 // under a returning user.
                 SplashView()
-            } else if appState.profile?.hasCompletedOnboarding == true {
+            } else if appState.profile?.hasCompletedOnboarding == true || appState.isGuestMode {
+                // Real signed-in user with completed onboarding, OR a
+                // guest who tapped "Skip, set up later" — both go to
+                // the main tab view. Guest mode just means there's no
+                // `profile` / `accessToken` underneath; the local-only
+                // surfaces still work, and any server-backed feature
+                // surfaces a sign-in prompt as it already does today.
                 MainTabView()
             } else {
                 // Single OnboardingFlow position keeps SwiftUI view identity

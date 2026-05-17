@@ -179,7 +179,7 @@ struct NoteEditorView: View {
                             guard !token.isEmpty else { throw CommunityError.unauthorized }
                             var created = try await CommunityService.shared.createPost(request, accessToken: token)
                             if let me = appState.profile {
-                                created.author = PostAuthor(id: me.id, name: me.displayName)
+                                created.author = PostAuthor(id: me.id, name: me.displayName, avatarUrl: me.avatarUrl)
                             }
                             return created
                         }
@@ -782,13 +782,33 @@ struct NoteEditorView: View {
                 ZoomablePageScrollView(
                     contentSize: logicalPageSize,
                     maxScale: 3.0,
+                    // A "next" swipe from the last page _creates_ a new
+                    // one — we let the gesture host know so it can apply
+                    // resistance + a haptic cue instead of letting the
+                    // page glide off as if it were just navigation.
+                    nextSwipeCreatesPage: viewModel.currentPage >= viewModel.totalPages,
+                    atFirstPage: viewModel.currentPage <= 1,
                     onSwipeNext: { viewModel.goToNextPage() },
                     onSwipePrevious: { viewModel.goToPreviousPage() }
                 ) {
                     pageCard(logicalPageSize: logicalPageSize, rotation: rotation)
                 }
                 .frame(width: geometry.size.width, height: geometry.size.height)
+
+                if viewModel.showNewPageFlash {
+                    NewPageFlashIndicator()
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .allowsHitTesting(false)
+                        .transition(
+                            .scale(scale: 0.86)
+                                .combined(with: .opacity)
+                        )
+                }
             }
+            .animation(
+                .spring(response: 0.32, dampingFraction: 0.78),
+                value: viewModel.showNewPageFlash
+            )
             .contentShape(Rectangle())
             .onTapGesture {
                 if openPanel != nil { openPanel = nil }
@@ -928,6 +948,44 @@ struct NoteEditorView: View {
         )
         .overlay(Capsule().strokeBorder(NoteEditorTheme.chromeBorder, lineWidth: 1))
         .animation(.easeInOut(duration: 0.18), value: viewModel.statusText)
+    }
+}
+
+// MARK: - New page flash indicator
+
+/// Centered "New page" pill that pops into view for a beat right after a
+/// new page is created via swipe (or via the toolbar + button). Mirrors
+/// the JSX `.new-page-indicator` card in `noteworks-library.jsx`: glass
+/// material, accent stroke + glow, uppercase label next to a doc-plus
+/// glyph. The indicator never blocks input — the editor passes
+/// `.allowsHitTesting(false)` from the canvas overlay.
+private struct NewPageFlashIndicator: View {
+    var body: some View {
+        ZStack {
+            HStack(spacing: 10) {
+                Image(systemName: "doc.badge.plus")
+                    .font(.system(size: 18, weight: .semibold))
+                Text("New page")
+                    .font(.system(size: 13, weight: .heavy))
+                    .tracking(1.2)
+                    .textCase(.uppercase)
+            }
+            .foregroundStyle(NoteEditorTheme.accent)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 14)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(.ultraThinMaterial)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(NoteEditorTheme.accent.opacity(0.32), lineWidth: 1.5)
+            )
+            .shadow(color: NoteEditorTheme.accent.opacity(0.22), radius: 18, x: 0, y: 6)
+            .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 2)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .accessibilityLabel("New page added")
     }
 }
 

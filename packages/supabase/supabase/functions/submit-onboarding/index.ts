@@ -3,6 +3,7 @@ import { corsResponse, json, errorResponse } from '../_shared/cors.ts'
 
 const MAX_NAME = 255
 const MAX_SCHOOL = 255
+const MAX_MAJOR = 255
 const MAX_EMAIL = 255
 const MAX_COURSE_CODE = 50
 const MAX_COURSE_CODES = 50
@@ -18,6 +19,7 @@ type ValidBody = {
   school_id: string | null
   school_email: string
   course_codes: string[]
+  major: string | null
 }
 
 function validate(body: unknown): ValidBody | { errors: Record<string, string> } {
@@ -37,6 +39,7 @@ function validate(body: unknown): ValidBody | { errors: Record<string, string> }
   const school_id =
     typeof o.school_id === 'string' && /^[0-9a-f-]{36}$/i.test(o.school_id) ? o.school_id : null
   const school_email = typeof o.school_email === 'string' ? o.school_email.trim() : ''
+  const majorRaw = typeof o.major === 'string' ? o.major.trim() : ''
 
   let course_codes: string[] = []
   if (Array.isArray(o.course_codes)) {
@@ -74,8 +77,21 @@ function validate(body: unknown): ValidBody | { errors: Record<string, string> }
     }
   }
 
+  if (majorRaw.length > MAX_MAJOR) {
+    errors.major = `Major must be at most ${MAX_MAJOR} characters`
+  }
+  const major = majorRaw.length > 0 ? majorRaw : null
+
   if (Object.keys(errors).length > 0) return { errors }
-  return { name, year_of_graduation, school_affiliation, school_id, school_email, course_codes }
+  return {
+    name,
+    year_of_graduation,
+    school_affiliation,
+    school_id,
+    school_email,
+    course_codes,
+    major,
+  }
 }
 
 Deno.serve(async (req) => {
@@ -110,6 +126,7 @@ Deno.serve(async (req) => {
       school_affiliation: validated.school_affiliation,
       school_email: validated.school_email,
       course_codes: validated.course_codes,
+      major: validated.major,
       onboarding_completed_at: now,
       updated_at: now,
     })

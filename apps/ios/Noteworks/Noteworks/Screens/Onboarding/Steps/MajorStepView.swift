@@ -29,7 +29,7 @@ struct MajorStepView: View {
 
                         OnboardingRow(disabled: false, onNext: handleNext) {
                             OnboardingField(
-                                label: "Faculty Name",
+                                label: "Faculty/School Name",
                                 placeholder: "e.g. School of Engineering",
                                 disabled: data.undeclared,
                                 text: $data.school

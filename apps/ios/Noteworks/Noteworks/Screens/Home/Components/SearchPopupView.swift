@@ -10,9 +10,9 @@ import SwiftUI
 /// Shared search overlay used from Home, CourseSpace, Profile, and
 /// Community. Two tabs:
 ///   - **Your Notes** — searches `NotesStore.notes` in memory by title or
-///     subject substring. Tapping a result currently just dismisses; the
-///     local-notes screens already render notes, so deep navigation isn't
-///     required from this surface yet.
+///     subject substring. Tapping a result invokes `onSelectLocalNote`,
+///     which the caller wires up to push the note's editor onto its
+///     navigation stack.
 ///   - **Community** — hits `search-posts` on the backend with a 300ms
 ///     keystroke debounce, then renders post-shaped cards. Tapping a
 ///     result invokes `onSelectCommunityPost`, which the caller wires up
@@ -30,6 +30,12 @@ struct SearchPopupView: View {
     /// Invoked when the user taps a community search result. Defaults to
     /// a no-op so non-Community callers don't have to provide one.
     var onSelectCommunityPost: (CommunityPost) -> Void = { _ in }
+
+    /// Invoked when the user taps one of their own notes in the "Your
+    /// Notes" tab. Callers typically use this to navigate to the
+    /// `NoteEditorView` for that note. Defaults to a no-op so screens that
+    /// don't have a nav destination for notes can opt out gracefully.
+    var onSelectLocalNote: (Note) -> Void = { _ in }
 
     @State private var query = ""
     @State private var searchTab: SearchTab
@@ -63,17 +69,19 @@ struct SearchPopupView: View {
     init(
         isPresented: Binding<Bool>,
         initialTab: SearchTab = .yours,
-        onSelectCommunityPost: @escaping (CommunityPost) -> Void = { _ in }
+        onSelectCommunityPost: @escaping (CommunityPost) -> Void = { _ in },
+        onSelectLocalNote: @escaping (Note) -> Void = { _ in }
     ) {
         self._isPresented = isPresented
         self.initialTab = initialTab
         self.onSelectCommunityPost = onSelectCommunityPost
+        self.onSelectLocalNote = onSelectLocalNote
         _searchTab = State(initialValue: initialTab)
     }
 
     /// Local note hits. Empty when the query is blank or the Community
     /// tab is active.
-    private var noteResults: [(title: String, subject: String?)] {
+    private var noteResults: [Note] {
         guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return [] }
         guard searchTab == .yours else { return [] }
         let q = query.lowercased()
@@ -82,7 +90,6 @@ struct SearchPopupView: View {
                 $0.title.lowercased().contains(q) ||
                 ($0.subject ?? "").lowercased().contains(q)
             }
-            .map { ($0.title, $0.subject) }
     }
 
     var body: some View {
@@ -219,8 +226,9 @@ struct SearchPopupView: View {
     private var yourNotesResultsView: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 12) {
-                ForEach(Array(noteResults.enumerated()), id: \.offset) { _, note in
+                ForEach(noteResults, id: \.id) { note in
                     SearchResultCard(title: note.title, subject: note.subject) {
+                        onSelectLocalNote(note)
                         dismiss()
                     }
                 }

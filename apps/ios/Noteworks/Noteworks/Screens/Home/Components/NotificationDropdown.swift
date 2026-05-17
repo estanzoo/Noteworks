@@ -7,15 +7,18 @@ import SwiftUI
 
 // MARK: - Notification Model
 
-struct HomeNotification: Identifiable {
-    let id: Int
+struct HomeNotification: Identifiable, Equatable {
+    let id: String
     let type: NotificationType
     let text: String
-    let time: String
+    /// Absolute creation time. The row label ("2m ago" / "Oct 14") is
+    /// derived from this on render so the timestamp keeps drifting as
+    /// the dropdown stays open across days.
+    let createdAt: Date
     var unread: Bool
 
-    enum NotificationType: String {
-        case share, comment, update, system
+    enum NotificationType: String, Equatable {
+        case share, comment, update, system, post, like, mention
 
         var icon: String {
             switch self {
@@ -23,32 +26,68 @@ struct HomeNotification: Identifiable {
             case .comment: return "bubble.right"
             case .update:  return "square.stack.3d.up"
             case .system:  return "info.circle"
+            case .post:    return "person.2.fill"
+            case .like:    return "heart.fill"
+            case .mention: return "at"
             }
         }
+    }
+
+    init(id: String = UUID().uuidString,
+         type: NotificationType,
+         text: String,
+         createdAt: Date = Date(),
+         unread: Bool = true) {
+        self.id = id
+        self.type = type
+        self.text = text
+        self.createdAt = createdAt
+        self.unread = unread
     }
 }
 
 // MARK: - Sample Data
 
 extension HomeNotification {
-    static let samples: [HomeNotification] = [
-        .init(id: 1, type: .share,   text: "Amy shared Cell Biology notes with you",    time: "2m ago",  unread: true),
-        .init(id: 2, type: .comment, text: "Sam commented on your Organic Chem note",   time: "15m ago", unread: true),
-        .init(id: 3, type: .update,  text: "Your Lab Report was enhanced by AI",        time: "1h ago",  unread: false),
-        .init(id: 4, type: .share,   text: "Sam shared Grammer Rules with you",         time: "3h ago",  unread: false),
-        .init(id: 5, type: .system,  text: "Welcome to NoteWorks Beta!",                time: "1d ago",  unread: false),
-    ]
+    /// Seeded onto every brand-new session — gives the dropdown content
+    /// before the user has any real activity (matches the JSX mock at
+    /// noteworks-library.jsx L109–L114). The "share" / "comment" rows
+    /// are illustrative placeholders; once real share/comment events
+    /// start flowing they'll show up in front of these.
+    static func seed() -> [HomeNotification] {
+        let now = Date()
+        return [
+            .init(type: .share,
+                  text: "Amy shared Cell Biology notes with you",
+                  createdAt: now.addingTimeInterval(-120),
+                  unread: true),
+            .init(type: .comment,
+                  text: "Sam commented on your Organic Chem note",
+                  createdAt: now.addingTimeInterval(-900),
+                  unread: true),
+            .init(type: .update,
+                  text: "Your Lab Report was enhanced by AI",
+                  createdAt: now.addingTimeInterval(-3_600),
+                  unread: false),
+            .init(type: .share,
+                  text: "Sam shared Grammar Rules with you",
+                  createdAt: now.addingTimeInterval(-10_800),
+                  unread: false),
+            .init(type: .system,
+                  text: "Welcome to NoteWorks Beta!",
+                  createdAt: now.addingTimeInterval(-86_400),
+                  unread: false),
+        ]
+    }
 }
 
 // MARK: - Notification Dropdown
 
 struct NotificationDropdown: View {
-    @Binding var notifications: [HomeNotification]
+    @ObservedObject var store: NotificationsStore
     let onClose: () -> Void
 
-    private var unreadCount: Int {
-        notifications.filter(\.unread).count
-    }
+    private var unreadCount: Int { store.unreadCount }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -108,11 +147,18 @@ struct NotificationDropdown: View {
     private var itemList: some View {
         ScrollView {
             VStack(spacing: 0) {
-                ForEach(notifications) { notif in
-                    NotificationRow(notification: notif) {
-                        if let idx = notifications.firstIndex(where: { $0.id == notif.id }) {
+                if store.items.isEmpty {
+                    Text("You're all set — new community posts and replies will show up here.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(HomeTheme.textMuted)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 24)
+                } else {
+                    ForEach(store.items) { notif in
+                        NotificationRow(notification: notif) {
                             withAnimation(.easeInOut(duration: 0.2)) {
-                                notifications[idx].unread = false
+                                store.markRead(notif.id)
                             }
                         }
                     }
@@ -127,9 +173,7 @@ struct NotificationDropdown: View {
     private var footer: some View {
         Button {
             withAnimation(.easeInOut(duration: 0.2)) {
-                for i in notifications.indices {
-                    notifications[i].unread = false
-                }
+                store.markAllRead()
             }
         } label: {
             Text(unreadCount > 0 ? "Mark all as read" : "All caught up!")
@@ -140,6 +184,26 @@ struct NotificationDropdown: View {
         }
         .buttonStyle(.plain)
     }
+}
+
+// MARK: - Relative time
+
+/// Mirrors the "2m ago / 15m ago / 1h ago / 3h ago / 1d ago" labels in
+/// the JSX mock — short and stable enough to align with the design.
+private func notificationRelativeTime(_ date: Date) -> String {
+    let delta = max(0, Int(Date().timeIntervalSince(date)))
+    if delta < 45 { return "just now" }
+    let minutes = delta / 60
+    if minutes < 60 { return "\(minutes)m ago" }
+    let hours = minutes / 60
+    if hours < 24 { return "\(hours)h ago" }
+    let days = hours / 24
+    if days < 7 { return "\(days)d ago" }
+    let weeks = days / 7
+    if weeks < 5 { return "\(weeks)w ago" }
+    let formatter = DateFormatter()
+    formatter.dateFormat = "MMM d"
+    return formatter.string(from: date)
 }
 
 // MARK: - Notification Row
@@ -165,7 +229,7 @@ private struct NotificationRow: View {
                         .lineLimit(3)
                         .multilineTextAlignment(.leading)
 
-                    Text(notification.time)
+                    Text(notificationRelativeTime(notification.createdAt))
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(HomeTheme.textMuted)
                 }

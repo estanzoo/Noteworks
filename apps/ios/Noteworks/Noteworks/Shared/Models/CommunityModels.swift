@@ -19,9 +19,13 @@ struct PostAuthor: Codable, Equatable, Identifiable {
     /// nullable — newly signed-up users haven't picked a display name yet,
     /// in which case the server returns `name: null`.
     let name: String?
+    /// Public URL of the author's avatar in the `avatars` storage bucket.
+    /// `nil` if the user hasn't uploaded a photo yet — the avatar view
+    /// falls back to coloured initials in that case.
+    let avatarUrl: String?
 }
 
-// MARK: - Attachment
+// MARK: - Attachments
 
 /// A note attached to a post. The server links posts to notes via the
 /// `post_attachments` table; each row includes whether the note has a PDF
@@ -33,6 +37,45 @@ struct PostAttachment: Codable, Equatable, Identifiable {
     let pdfFilename: String?
 
     var id: String { noteId }
+}
+
+/// Image / video file attached to a post. Lives in the public `post-media`
+/// storage bucket; the server returns the resolved public URL directly.
+/// `kind` is "image" today; "video" is reserved for a later milestone.
+struct PostMedia: Codable, Equatable, Identifiable {
+    let kind: String
+    let url: String
+
+    var id: String { url }
+    var isImage: Bool { kind == "image" }
+}
+
+// MARK: - Post kind
+
+/// The "Post to" channel in the New Post composer
+/// (noteworks-library.jsx L7956-7962). Stored on `posts.post_kind`.
+enum PostKind: String, Codable, CaseIterable, Equatable {
+    case note
+    case studyQuestions = "study_questions"
+    case discussions
+
+    /// Label shown on the chip + the post card pill.
+    var label: String {
+        switch self {
+        case .note: return "Note"
+        case .studyQuestions: return "Study Questions"
+        case .discussions: return "Discussions"
+        }
+    }
+
+    /// SF Symbol used on the chip in the composer and the pill on the card.
+    var icon: String {
+        switch self {
+        case .note: return "doc.text"
+        case .studyQuestions: return "questionmark.circle"
+        case .discussions: return "bubble.left.and.bubble.right"
+        }
+    }
 }
 
 // MARK: - Post
@@ -60,13 +103,19 @@ struct CommunityPost: Codable, Equatable, Identifiable {
     /// The custom decoder below collapses both into `attachments` so the
     /// rest of the app deals with a single shape.
     var attachments: [PostAttachment]
+    /// Image / video media (returned by all read endpoints; absent on
+    /// `create-post`'s response — derived locally from the upload step).
+    var media: [PostMedia]
+    /// Channel selected in the "Post to" segmented control. Defaults to
+    /// `.discussions` when the server omits the field (older clients).
+    var postKind: PostKind
     let createdAt: Date
     var updatedAt: Date
 
     enum CodingKeys: String, CodingKey {
         case id, userId, author, title, body, visibility, courseId
         case likesCount, commentsCount, hasLiked, hashtags
-        case attachments, createdAt, updatedAt
+        case attachments, media, postKind, createdAt, updatedAt
     }
 
     init(from decoder: Decoder) throws {
@@ -82,6 +131,13 @@ struct CommunityPost: Codable, Equatable, Identifiable {
         commentsCount = try c.decode(Int.self, forKey: .commentsCount)
         hasLiked = try c.decodeIfPresent(Bool.self, forKey: .hasLiked)
         hashtags = try c.decodeIfPresent([String].self, forKey: .hashtags) ?? []
+        media = try c.decodeIfPresent([PostMedia].self, forKey: .media) ?? []
+        if let raw = try c.decodeIfPresent(String.self, forKey: .postKind),
+           let parsed = PostKind(rawValue: raw) {
+            postKind = parsed
+        } else {
+            postKind = .discussions
+        }
         createdAt = try c.decode(Date.self, forKey: .createdAt)
         updatedAt = try c.decode(Date.self, forKey: .updatedAt)
 
@@ -111,6 +167,8 @@ struct CommunityPost: Codable, Equatable, Identifiable {
         hasLiked: Bool?,
         hashtags: [String],
         attachments: [PostAttachment],
+        media: [PostMedia] = [],
+        postKind: PostKind = .discussions,
         createdAt: Date,
         updatedAt: Date
     ) {
@@ -126,6 +184,8 @@ struct CommunityPost: Codable, Equatable, Identifiable {
         self.hasLiked = hasLiked
         self.hashtags = hashtags
         self.attachments = attachments
+        self.media = media
+        self.postKind = postKind
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -136,12 +196,13 @@ extension CommunityPost {
     /// the server omits `has_liked`).
     var liked: Bool { hasLiked ?? false }
 
-    /// Convenience for the heart/avatar UI — falls back to "Anonymous" if
-    /// the server hasn't populated the joined author row, or if the user
-    /// hasn't set a display name yet (server returns `name: null`).
+    /// Convenience for the heart/avatar UI. Server-side now always returns
+    /// a non-empty name (`users.name` is backfilled and falls back to the
+    /// email prefix in every author join), so this only matters for the
+    /// rare case where the joined row is missing entirely.
     var authorName: String {
         if let name = author?.name, !name.isEmpty { return name }
-        return "Anonymous"
+        return "Student"
     }
 }
 
@@ -154,7 +215,11 @@ struct CommunityComment: Codable, Equatable, Identifiable {
     let id: String
     let postId: String
     let userId: String
-    let author: PostAuthor
+    /// Mutable so a Profile-screen edit by the comment's author can be
+    /// reflected in any already-loaded thread without re-fetching.
+    /// See `CommunityViewModel.applyAvatar` / `CommunityPostDetailPopup`
+    /// `.onChange(of: appState.profile)`.
+    var author: PostAuthor
     let parentCommentId: String?
     var body: String
     var likesCount: Int
@@ -229,11 +294,9 @@ extension CommunityComment {
     }
 
     /// Display name with the same fallback rules as `CommunityPost.authorName`.
-    /// Necessary because the server returns `author.name: null` for users
-    /// who haven't set a display name yet.
     var authorName: String {
         if let name = author.name, !name.isEmpty { return name }
-        return "Anonymous"
+        return "Student"
     }
 }
 
@@ -312,13 +375,19 @@ struct CreatePostRequest: Encodable {
     let body: String
     let visibility: String
     let courseId: String?
+    let postKind: PostKind?
     let attachmentNoteIds: [String]?
+    /// Storage paths returned by `upload-post-media`, one per image
+    /// (Photo / Video button in the composer).
+    let mediaPaths: [String]?
     let hashtags: [String]?
 
     enum CodingKeys: String, CodingKey {
         case title, body, visibility
         case courseId = "course_id"
+        case postKind = "post_kind"
         case attachmentNoteIds = "attachment_note_ids"
+        case mediaPaths = "media_paths"
         case hashtags
     }
 }

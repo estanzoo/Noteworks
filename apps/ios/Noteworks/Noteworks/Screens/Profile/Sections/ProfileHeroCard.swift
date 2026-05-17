@@ -11,6 +11,7 @@ import PhotosUI
 
 struct ProfileHeroCard: View {
     @ObservedObject var viewModel: ProfileViewModel
+    @EnvironmentObject private var appState: AppState
     @State private var photoItem: PhotosPickerItem?
 
     /// Available width inside the hero card. We measure once with a
@@ -52,7 +53,10 @@ struct ProfileHeroCard: View {
             guard let newItem else { return }
             Task { @MainActor in
                 if let data = try? await newItem.loadTransferable(type: Data.self) {
-                    viewModel.setPhoto(data)
+                    // Fires the upload + AppState.refreshProfile pipeline so
+                    // the new photo propagates to community posts/comments
+                    // on the next feed read.
+                    viewModel.setPhoto(data, using: appState)
                 }
             }
         }
@@ -63,7 +67,7 @@ struct ProfileHeroCard: View {
     private var sidebar: some View {
         // Capture out of the actor-isolated view model so the PhotosPicker's
         // `@Sendable` label closure can read it without a concurrency warning.
-        let hasPhoto = viewModel.profile.photoData != nil
+        let hasPhoto = viewModel.profile.photoData != nil || viewModel.profile.avatarUrl != nil
         return VStack(spacing: 12) {
             ZStack {
                 AvatarBadge(profile: viewModel.profile, size: 126, fontSize: 38)
@@ -110,7 +114,20 @@ struct ProfileHeroCard: View {
                 .overlay(Capsule().strokeBorder(ProfileTheme.accent.opacity(0.22), lineWidth: 1))
             }
 
-            if viewModel.profile.photoData != nil {
+            if viewModel.isUploadingPhoto {
+                Text("Uploading…")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(ProfileTheme.textMuted)
+            } else if let message = viewModel.photoUploadError {
+                Text(message)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.red.opacity(0.8))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+                    .frame(maxWidth: 180)
+            }
+
+            if hasPhoto {
                 ProfileSecondaryButton(title: "Remove Photo", compact: true) {
                     viewModel.removePhoto()
                 }

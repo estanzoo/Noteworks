@@ -1,5 +1,6 @@
 import { requireAuth } from '../_shared/auth.ts'
 import { corsResponse, json, errorResponse } from '../_shared/cors.ts'
+import { displayName } from '../_shared/author.ts'
 
 const MAX_BODY = 5_000
 
@@ -69,20 +70,33 @@ Deno.serve(async (req) => {
     })
     .select(`
       id, post_id, user_id, parent_comment_id, body,
-      likes_count, visibility, created_at, updated_at,
-      author:users!comments_user_id_fkey(id, name)
+      likes_count, visibility, created_at, updated_at
     `)
     .single()
 
   if (insertErr) return errorResponse('Insert failed', insertErr.message, 500)
 
-  const author = comment.author as unknown as { id: string; name: string | null } | null
+  // Resolve author via `user_profiles` view (RLS on `public.users`
+  // would otherwise block reading anyone but the caller).
+  const { data: profileRow } = await supabase
+    .from('user_profiles')
+    .select('id, name, avatar_url')
+    .eq('id', comment.user_id)
+    .maybeSingle()
+
+  const author = profileRow
+    ? {
+        id: profileRow.id as string,
+        name: displayName(profileRow.name as string | null, null),
+        avatar_url: (profileRow.avatar_url as string | null) ?? null,
+      }
+    : { id: comment.user_id, name: 'Student', avatar_url: null }
 
   return json({
     id: comment.id,
     post_id: comment.post_id,
     user_id: comment.user_id,
-    author: author ?? { id: comment.user_id, name: null },
+    author,
     parent_comment_id: comment.parent_comment_id,
     body: comment.body,
     likes_count: comment.likes_count,

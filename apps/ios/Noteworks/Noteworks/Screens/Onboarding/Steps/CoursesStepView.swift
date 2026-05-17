@@ -18,6 +18,7 @@ struct CoursesStepView: View {
     /// trimmed) once the user taps Continue.
     let onSave: ([String]) -> Void
     let onSkip: () -> Void
+    let onBack: () -> Void
 
     @State private var rows: [CourseDraft] = []
     @State private var displayMode: CourseDisplayMode = .code
@@ -87,6 +88,12 @@ struct CoursesStepView: View {
 
                 GlassCard {
                     VStack(alignment: .leading, spacing: 0) {
+                        HStack {
+                            OnboardingBackButton(action: onBack)
+                            Spacer()
+                        }
+                        .padding(.bottom, 8)
+
                         header
                             .padding(.bottom, 18)
 
@@ -350,19 +357,15 @@ struct CoursesStepView: View {
 
     // MARK: - State helpers
 
-    /// Hydrate rows the first time the step appears. Pulls from
-    /// `data.selectedCourseCodes` (the codes the user just typed on
-    /// Interests). Falls back to a single empty row so the user has
-    /// somewhere to type — matches JSX `createCourseDraft(...)`
-    /// fallback at L1688.
+    /// Hydrate rows the first time the step appears. Interests from the
+    /// prior step are **not** copied here — they are not course codes.
+    /// `submit-onboarding` already sent `course_codes` derived from
+    /// interests for the profile wire format; this screen is only for
+    /// real classes → Home bubbles. Start with one empty row (same as
+    /// the JSX fallback when there is nothing to pre-seed).
     private func primeRowsIfNeeded() {
         guard rows.isEmpty else { return }
-        let codes = data.selectedCourseCodes
-        if codes.isEmpty {
-            rows = [CourseDraft.empty()]
-        } else {
-            rows = codes.map { CourseDraft(code: $0, name: "", noCode: false) }
-        }
+        rows = [CourseDraft.empty()]
     }
 
     private func appendRow() {
@@ -640,7 +643,8 @@ private struct NoteworksCheckboxStyle: ToggleStyle {
                 return d
             }(),
             onSave: { _ in },
-            onSkip: {}
+            onSkip: {},
+            onBack: {}
         )
     }
 }

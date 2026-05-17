@@ -85,7 +85,12 @@ struct CommunityCommentItem: View {
     @ViewBuilder
     private func commentEntry(_ entry: CommunityComment, nested: Bool) -> some View {
         HStack(alignment: .top, spacing: 10) {
-            CommunityAvatar(name: entry.authorName, size: nested ? 30 : 36, nested: nested)
+            CommunityAvatar(
+                name: entry.authorName,
+                size: nested ? 30 : 36,
+                nested: nested,
+                avatarUrl: entry.author.avatarUrl
+            )
 
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {

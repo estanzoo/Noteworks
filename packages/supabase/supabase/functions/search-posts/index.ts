@@ -20,6 +20,7 @@
 
 import { requireAuth } from '../_shared/auth.ts'
 import { corsResponse, json, errorResponse } from '../_shared/cors.ts'
+import { displayName } from '../_shared/author.ts'
 
 /// Escape `%`, `_`, and `\` so the user-supplied query is treated as a
 /// pure substring under ILIKE. Without this, typing `100%_off` would
@@ -35,11 +36,11 @@ interface PostRow {
   body: string
   visibility: string
   course_id: string | null
+  post_kind: string
   likes_count: number
   comments_count: number
   created_at: string
   updated_at: string
-  author: { id: string; name: string | null } | null
 }
 
 Deno.serve(async (req) => {
@@ -69,9 +70,8 @@ Deno.serve(async (req) => {
   let titleBodyQuery = supabase
     .from('posts')
     .select(`
-      id, user_id, title, body, visibility, course_id,
-      likes_count, comments_count, created_at, updated_at,
-      author:users!posts_user_id_fkey(id, name)
+      id, user_id, title, body, visibility, course_id, post_kind,
+      likes_count, comments_count, created_at, updated_at
     `)
     .is('deleted_at', null)
     .eq('visibility', 'public')
@@ -108,9 +108,8 @@ Deno.serve(async (req) => {
           let q = supabase
             .from('posts')
             .select(`
-              id, user_id, title, body, visibility, course_id,
-              likes_count, comments_count, created_at, updated_at,
-              author:users!posts_user_id_fkey(id, name)
+              id, user_id, title, body, visibility, course_id, post_kind,
+              likes_count, comments_count, created_at, updated_at
             `)
             .is('deleted_at', null)
             .eq('visibility', 'public')
@@ -198,21 +197,57 @@ Deno.serve(async (req) => {
 
   const likedSet = new Set((userLikes ?? []).map((l) => l.post_id))
 
+  // Authors — fetched separately via `user_profiles` to dodge the
+  // per-user RLS on `public.users` (otherwise the embedded join
+  // returns null for every author who isn't the caller, and the
+  // client falls back to "Student").
+  const authorIds = Array.from(new Set(sliced.map(p => p.user_id)))
+  const authorById = new Map<string, { id: string; name: string; avatar_url: string | null }>()
+  if (authorIds.length > 0) {
+    const { data: profiles } = await supabase
+      .from('user_profiles')
+      .select('id, name, avatar_url')
+      .in('id', authorIds)
+    for (const row of profiles ?? []) {
+      authorById.set(row.id as string, {
+        id: row.id as string,
+        name: displayName(row.name as string | null, null),
+        avatar_url: (row.avatar_url as string | null) ?? null,
+      })
+    }
+  }
+
+  // Image / video media
+  const { data: mediaRows } = await supabase
+    .from('post_media')
+    .select('post_id, kind, storage_path')
+    .in('post_id', postIds)
+
+  const mediaByPost: Record<string, { kind: string; url: string }[]> = {}
+  for (const row of mediaRows ?? []) {
+    const { data: pub } = supabase.storage.from('post-media').getPublicUrl(row.storage_path as string)
+    if (!mediaByPost[row.post_id as string]) mediaByPost[row.post_id as string] = []
+    mediaByPost[row.post_id as string].push({ kind: row.kind as string, url: pub.publicUrl })
+  }
+
   const responsePosts = sliced.map((p) => {
-    const author = p.author as unknown as { id: string; name: string | null } | null
+    const author = authorById.get(p.user_id)
+      ?? { id: p.user_id, name: 'Student', avatar_url: null }
     return {
       id: p.id,
       user_id: p.user_id,
-      author: author ?? { id: p.user_id, name: null },
+      author,
       title: p.title,
       body: p.body,
       visibility: p.visibility,
       course_id: p.course_id,
+      post_kind: p.post_kind,
       likes_count: p.likes_count,
       comments_count: p.comments_count,
       has_liked: likedSet.has(p.id),
       hashtags: hashtagsByPost[p.id] ?? [],
       attachments: attachmentsByPost[p.id] ?? [],
+      media: mediaByPost[p.id] ?? [],
       created_at: p.created_at,
       updated_at: p.updated_at,
     }

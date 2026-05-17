@@ -168,6 +168,14 @@ final class CommunityViewModel: ObservableObject {
             posts = page.posts
             nextCursor = page.nextCursor
             hasMore = page.nextCursor != nil
+            // Surface "Sam posted X" entries in the bell-icon inbox for
+            // every post on the feed that wasn't authored by the current
+            // user. The store dedupes by post id so a refresh of the
+            // same feed won't replay them.
+            appState?.notifications.recordNewCommunityPosts(
+                page.posts,
+                currentUserId: appState?.currentUser?.id
+            )
         } catch {
             guard generation == loadGeneration else { return }
             handle(error)
@@ -205,6 +213,10 @@ final class CommunityViewModel: ObservableObject {
             posts.append(contentsOf: newOnes)
             nextCursor = page.nextCursor
             hasMore = page.nextCursor != nil
+            appState?.notifications.recordNewCommunityPosts(
+                newOnes,
+                currentUserId: appState?.currentUser?.id
+            )
         } catch {
             guard generation == loadGeneration else { return }
             handle(error)
@@ -285,7 +297,7 @@ final class CommunityViewModel: ObservableObject {
         // the post correctly without a follow-up fetch.
         var withAuthor = created
         if let me = appState?.profile {
-            withAuthor.author = PostAuthor(id: me.id, name: me.displayName)
+            withAuthor.author = PostAuthor(id: me.id, name: me.displayName, avatarUrl: me.avatarUrl)
         }
         posts.insert(withAuthor, at: 0)
         return withAuthor
@@ -324,6 +336,19 @@ final class CommunityViewModel: ObservableObject {
         forbidden: String = "You don't have permission to do that.",
         notFound: String = "That post is no longer available"
     ) {
+        // SwiftUI's `.refreshable` cancels its task as soon as the user
+        // releases the pull-to-refresh gesture or the view re-renders.
+        // That cancellation throws `URLError.cancelled` / a generic
+        // `CancellationError`, which we'd otherwise mis-classify as
+        // "Network is unreachable" and flash on every refresh. Silently
+        // ignore it — the next loadInitialFeed will run normally.
+        if error is CancellationError { return }
+        if let urlErr = error as? URLError, urlErr.code == .cancelled { return }
+        if case APIError.networkError(let inner) = error {
+            if inner is CancellationError { return }
+            if let urlErr = inner as? URLError, urlErr.code == .cancelled { return }
+        }
+
         let mapped = mapCommunityError(error, forbidden: forbidden, notFound: notFound)
         if case .notFound = mapped {
             // Drop the missing post from the local feed so the user isn't
@@ -332,5 +357,54 @@ final class CommunityViewModel: ObservableObject {
             // not in the feed any more.)
         }
         feedError = mapped.userMessage
+    }
+
+    /// Patch every cached post whose `userId` matches the given user to
+    /// use a freshly-edited display name / avatar URL. Called by
+    /// `CommunityView` whenever `appState.profile` changes, so any
+    /// Profile-screen edit (avatar upload, name change, …) shows up on
+    /// the feed and any open detail popup immediately, without waiting
+    /// for the next network refresh. Posts authored by other users are
+    /// untouched — their data still comes back fresh on the next feed
+    /// load via the `user_profiles` view.
+    func applyAvatar(for userId: String, name: String?, avatarUrl: String?) {
+        for index in posts.indices where posts[index].userId == userId {
+            posts[index].author = PostAuthor(
+                id: userId,
+                name: name ?? posts[index].author?.name,
+                avatarUrl: avatarUrl
+            )
+        }
+    }
+}
+
+// MARK: - Author propagation helpers
+
+/// Recursively rebuild a comment thread, swapping the `author` block on
+/// every entry whose `userId` matches `targetUserId`. Used so a Profile
+/// edit (name / avatar) flows into an already-open post detail popup.
+/// Comments authored by other users are returned untouched.
+func patchComments(
+    _ comments: [CommunityComment],
+    targetUserId: String,
+    name: String?,
+    avatarUrl: String?
+) -> [CommunityComment] {
+    comments.map { existing in
+        var patched = existing
+        if existing.userId == targetUserId {
+            patched.author = PostAuthor(
+                id: targetUserId,
+                name: name ?? existing.author.name,
+                avatarUrl: avatarUrl
+            )
+        }
+        patched.replies = patchComments(
+            existing.replies,
+            targetUserId: targetUserId,
+            name: name,
+            avatarUrl: avatarUrl
+        )
+        return patched
     }
 }

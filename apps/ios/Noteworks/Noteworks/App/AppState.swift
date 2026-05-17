@@ -28,6 +28,15 @@ final class AppState: ObservableObject {
     @Published var accessToken: String?
     @Published var profile: UserProfile?
 
+    /// True when the user tapped "Skip, set up later" on Welcome and is
+    /// browsing without an account. There's no Supabase session, no
+    /// access token, and no `profile` — every server-backed feature is
+    /// effectively read-only/disabled — but the local-only surfaces
+    /// (Home, Library, Profile placeholder) work against the on-device
+    /// `notesStore` so the user can poke around. Cleared by `signOut()`
+    /// (and by any successful real sign-in).
+    @Published var isGuestMode: Bool = false
+
     /// Set by `bootstrap()` when a returning user has a valid session but
     /// `onboarding_completed_at` is still null (e.g. OAuth first run or a
     /// previously interrupted submission). `ContentView` uses this to pick
@@ -46,10 +55,21 @@ final class AppState: ObservableObject {
     /// chevron.
     @Published var isImmersiveEditing: Bool = false
 
+    /// One-shot inbox used to hand a community post off to
+    /// `CommunityView`. Search popups on Home / CourseSpace / Profile
+    /// set this when the user taps a community hit, then switch the
+    /// active tab to `.people`. `CommunityView` consumes the value on
+    /// the next `.onChange` and clears it back to `nil`.
+    @Published var pendingCommunityPost: CommunityPost?
+
     // MARK: - Dependencies
 
     let notesStore: NotesStore
     let authService: AuthServiceProtocol
+    /// Shared bell-icon inbox. Lives at app level so every tab reads the
+    /// same `items` array — previously each screen owned its own
+    /// `@State` empty list that reset on every tab switch.
+    let notifications: NotificationsStore
 
     /// Exposes the underlying Supabase client for `.onOpenURL` (Google OAuth redirect).
     var supabaseClient: SupabaseClient {
@@ -62,9 +82,19 @@ final class AppState: ObservableObject {
 
     // MARK: - Init
 
-    init(notesStore: NotesStore, authService: AuthServiceProtocol = SupabaseAuthService()) {
+    init(
+        notesStore: NotesStore,
+        authService: AuthServiceProtocol = SupabaseAuthService(),
+        notifications: NotificationsStore? = nil
+    ) {
         self.notesStore = notesStore
         self.authService = authService
+        // `NotificationsStore` is `@MainActor`, so we can't use a
+        // `NotificationsStore()` default on the parameter (the default
+        // expression is evaluated at the nonisolated call site). Instead
+        // take an optional and construct one here — `AppState` itself is
+        // `@MainActor`, so this call is allowed.
+        self.notifications = notifications ?? NotificationsStore()
 
         // Drop straight back to Welcome if `APIClient` exhausts its retry
         // (the user is genuinely signed out as far as Supabase is concerned).
@@ -109,6 +139,7 @@ final class AppState: ObservableObject {
             currentUser = AuthenticatedUser(id: restored.userId, email: restored.email)
             isAuthenticated = true
             notesStore.activate(userId: restored.userId)
+            notifications.resetForNewSession()
 
             do {
                 let fetched = try await authService.getUserProfile(accessToken: restored.accessToken)
@@ -142,7 +173,12 @@ final class AppState: ObservableObject {
         accessToken = result.accessToken
         currentUser = AuthenticatedUser(id: result.userId, email: result.email)
         isAuthenticated = true
+        // Drop the guest flag if a guest just signed in — the real
+        // session takes over and `notesStore` is re-scoped to the
+        // signed-in user below.
+        isGuestMode = false
         notesStore.activate(userId: result.userId)
+        notifications.resetForNewSession()
     }
 
     /// Re-fetches `profile`. Called after onboarding submit and whenever
@@ -162,7 +198,39 @@ final class AppState: ObservableObject {
     func signOut() async {
         try? await authService.signOut()
         notesStore.deactivate()
+        notifications.clear()
         clearSessionState()
+    }
+
+    /// Routes the user into `MainTabView` without a real Supabase session.
+    /// Used by the Welcome → "Skip, set up later" affordance so first-time
+    /// visitors can poke around the local-only surfaces (Home, Library,
+    /// Profile placeholder) before deciding to sign up. Activates the
+    /// notes store with a `guest` sentinel id so `notesStore.isReady`
+    /// flips and the Home bubble field renders instead of the
+    /// "still loading" placeholder.
+    func enterGuestMode() {
+        isGuestMode = true
+        // Make sure no stale session lingers — guests are deliberately
+        // signed out as far as the app is concerned.
+        accessToken = nil
+        currentUser = nil
+        profile = nil
+        isAuthenticated = false
+        resumeOnboardingAtCollege = false
+        notesStore.activate(userId: "guest")
+
+        // Seed a single "Untitled Bubble" on the very first guest
+        // session so Home matches the design spec
+        // (NoteWorks_UI 2/noteworks-library.jsx L2048: "Your Home will
+        // start with only one Untitled Bubble"). On subsequent guest
+        // sessions the persisted snapshot already contains whatever the
+        // user added, so we leave it alone.
+        if notesStore.bubbleNames.isEmpty {
+            notesStore.replaceBubbleNames(["Untitled Bubble"])
+        }
+
+        notifications.resetForNewSession()
     }
 
     /// Exposed to `APIClient`'s 401 retry hook. Returns the new access
@@ -191,5 +259,6 @@ final class AppState: ObservableObject {
         profile = nil
         isAuthenticated = false
         resumeOnboardingAtCollege = false
+        isGuestMode = false
     }
 }

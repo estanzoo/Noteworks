@@ -32,10 +32,6 @@ struct CourseSpaceView: View {
     @State private var newNoteId: String?
     @State private var showSearch = false
     @State private var showNotifications = false
-    // Brand-new users see an empty inbox until real notifications are
-    // wired to the server. `HomeNotification.samples` stays defined
-    // for SwiftUI previews only.
-    @State private var notifications: [HomeNotification] = []
 
     private var subjects: [String] {
         // Combine stored bubble names with any subjects that exist on notes
@@ -112,8 +108,8 @@ struct CourseSpaceView: View {
                                         showNotifications.toggle()
                                     }
                                 }
-                                if notifications.filter(\.unread).count > 0 && !showNotifications {
-                                    Text("\(notifications.filter(\.unread).count)")
+                                if appState.notifications.unreadCount > 0 && !showNotifications {
+                                    Text("\(appState.notifications.unreadCount)")
                                         .font(.system(size: 10, weight: .bold))
                                         .foregroundStyle(.white)
                                         .frame(width: 18, height: 18)
@@ -126,7 +122,10 @@ struct CourseSpaceView: View {
                                 }
                             }
 
-                            LibraryGlassIconButton(icon: "Icons/fluent_person-24-regular") {
+                            AppAvatarTopBarButton(
+                                name: appState.profile?.displayName ?? "",
+                                avatarUrl: appState.profile?.avatarUrl
+                            ) {
                                 withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                                     selectedTab = nil
                                 }
@@ -277,7 +276,7 @@ struct CourseSpaceView: View {
                     HStack {
                         Spacer()
                         NotificationDropdown(
-                            notifications: $notifications,
+                            store: appState.notifications,
                             onClose: {
                                 withAnimation(.easeInOut(duration: 0.2)) { showNotifications = false }
                             }
@@ -293,7 +292,25 @@ struct CourseSpaceView: View {
         }
         .overlay {
             if showSearch {
-                SearchPopupView(isPresented: $showSearch)
+                SearchPopupView(
+                    isPresented: $showSearch,
+                    onSelectCommunityPost: { post in
+                        // Hand off to Community tab — the detail popup
+                        // already lives there, so we just hop tabs and
+                        // let `CommunityView` open it.
+                        appState.pendingCommunityPost = post
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                            selectedTab = .people
+                        }
+                    },
+                    onSelectLocalNote: { note in
+                        // Reuse the existing `navigateToNewNote` plumbing
+                        // — same nav destination, just driven from search
+                        // instead of the FAB.
+                        newNoteId = note.id
+                        navigateToNewNote = true
+                    }
+                )
                     .transition(.opacity)
                     .zIndex(60)
             }
@@ -478,7 +495,9 @@ private struct LibraryGlassIconButton: View {
                 }
                 .shadow(color: .black.opacity(0.04), radius: 2, x: 0, y: 1)
         }
+        .tint(textPrimary)
         .buttonStyle(.plain)
+        .focusEffectDisabled()
     }
 }
 
@@ -613,21 +632,49 @@ private struct LibraryNoteCard: View {
                     .foregroundStyle(textPrimary)
                     .lineLimit(2)
 
-                Spacer()
+                Spacer(minLength: 8)
 
-                if let tag = note.tag, !tag.isEmpty {
-                    Text(tag)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(textSecondary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 4)
-                        .background(Color.white.opacity(0.4))
-                        .background(.ultraThinMaterial.opacity(0.3))
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 12)
-                                .strokeBorder(glassBorder, lineWidth: 1)
-                        }
+                HStack(alignment: .center, spacing: 8) {
+                    // Bookmark chip — mirrors the Library mock: small
+                    // rounded square, desaturated blue fill, solid accent
+                    // bookmark immediately left of the course pill.
+                    if note.bookmarked {
+                        Image(systemName: "bookmark.fill")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(accent)
+                            .frame(width: 32, height: 32)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(accent.opacity(0.14))
+                            )
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .strokeBorder(accent.opacity(0.2), lineWidth: 1)
+                            }
+                    }
+
+                    // Corner pill: every note belongs to a bubble, so we
+                    // surface the bubble name here. Notes that live in
+                    // the Unnamed bucket (no subject) fall back to their
+                    // explicit tag — typically "Draft" for a fresh note —
+                    // so the launchpad still distinguishes brand-new
+                    // drafts from filed notes.
+                    if let badge = note.displayBadge {
+                        Text(badge)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(textSecondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 4)
+                            .background(Color.white.opacity(0.4))
+                            .background(.ultraThinMaterial.opacity(0.3))
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 12)
+                                    .strokeBorder(glassBorder, lineWidth: 1)
+                            }
+                    }
                 }
             }
             .padding(.bottom, 12)
@@ -708,18 +755,6 @@ private struct LibraryNoteCard: View {
         .overlay {
             RoundedRectangle(cornerRadius: 24)
                 .strokeBorder(glassBorder, lineWidth: 1)
-        }
-        .overlay(alignment: .topLeading) {
-            if note.bookmarked {
-                Image(systemName: "bookmark.fill")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(accent)
-                    .padding(8)
-                    .background(Color.white.opacity(0.85), in: Circle())
-                    .overlay(Circle().strokeBorder(glassBorder, lineWidth: 1))
-                    .padding(12)
-                    .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
-            }
         }
         .shadow(color: .white.opacity(0.6), radius: 0, x: 0, y: -0.5)
         .shadow(color: .black.opacity(0.04), radius: 10, y: 4)

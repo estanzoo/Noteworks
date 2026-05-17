@@ -215,8 +215,10 @@ private struct NoteSessionTab: View {
     }
 
     private var metaLabel: String {
-        if note.tag == "Draft" { return "Draft" }
-        if let subject = note.subject, !subject.isEmpty { return subject }
+        // Mirrors `Note.displayBadge` — prefer the bubble name, fall back
+        // to the explicit tag ("Draft", "Public", …) only for notes in
+        // the Unnamed bucket.
+        if let badge = note.displayBadge { return badge }
         return "\(note.pageSettings.count) page\(note.pageSettings.count == 1 ? "" : "s")"
     }
 }

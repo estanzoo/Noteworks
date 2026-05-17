@@ -139,14 +139,19 @@ struct OnboardingFlow: View {
                     // the user just submitted and seeds Home's bubble
                     // field locally — equivalent to the JSX
                     // `saveCourseList` -> `setBubbleCategories(...)`
-                    // path (noteworks-library.jsx L9629–L9631). Skip
-                    // seeds a single "Untitled Bubble" so Home isn't
-                    // blank — matching the JSX `skipCourseSetup`
-                    // behaviour (L9641–L9646) and the promise the
-                    // confirm modal makes to the user. No back
-                    // button — onboarding has already been submitted
-                    // server-side, mirroring the JSX modal which only
-                    // exposes Skip / Continue.
+                    // path (noteworks-library.jsx L9629–L9631).
+                    //
+                    // Skip mirrors the JSX `skipCourseSetup` (L9641–L9646):
+                    // seed a single "Untitled Bubble" and drop straight
+                    // into Home — no celebration interstitial. We refresh
+                    // the profile so `ContentView` sees
+                    // `hasCompletedOnboarding == true` (set server-side by
+                    // `submit-onboarding` at the previous step) and
+                    // switches to `MainTabView` automatically. Continue
+                    // still routes through `.done` so the user sees the
+                    // "Let's get to work" celebration after a real save.
+                    // Back returns to Interests so the user can revise
+                    // selections before re-running submit from that step.
                     CoursesStepView(
                         data: data,
                         onSave: { codes in
@@ -156,8 +161,9 @@ struct OnboardingFlow: View {
                         },
                         onSkip: {
                             appState.notesStore.replaceBubbleNames(["Untitled Bubble"])
-                            step = .done
-                        }
+                            Task { await appState.refreshProfile() }
+                        },
+                        onBack: { step = .interests }
                     )
                 case .done:
                     // `submit-onboarding` already set `onboarding_completed_at`
@@ -168,11 +174,12 @@ struct OnboardingFlow: View {
                         Task { await appState.refreshProfile() }
                     })
                 case .skipped:
-                    // Skip is a demo / debug shortcut; keep the legacy
-                    // "force-authenticated" toggle so the existing entry
-                    // points still work, but real users land here only by
-                    // bypassing onboarding intentionally.
-                    SkippedView(onComplete: { appState.isAuthenticated = true })
+                    // "Skip, set up later" puts the user into guest mode:
+                    // no Supabase session, no profile, but `MainTabView`
+                    // still renders against the local notes store so the
+                    // user can poke around. They can sign in anytime
+                    // from Profile → Sign In to upgrade out of guest.
+                    SkippedView(onComplete: { appState.enterGuestMode() })
                 case .forgotPassword:
                     ForgotPasswordView(
                         email: $resetEmail,
@@ -424,13 +431,19 @@ struct OnboardingFlow: View {
                     return local.isEmpty ? "Noteworks User" : local
                 }()
 
+                let trimmedMajor = data.major.trimmingCharacters(in: .whitespacesAndNewlines)
+                let resolvedMajor: String? = data.undeclared || trimmedMajor.isEmpty
+                    ? nil
+                    : trimmedMajor
+
                 let payload = OnboardingPayload(
                     name: resolvedName,
                     yearOfGraduation: data.resolvedYearOfGraduation,
                     schoolAffiliation: data.schoolAffiliationForSubmit,
                     schoolId: data.notAStudent ? nil : data.selectedSchoolId,
                     schoolEmail: resolvedSchoolEmail,
-                    courseCodes: data.selectedCourseCodes
+                    courseCodes: data.selectedCourseCodes,
+                    major: resolvedMajor
                 )
                 try await appState.authService.submitOnboarding(
                     payload,

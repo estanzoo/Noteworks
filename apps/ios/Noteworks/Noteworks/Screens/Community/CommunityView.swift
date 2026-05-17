@@ -19,10 +19,6 @@ struct CommunityView: View {
     @State private var showPostEditor = false
     @State private var showSearch = false
     @State private var showNotifications = false
-    // Brand-new users see an empty inbox until real notifications are
-    // wired to the server. `HomeNotification.samples` stays defined
-    // for SwiftUI previews only.
-    @State private var notifications: [HomeNotification] = []
     @State private var activePostId: String? = nil
     /// Fallback storage for a post the user opened from the search
     /// popup that isn't (yet) in the loaded feed. The detail overlay
@@ -82,6 +78,48 @@ struct CommunityView: View {
                 await viewModel.loadInitialFeed()
             }
         }
+        // Drain any post handed to us from another tab's search popup
+        // (Home / CourseSpace / Profile). We open it in the same detail
+        // overlay used for in-feed taps, then clear the inbox so the
+        // popup doesn't reopen on every state nudge.
+        .onChange(of: appState.pendingCommunityPost) { _, post in
+            guard let post else { return }
+            consumePendingCommunityPost(post)
+        }
+        .onAppear {
+            if let post = appState.pendingCommunityPost {
+                consumePendingCommunityPost(post)
+            }
+            // Initial paint: if we already have a profile, push it into
+            // every one of the user's own posts so the avatar is in sync
+            // even before the next refresh.
+            if let me = appState.profile {
+                viewModel.applyAvatar(for: me.id, name: me.displayName, avatarUrl: me.avatarUrl)
+            }
+        }
+        // Mirror any user-editable profile field (avatar, display name,
+        // ...) into the cached feed entries that belong to the current
+        // user, so a Profile edit shows up here immediately without a
+        // manual pull-to-refresh. Watches the whole `profile` object so
+        // future Profile-screen edits to fields that affect posts are
+        // picked up automatically.
+        .onChange(of: appState.profile) { _, newProfile in
+            guard let me = newProfile else { return }
+            viewModel.applyAvatar(for: me.id, name: me.displayName, avatarUrl: me.avatarUrl)
+        }
+    }
+
+    private func consumePendingCommunityPost(_ post: CommunityPost) {
+        if viewModel.posts.contains(where: { $0.id == post.id }) {
+            viewModel.upsert(post)
+            searchPreviewPost = nil
+        } else {
+            searchPreviewPost = post
+        }
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+            activePostId = post.id
+        }
+        appState.pendingCommunityPost = nil
     }
 
     // MARK: - Header
@@ -108,8 +146,8 @@ struct CommunityView: View {
                             showNotifications.toggle()
                         }
                     }
-                    if notifications.filter(\.unread).count > 0 && !showNotifications {
-                        Text("\(notifications.filter(\.unread).count)")
+                    if appState.notifications.unreadCount > 0 && !showNotifications {
+                        Text("\(appState.notifications.unreadCount)")
                             .font(.system(size: 10, weight: .bold))
                             .foregroundStyle(.white)
                             .frame(width: 18, height: 18)
@@ -122,7 +160,10 @@ struct CommunityView: View {
                     }
                 }
 
-                CommunityGlassIconButton(icon: "Icons/fluent_person-24-regular") {
+                AppAvatarTopBarButton(
+                    name: appState.profile?.displayName ?? "",
+                    avatarUrl: appState.profile?.avatarUrl
+                ) {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                         selectedTab = nil
                     }
@@ -183,7 +224,10 @@ struct CommunityView: View {
             columns: Array(repeating: GridItem(.flexible(), spacing: 20), count: 3),
             spacing: 20
         ) {
-            PostNewCardView(authorName: appState.profile?.displayName ?? "You") {
+            PostNewCardView(
+                authorName: appState.profile?.displayName ?? "You",
+                authorAvatarUrl: appState.profile?.avatarUrl
+            ) {
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
                     showPostEditor = true
                 }
@@ -296,7 +340,7 @@ struct CommunityView: View {
                 HStack {
                     Spacer()
                     NotificationDropdown(
-                        notifications: $notifications,
+                        store: appState.notifications,
                         onClose: {
                             withAnimation(.easeInOut(duration: 0.2)) { showNotifications = false }
                         }
@@ -459,7 +503,9 @@ private struct CommunityGlassIconButton: View {
                 }
                 .shadow(color: .black.opacity(0.04), radius: 2, x: 0, y: 1)
         }
+        .tint(CommunityTheme.textPrimary)
         .buttonStyle(.plain)
+        .focusEffectDisabled()
     }
 }
 
@@ -493,13 +539,14 @@ private struct CommunityTabButton: View {
 
 private struct PostNewCardView: View {
     let authorName: String
+    var authorAvatarUrl: String? = nil
     var onTap: (() -> Void)? = nil
 
     var body: some View {
         Button { onTap?() } label: {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 12) {
-                    CommunityAvatar(name: authorName, size: 40)
+                    CommunityAvatar(name: authorName, size: 40, avatarUrl: authorAvatarUrl)
 
                     VStack(alignment: .leading, spacing: 2) {
                         Text(authorName)
@@ -565,7 +612,11 @@ private struct PostCardView: View {
         Button(action: onOpen) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 12) {
-                    CommunityAvatar(name: post.authorName, size: 40)
+                    CommunityAvatar(
+                        name: post.authorName,
+                        size: 40,
+                        avatarUrl: post.author?.avatarUrl
+                    )
 
                     VStack(alignment: .leading, spacing: 2) {
                         Text(post.authorName)
@@ -577,6 +628,8 @@ private struct PostCardView: View {
                             .lineSpacing(2)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
+
+                    PostKindPill(kind: post.postKind)
                 }
                 .padding(.bottom, 16)
 
@@ -599,6 +652,7 @@ private struct PostCardView: View {
                         .multilineTextAlignment(.leading)
                 }
 
+                PostMediaCarousel(media: post.media)
                 PostAttachmentStack(post: post, detail: false)
 
                 Spacer(minLength: 16)

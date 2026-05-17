@@ -6,12 +6,17 @@ const MAX_BODY = 10_000
 const MAX_ATTACHMENTS = 10
 const MAX_HASHTAGS = 20
 
+type PostKind = 'note' | 'study_questions' | 'discussions'
+const POST_KINDS: readonly PostKind[] = ['note', 'study_questions', 'discussions'] as const
+
 interface ValidatedInput {
   title: string
   body: string
   visibility: 'public' | 'private'
   course_id: string | null
+  post_kind: PostKind
   attachment_note_ids: string[]
+  media_paths: string[]
   hashtags: string[]
 }
 
@@ -33,6 +38,24 @@ function validate(raw: unknown): ValidatedInput | Response {
   const visibility = o.visibility === 'private' ? 'private' as const : 'public' as const
 
   const courseId = typeof o.course_id === 'string' ? o.course_id.trim() : null
+
+  // post_kind: defaults to 'discussions' to match the mock's pre-selected pill.
+  let postKind: PostKind = 'discussions'
+  if (typeof o.post_kind === 'string') {
+    const candidate = o.post_kind.trim() as PostKind
+    if (POST_KINDS.includes(candidate)) postKind = candidate
+    else errors.post_kind = `post_kind must be one of: ${POST_KINDS.join(', ')}`
+  }
+
+  let mediaPaths: string[] = []
+  if (Array.isArray(o.media_paths)) {
+    mediaPaths = o.media_paths
+      .filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
+      .map(p => p.trim())
+    if (mediaPaths.length > MAX_ATTACHMENTS) {
+      errors.media_paths = `At most ${MAX_ATTACHMENTS} media files allowed`
+    }
+  }
 
   let attachmentNoteIds: string[] = []
   if (Array.isArray(o.attachment_note_ids)) {
@@ -57,7 +80,16 @@ function validate(raw: unknown): ValidatedInput | Response {
     return errorResponse('Validation failed', 'Invalid input', 400, errors)
   }
 
-  return { title, body, visibility, course_id: courseId || null, attachment_note_ids: attachmentNoteIds, hashtags }
+  return {
+    title,
+    body,
+    visibility,
+    course_id: courseId || null,
+    post_kind: postKind,
+    attachment_note_ids: attachmentNoteIds,
+    media_paths: mediaPaths,
+    hashtags,
+  }
 }
 
 Deno.serve(async (req) => {
@@ -111,6 +143,7 @@ Deno.serve(async (req) => {
       body: validated.body,
       visibility: validated.visibility,
       course_id: validated.course_id,
+      post_kind: validated.post_kind,
     })
     .select()
     .single()
@@ -123,6 +156,20 @@ Deno.serve(async (req) => {
     const { error: attErr } = await supabase.from('post_attachments').insert(rows)
     if (attErr) {
       console.error('Attachment insert failed:', attErr.message)
+    }
+  }
+
+  // Persist image attachments uploaded ahead of time via upload-post-media.
+  // The client passes back the storage path returned by that endpoint.
+  if (validated.media_paths.length > 0) {
+    const rows = validated.media_paths.map(path => ({
+      post_id: post.id,
+      kind: 'image' as const,
+      storage_path: path,
+    }))
+    const { error: mediaErr } = await supabase.from('post_media').insert(rows)
+    if (mediaErr) {
+      console.error('post_media insert failed:', mediaErr.message)
     }
   }
 
@@ -151,10 +198,12 @@ Deno.serve(async (req) => {
     body: post.body,
     visibility: post.visibility,
     course_id: post.course_id,
+    post_kind: post.post_kind,
     likes_count: 0,
     comments_count: 0,
     hashtags: hashtagNames,
     attachments: validated.attachment_note_ids,
+    media_paths: validated.media_paths,
     created_at: post.created_at,
     updated_at: post.updated_at,
   }, 201)

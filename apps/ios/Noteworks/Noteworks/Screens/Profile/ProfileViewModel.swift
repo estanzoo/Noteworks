@@ -141,13 +141,24 @@ final class ProfileViewModel: ObservableObject {
             profile.name = name
         }
         profile.email = userProfile.email
+        // Pull the server-backed avatar URL (set by `upload-avatar`). Clear
+        // the optimistic local bytes once we've got a canonical URL so
+        // every surface reads from the same source.
+        if let avatar = userProfile.avatarUrl,
+           !avatar.trimmingCharacters(in: .whitespaces).isEmpty {
+            profile.avatarUrl = avatar
+            profile.photoData = nil
+        }
         if let school = userProfile.schoolAffiliation, !school.isEmpty {
             profile.school = school
         }
-        if let codes = userProfile.courseCodes, !codes.isEmpty {
-            // We don't have a separate "major" field on the server yet —
-            // surface the first course code so the hero card isn't empty.
-            profile.major = codes.first ?? profile.major
+        if let major = userProfile.major,
+           !major.trimmingCharacters(in: .whitespaces).isEmpty {
+            profile.major = major
+        } else {
+            // Server hasn't recorded a major yet (e.g. legacy account that
+            // onboarded before the field existed) — leave whatever the user
+            // had locally so the field doesn't blank out unexpectedly.
         }
         if let year = userProfile.yearOfGraduation {
             profile.grade = "Graduates \(year)"
@@ -162,6 +173,8 @@ final class ProfileViewModel: ObservableObject {
         let trimmedName = aboutDraft.name.trimmingCharacters(in: .whitespaces)
         let resolvedName = trimmedName.isEmpty ? profile.name : trimmedName
         let school = aboutDraft.school.trimmingCharacters(in: .whitespaces)
+        let trimmedMajor = aboutDraft.major.trimmingCharacters(in: .whitespaces)
+        let resolvedMajor: String? = trimmedMajor.isEmpty ? nil : trimmedMajor
         let yearOfGrad = appState.profile?.yearOfGraduation ?? 2100
         let schoolEmail = appState.profile?.schoolEmail ?? profile.email
         let courseCodes = appState.profile?.courseCodes ?? []
@@ -171,7 +184,8 @@ final class ProfileViewModel: ObservableObject {
             yearOfGraduation: yearOfGrad,
             schoolAffiliation: school.isEmpty ? (appState.profile?.schoolAffiliation ?? "") : school,
             schoolEmail: schoolEmail,
-            courseCodes: courseCodes
+            courseCodes: courseCodes,
+            major: resolvedMajor
         )
 
         guard let token = appState.accessToken else { return }
@@ -246,8 +260,55 @@ final class ProfileViewModel: ObservableObject {
 
     // MARK: - Photo
 
-    func setPhoto(_ data: Data) { profile.photoData = data }
-    func removePhoto() { profile.photoData = nil }
+    /// Inline status shown next to "Set Photo" / "Change Photo" so the
+    /// user knows the upload is in flight or failed. Cleared on success.
+    @Published var photoUploadError: String?
+    @Published var isUploadingPhoto: Bool = false
+
+    /// Stages the freshly-picked image locally (for instant UI feedback)
+    /// and kicks off the `upload-avatar` request. On success we refresh
+    /// the AppState profile so the new URL propagates to every surface
+    /// (top-right pill, community posts, comments).
+    func setPhoto(_ data: Data, using appState: AppState) {
+        // Immediate optimistic update — AvatarBadge prefers `photoData`
+        // over `avatarUrl`, so the new image shows up at the same instant
+        // the user taps Choose Photo.
+        profile.photoData = data
+        photoUploadError = nil
+
+        guard let token = appState.accessToken, !token.isEmpty else {
+            // Guest mode (no Supabase session) — keep the local cache and
+            // skip the upload. The bytes live for the rest of the session
+            // only; there's no account to write them against.
+            return
+        }
+
+        isUploadingPhoto = true
+        Task { @MainActor in
+            do {
+                let url = try await AvatarUploadService.shared.uploadAvatar(
+                    imageData: data,
+                    accessToken: token
+                )
+                profile.avatarUrl = url
+                profile.photoData = nil
+                _ = await appState.refreshProfile()
+            } catch {
+                photoUploadError = (error as? LocalizedError)?.errorDescription
+                    ?? error.localizedDescription
+            }
+            isUploadingPhoto = false
+        }
+    }
+
+    func removePhoto() {
+        profile.photoData = nil
+        profile.avatarUrl = nil
+        // We don't currently expose a server "remove" endpoint — the next
+        // upload simply overwrites the bucket object. If the user removes
+        // locally and never re-uploads, the row's `avatar_url` stays
+        // pointed at the last upload until they pick a new image.
+    }
 
     // MARK: - Migration
 
