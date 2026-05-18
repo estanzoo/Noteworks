@@ -23,6 +23,7 @@ enum AppTab: String, CaseIterable {
 
 struct MainTabView: View {
     @EnvironmentObject private var appState: AppState
+    @Environment(\.scenePhase) private var scenePhase
     @State private var selectedTab: AppTab? = .home
     /// Mirrors the JSX `lastMainPage` (noteworks-library.jsx L9346): the
     /// previous Home/Library/Community tab the user was on before opening
@@ -85,6 +86,28 @@ struct MainTabView: View {
             }
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
+        // Poll the community feed while signed in so User B sees "User A
+        // posted …" in the bell on Home without opening the Community tab.
+        .task(id: communityPollingTaskId) {
+            guard appState.isAuthenticated,
+                  !appState.isGuestMode,
+                  scenePhase == .active else { return }
+
+            await CommunityNotificationPoller.run(
+                notifications: appState.notifications,
+                isActive: {
+                    appState.isAuthenticated && !appState.isGuestMode
+                },
+                accessToken: { appState.accessToken },
+                currentUserId: { appState.currentUser?.id }
+            )
+        }
+    }
+
+    /// Restarts the poll loop when auth, guest mode, or foreground state changes.
+    private var communityPollingTaskId: String {
+        let user = appState.currentUser?.id ?? "none"
+        return "\(appState.isAuthenticated)-\(appState.isGuestMode)-\(user)-\(scenePhase)"
     }
 
     /// Wraps one tab's view tree with cross-fade visibility + hit-testing

@@ -343,8 +343,10 @@ struct EraserDropdownPanel: View {
 struct ShapeDropdownPanel: View {
     @ObservedObject var viewModel: NoteEditorViewModel
 
+    private let shapeColumns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 3)
+
     var body: some View {
-        ChromeDropdownPanel(width: 360) {
+        ChromeDropdownPanel(width: 304) {
             VStack(alignment: .leading, spacing: 10) {
                 DropdownSectionHeader(
                     title: "Insert shape",
@@ -352,16 +354,16 @@ struct ShapeDropdownPanel: View {
                     detailColor: viewModel.shapeColor
                 )
 
-                HStack(spacing: 8) {
+                LazyVGrid(columns: shapeColumns, spacing: 8) {
                     ForEach(NoteShapeType.allCases) { shape in
-                        NoteOptionChip(
-                            label: shape.label,
-                            symbol: shape.symbol,
+                        ShapeTypeIconChip(
+                            shape: shape,
                             isActive: viewModel.shapeType == shape,
                             accentColor: viewModel.shapeColor
-                        ) { viewModel.selectShapeType(shape) }
+                        ) {
+                            viewModel.selectShapeType(shape)
+                        }
                     }
-                    Spacer(minLength: 0)
                 }
                 .padding(.horizontal, 12)
 
@@ -383,6 +385,37 @@ struct ShapeDropdownPanel: View {
                 )
             }
         }
+    }
+}
+
+// MARK: - Shape icon chip (compact grid — labels live in header + a11y)
+
+private struct ShapeTypeIconChip: View {
+    let shape: NoteShapeType
+    let isActive: Bool
+    let accentColor: Color
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: shape.symbol)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(isActive ? accentColor : NoteEditorTheme.textSecondary)
+                .frame(maxWidth: .infinity, minHeight: 38)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(isActive ? accentColor.opacity(0.14) : Color.white.opacity(0.55))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(
+                            isActive ? accentColor.opacity(0.45) : Color.black.opacity(0.08),
+                            lineWidth: 1
+                        )
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(shape.label)
     }
 }
 

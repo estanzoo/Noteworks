@@ -11,8 +11,9 @@
 //    1. A pinned welcome notification when the user signs in or enters
 //       guest mode — persisted per user so it survives relaunches.
 //    2. `recordNewCommunityPosts(_:currentUserId:)` — called by
-//       `CommunityViewModel` for posts that arrive after the first feed
-//       snapshot (historical feed items are baselined silently).
+//       `CommunityNotificationPoller` (every ~30s while the app is
+//       active) and by `CommunityViewModel` when the feed refreshes.
+//       Historical feed items are baselined on the first snapshot.
 //    3. `recordCommentOnOwnPost(...)` — best-effort placeholder until a
 //       real push channel ships.
 //

@@ -94,6 +94,7 @@ struct ChromeDropdownPanel<Content: View>: View {
     var body: some View {
         content()
             .frame(width: width, alignment: .leading)
+            .clipped()
             .padding(.vertical, 8)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
             .background(NoteEditorTheme.dropdownFill, in: RoundedRectangle(cornerRadius: 14))

@@ -203,6 +203,8 @@ struct NoteEditorView: View {
                 store.openNoteInEditor(initialId)
             }
             viewModel.attach(store: store, noteId: store.activeOpenNoteId ?? noteId)
+            selectedOverlayId = nil
+            editingOverlayId = nil
             // Tell MainTabView to retract its floating Home/Library/
             // Community pill so it doesn't squat over the bottom of the
             // page card while the user is writing.
@@ -221,6 +223,8 @@ struct NoteEditorView: View {
             viewModel.switchActiveNote(newId)
             openPanel = nil
             editorStableMaxHeight = 0
+            selectedOverlayId = nil
+            editingOverlayId = nil
         }
         .onChange(of: viewModel.drawing) { _, _ in
             viewModel.handleDrawingChange()
@@ -273,6 +277,12 @@ struct NoteEditorView: View {
         .onChange(of: viewModel.pendingImagePickNonce) { _, _ in
             photoSelection = nil
             showPhotoPicker = true
+        }
+        .onChange(of: viewModel.pendingShapeInsertNonce) { _, _ in
+            if let newId = viewModel.insertShapeOverlay(store: store) {
+                selectedOverlayId = newId
+                editingOverlayId = nil
+            }
         }
         .onChange(of: viewModel.currentPage) { _, _ in
             // Don't carry selection across pages — the selected id won't
@@ -542,7 +552,7 @@ struct NoteEditorView: View {
         case .pen:                       return 308
         case .highlighter:               return 304
         case .eraser:                    return 300
-        case .shape:                     return 360
+        case .shape:                     return 304
         case .text:                      return 324
         case .bookmark:                   return 0
         case .share:                      return 272
@@ -758,105 +768,169 @@ struct NoteEditorView: View {
             // Whole page visible at zoom 1; pinch in to zoom and pan around.
             let logicalPageSize = pageSize(in: basisSize, rotation: rotation)
             let scrollContentSize = rotatedPageBounds(for: logicalPageSize, rotation: rotation)
-            ZStack {
-                ZoomablePageScrollView(
-                    contentSize: scrollContentSize,
-                    maxScale: 8.0,
-                    // A "next" swipe from the last page _creates_ a new
-                    // one — we let the gesture host know so it can apply
-                    // resistance + a haptic cue instead of letting the
-                    // page glide off as if it were just navigation.
-                    nextSwipeCreatesPage: viewModel.currentPage >= viewModel.totalPages,
-                    atFirstPage: viewModel.currentPage <= 1,
-                    onSwipeNext: { viewModel.goToNextPage() },
-                    onSwipePrevious: { viewModel.goToPreviousPage() }
-                ) {
-                    pageCard(logicalPageSize: logicalPageSize, rotation: rotation)
-                }
-                .frame(width: geometry.size.width, height: geometry.size.height)
-
-                if viewModel.showNewPageFlash {
-                    NewPageFlashIndicator()
-                        .frame(width: geometry.size.width, height: geometry.size.height)
-                        .allowsHitTesting(false)
-                        .transition(
-                            .scale(scale: 0.86)
-                                .combined(with: .opacity)
-                        )
-                }
-            }
-            .animation(
-                .spring(response: 0.32, dampingFraction: 0.78),
-                value: viewModel.showNewPageFlash
+            canvasPageStack(
+                geometry: geometry,
+                logicalPageSize: logicalPageSize,
+                scrollContentSize: scrollContentSize,
+                rotation: rotation
             )
-            .contentShape(Rectangle())
-            .onTapGesture {
-                if openPanel != nil { openPanel = nil }
+        }
+    }
+
+    @ViewBuilder
+    private func canvasPageStack(
+        geometry: GeometryProxy,
+        logicalPageSize: CGSize,
+        scrollContentSize: CGSize,
+        rotation: Int
+    ) -> some View {
+        let pageStack = ZStack {
+            ZoomablePageScrollView(
+                contentSize: scrollContentSize,
+                maxScale: 8.0,
+                nextSwipeCreatesPage: viewModel.currentPage >= viewModel.totalPages,
+                atFirstPage: viewModel.currentPage <= 1,
+                blocksPageGestures: selectedOverlayId != nil,
+                contentStamp: pageContentStamp,
+                onSwipeNext: { viewModel.goToNextPage() },
+                onSwipePrevious: { viewModel.goToPreviousPage() }
+            ) {
+                pageCard(logicalPageSize: logicalPageSize, rotation: rotation)
+            }
+            .id("\(viewModel.noteId ?? "new")-\(viewModel.currentPage)")
+            .frame(width: geometry.size.width, height: geometry.size.height)
+
+            if viewModel.showNewPageFlash {
+                NewPageFlashIndicator()
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .allowsHitTesting(false)
+                    .transition(
+                        .scale(scale: 0.86)
+                            .combined(with: .opacity)
+                    )
+            }
+        }
+        .animation(
+            .spring(response: 0.32, dampingFraction: 0.78),
+            value: viewModel.showNewPageFlash
+        )
+
+        if openPanel != nil {
+            pageStack
+                .contentShape(Rectangle())
+                .onTapGesture { openPanel = nil }
+        } else {
+            pageStack
+        }
+    }
+
+    /// Bumps when persisted page/overlay data changes — not during live drag.
+    private var pageContentStamp: Int {
+        var stamp = canvasRevision
+        stamp = stamp &* 31 &+ (viewModel.noteId?.hashValue ?? 0)
+        stamp = stamp &* 31 &+ viewModel.currentPage
+        stamp = stamp &* 31 &+ viewModel.currentPageRotation
+        stamp = stamp &* 31 &+ (viewModel.activeTool.canDraw ? 1 : 0)
+        stamp = stamp &* 31 &+ viewModel.currentPageBackground.hashValue
+        stamp = stamp &* 31 &+ overlayStoreStamp
+        stamp = stamp &* 31 &+ (selectedOverlayId?.hashValue ?? 0)
+        stamp = stamp &* 31 &+ (editingOverlayId?.hashValue ?? 0)
+        stamp = stamp &* 31 &+ (viewModel.activeTool.rawValue.hashValue)
+        return stamp
+    }
+
+    private var overlayStoreStamp: Int {
+        let overlays = viewModel.currentPageOverlays(store: store)
+        var stamp = overlays.count
+        for overlay in overlays {
+            stamp = stamp &* 31 &+ overlay.id.hashValue
+            stamp = stamp &* 31 &+ Int(overlay.normX * 10_000)
+            stamp = stamp &* 31 &+ Int(overlay.normY * 10_000)
+            stamp = stamp &* 31 &+ Int(overlay.normW * 10_000)
+            stamp = stamp &* 31 &+ Int(overlay.normH * 10_000)
+            stamp = stamp &* 31 &+ Int(overlay.rotationDegrees * 100)
+            stamp = stamp &* 31 &+ (overlay.shapeType?.hashValue ?? 0)
+        }
+        return stamp
+    }
+
+    /// Page card: background → stickers → ink on top (pen draws over images/text).
+    @ViewBuilder
+    private func pageCard(logicalPageSize: CGSize, rotation: Int) -> some View {
+        pageCardChrome(logicalPageSize: logicalPageSize, rotation: rotation) {
+            ZStack {
+                Color.white
+                NotePageBackgroundView(
+                    background: viewModel.currentPageBackground,
+                    imageData: currentPageBackgroundImageData()
+                )
+                if let noteId = viewModel.noteId {
+                    NoteOverlayLayer(
+                        overlays: viewModel.currentPageOverlays(store: store),
+                        pageSize: logicalPageSize,
+                        noteId: noteId,
+                        selectedId: $selectedOverlayId,
+                        editingId: $editingOverlayId,
+                        onUpdate: { updated in
+                            store.updateOverlay(updated, in: noteId)
+                        },
+                        onDelete: { overlay in
+                            store.removeOverlay(id: overlay.id, from: noteId)
+                        },
+                        onDuplicate: { overlay in
+                            if let copy = store.duplicateOverlay(overlay, in: noteId) {
+                                selectedOverlayId = copy.id
+                                viewModel.flashStatus("Duplicated")
+                            }
+                        },
+                        onSelectLasso: {
+                            viewModel.activeTool = .lasso
+                            selectedOverlayId = nil
+                            viewModel.flashStatus("Lasso selected")
+                        },
+                        onCropImage: { _ in
+                            viewModel.flashStatus("Crop coming soon")
+                        },
+                        imageDataProvider: { filename in
+                            store.loadOverlayImageData(for: noteId, filename: filename)
+                        }
+                    )
+                }
+                PencilCanvasView(
+                    drawing: $viewModel.drawing,
+                    tool: viewModel.pkTool,
+                    drawingPolicy: .pencilOnly,
+                    isDrawingEnabled: viewModel.activeTool.canDraw,
+                    passesFingerTouchesThrough: viewModel.activeTool.passesFingerToOverlays,
+                    onCanvasReady: { canvas in
+                        self.liveCanvas = canvas
+                        refreshCanvasUndoState()
+                    },
+                    onPencilDoubleTap: { interaction in
+                        viewModel.handlePencilDoubleTap(interaction: interaction)
+                    }
+                )
             }
         }
     }
 
-    /// The page card — background pattern + PencilKit canvas + overlay
-    /// stickers, all sized to `logicalPageSize`. The outer
-    /// `ZoomablePageScrollView` handles pinch + pan over the whole
-    /// card, so background/canvas/overlays scale together in lockstep
-    /// (no need for per-layer `scaleEffect` math).
     @ViewBuilder
-    private func pageCard(logicalPageSize: CGSize, rotation: Int) -> some View {
+    private func pageCardChrome<Inner: View>(
+        logicalPageSize: CGSize,
+        rotation: Int,
+        @ViewBuilder content: () -> Inner
+    ) -> some View {
         let displayBounds = rotatedPageBounds(for: logicalPageSize, rotation: rotation)
-        ZStack {
-            Color.white
-            NotePageBackgroundView(
-                background: viewModel.currentPageBackground,
-                imageData: currentPageBackgroundImageData()
+        content()
+            .frame(width: logicalPageSize.width, height: logicalPageSize.height)
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16)
+                    .strokeBorder(NoteEditorTheme.chromeBorder, lineWidth: 1)
             )
-            PencilCanvasView(
-                drawing: $viewModel.drawing,
-                tool: viewModel.pkTool,
-                drawingPolicy: .pencilOnly,
-                isDrawingEnabled: viewModel.activeTool.canDraw,
-                onCanvasReady: { canvas in
-                    self.liveCanvas = canvas
-                    refreshCanvasUndoState()
-                },
-                onPencilDoubleTap: { interaction in
-                    viewModel.handlePencilDoubleTap(interaction: interaction)
-                }
-            )
-            if let noteId = viewModel.noteId {
-                NoteOverlayLayer(
-                    overlays: viewModel.currentPageOverlays(store: store),
-                    pageSize: logicalPageSize,
-                    noteId: noteId,
-                    selectedId: $selectedOverlayId,
-                    editingId: $editingOverlayId,
-                    onUpdate: { updated in
-                        store.updateOverlay(updated, in: noteId)
-                    },
-                    onDelete: { overlay in
-                        store.removeOverlay(id: overlay.id, from: noteId)
-                    },
-                    imageDataProvider: { filename in
-                        store.loadOverlayImageData(for: noteId, filename: filename)
-                    }
-                )
-                .allowsHitTesting(
-                    !viewModel.activeTool.canDraw || selectedOverlayId != nil
-                )
-            }
-        }
-        .frame(width: logicalPageSize.width, height: logicalPageSize.height)
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-        .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .strokeBorder(NoteEditorTheme.chromeBorder, lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.06), radius: 14, y: 6)
-        .rotationEffect(.degrees(Double(rotation)))
-        // Expand the layout box to the axis-aligned bounds of the
-        // rotated card so the scroll host clips/centering match what
-        // the user sees (whole page rotates, not just ink reflow).
-        .frame(width: displayBounds.width, height: displayBounds.height)
+            .shadow(color: .black.opacity(0.06), radius: 14, y: 6)
+            .rotationEffect(.degrees(Double(rotation)))
+            .frame(width: displayBounds.width, height: displayBounds.height)
     }
 
     /// Axis-aligned bounding box of the page card after rotation.

@@ -122,6 +122,7 @@ struct NoteBubble: Codable, Identifiable, Equatable, Hashable {
 enum NotePageOverlayKind: String, Codable, Hashable {
     case text
     case image
+    case shape
 }
 
 /// A draggable item placed on top of a note page. Coordinates are stored
@@ -148,6 +149,99 @@ struct NotePageOverlay: Codable, Identifiable, Equatable, Hashable {
     /// resolved by `LocalNotesPersistence` so the model doesn't need to
     /// know about users / disk layout.
     var imageFilename: String?
+    /// Clockwise rotation in degrees (image + shape overlays).
+    var rotationDegrees: CGFloat = 0
+    /// `NoteShapeType.rawValue` for `.shape` overlays.
+    var shapeType: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, kind, page, normX, normY, normW, normH
+        case text, fontSize, colorHex, imageFilename, rotationDegrees, shapeType
+    }
+
+    init(
+        id: String,
+        kind: NotePageOverlayKind,
+        page: Int,
+        normX: CGFloat,
+        normY: CGFloat,
+        normW: CGFloat,
+        normH: CGFloat,
+        text: String? = nil,
+        fontSize: CGFloat? = nil,
+        colorHex: String? = nil,
+        imageFilename: String? = nil,
+        rotationDegrees: CGFloat = 0,
+        shapeType: String? = nil
+    ) {
+        self.id = id
+        self.kind = kind
+        self.page = page
+        self.normX = normX
+        self.normY = normY
+        self.normW = normW
+        self.normH = normH
+        self.text = text
+        self.fontSize = fontSize
+        self.colorHex = colorHex
+        self.imageFilename = imageFilename
+        self.rotationDegrees = rotationDegrees
+        self.shapeType = shapeType
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        kind = try c.decode(NotePageOverlayKind.self, forKey: .kind)
+        page = try c.decode(Int.self, forKey: .page)
+        normX = try c.decode(CGFloat.self, forKey: .normX)
+        normY = try c.decode(CGFloat.self, forKey: .normY)
+        normW = try c.decode(CGFloat.self, forKey: .normW)
+        normH = try c.decode(CGFloat.self, forKey: .normH)
+        text = try c.decodeIfPresent(String.self, forKey: .text)
+        fontSize = try c.decodeIfPresent(CGFloat.self, forKey: .fontSize)
+        colorHex = try c.decodeIfPresent(String.self, forKey: .colorHex)
+        imageFilename = try c.decodeIfPresent(String.self, forKey: .imageFilename)
+        rotationDegrees = (try c.decodeIfPresent(CGFloat.self, forKey: .rotationDegrees)) ?? 0
+        shapeType = try c.decodeIfPresent(String.self, forKey: .shapeType)
+    }
+
+    func duplicate(offsetNorm: CGSize = CGSize(width: 0.03, height: 0.03)) -> NotePageOverlay {
+        NotePageOverlay(
+            id: UUID().uuidString,
+            kind: kind,
+            page: page,
+            normX: min(1 - normW, normX + offsetNorm.width),
+            normY: min(1 - normH, normY + offsetNorm.height),
+            normW: normW,
+            normH: normH,
+            text: text,
+            fontSize: fontSize,
+            colorHex: colorHex,
+            imageFilename: imageFilename,
+            rotationDegrees: rotationDegrees,
+            shapeType: shapeType
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(kind, forKey: .kind)
+        try c.encode(page, forKey: .page)
+        try c.encode(normX, forKey: .normX)
+        try c.encode(normY, forKey: .normY)
+        try c.encode(normW, forKey: .normW)
+        try c.encode(normH, forKey: .normH)
+        try c.encodeIfPresent(text, forKey: .text)
+        try c.encodeIfPresent(fontSize, forKey: .fontSize)
+        try c.encodeIfPresent(colorHex, forKey: .colorHex)
+        try c.encodeIfPresent(imageFilename, forKey: .imageFilename)
+        if rotationDegrees != 0 {
+            try c.encode(rotationDegrees, forKey: .rotationDegrees)
+        }
+        try c.encodeIfPresent(shapeType, forKey: .shapeType)
+    }
 
     static func text(
         page: Int,
@@ -188,6 +282,25 @@ struct NotePageOverlay: Codable, Identifiable, Equatable, Hashable {
             fontSize: nil,
             colorHex: nil,
             imageFilename: filename
+        )
+    }
+
+    static func shape(
+        page: Int,
+        shapeType: String,
+        colorHex: String,
+        normRect: CGRect = CGRect(x: 0.32, y: 0.38, width: 0.36, height: 0.36)
+    ) -> NotePageOverlay {
+        NotePageOverlay(
+            id: UUID().uuidString,
+            kind: .shape,
+            page: page,
+            normX: normRect.minX,
+            normY: normRect.minY,
+            normW: normRect.width,
+            normH: normRect.height,
+            colorHex: colorHex,
+            shapeType: shapeType
         )
     }
 }
@@ -760,19 +873,8 @@ final class NotesStore: ObservableObject {
             .filter { $0.page == clamped }
             .map { src -> NotePageOverlay in
                 var copy = src
-                copy = NotePageOverlay(
-                    id: UUID().uuidString,
-                    kind: src.kind,
-                    page: clamped + 1,
-                    normX: src.normX,
-                    normY: src.normY,
-                    normW: src.normW,
-                    normH: src.normH,
-                    text: src.text,
-                    fontSize: src.fontSize,
-                    colorHex: src.colorHex,
-                    imageFilename: src.imageFilename
-                )
+                copy = src.duplicate(offsetNorm: .zero)
+                copy.page = clamped + 1
                 return copy
             }
         notes[idx].overlays.append(contentsOf: cloned)
@@ -906,6 +1008,21 @@ final class NotesStore: ObservableObject {
         notes[idx].overlays[oidx] = overlay
         notes[idx].updatedAt = Date()
         saveDebounced()
+    }
+
+    /// Duplicates an overlay. Image overlays get a fresh copy of the PNG.
+    @discardableResult
+    func duplicateOverlay(_ overlay: NotePageOverlay, in noteId: String) -> NotePageOverlay? {
+        var copy = overlay.duplicate()
+        if overlay.kind == .image,
+           let filename = overlay.imageFilename,
+           let data = loadOverlayImageData(for: noteId, filename: filename) {
+            let newFilename = "\(UUID().uuidString).png"
+            saveOverlayImageData(data, for: noteId, filename: newFilename)
+            copy.imageFilename = newFilename
+        }
+        addOverlay(copy, to: noteId)
+        return copy
     }
 
     /// Removes an overlay by id. If the overlay was an image, deletes

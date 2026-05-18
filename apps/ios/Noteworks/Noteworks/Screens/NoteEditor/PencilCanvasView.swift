@@ -20,6 +20,47 @@ import SwiftUI
 import UIKit
 import PencilKit
 
+/// Canvas that ignores finger hit-testing so taps reach stickers below
+/// while Apple Pencil still draws on this layer.
+final class FingerPassThroughPKCanvasView: PKCanvasView {
+    var passesFingerTouchesThrough = false
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        if passesFingerTouchesThrough, !acceptsTouch(on: event) {
+            return false
+        }
+        return super.point(inside: point, with: event)
+    }
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        if passesFingerTouchesThrough, !acceptsTouch(on: event) {
+            return nil
+        }
+        return super.hitTest(point, with: event)
+    }
+
+    /// Pencil → canvas. Finger or nil event (first hit test) → overlays below.
+    private func acceptsTouch(on event: UIEvent?) -> Bool {
+        guard let event else { return false }
+        let touches = event.allTouches ?? []
+        if touches.isEmpty { return false }
+        return touches.contains { $0.type == .pencil }
+    }
+
+    func applyTouchRoutingPolicy() {
+        let pencil = NSNumber(value: UITouch.TouchType.pencil.rawValue)
+        let fingerAndPencil = [
+            NSNumber(value: UITouch.TouchType.direct.rawValue),
+            NSNumber(value: UITouch.TouchType.pencil.rawValue)
+        ]
+        if passesFingerTouchesThrough {
+            drawingGestureRecognizer.allowedTouchTypes = [pencil]
+        } else {
+            drawingGestureRecognizer.allowedTouchTypes = fingerAndPencil
+        }
+    }
+}
+
 struct PencilCanvasView: UIViewRepresentable {
 
     /// Live drawing — bound to the parent so strokes flow up and page
@@ -35,9 +76,11 @@ struct PencilCanvasView: UIViewRepresentable {
     var drawingPolicy: PKCanvasViewDrawingPolicy = .anyInput
 
     /// When `false`, the canvas ignores touches so taps/drags fall through
-    /// to the overlay layer above (used by the text + image tools — those
-    /// shouldn't accidentally leave stray strokes on the page).
+    /// to the overlay layer below (text / image / shape tools).
     var isDrawingEnabled: Bool = true
+
+    /// Finger taps reach overlays under the canvas; Pencil still draws here.
+    var passesFingerTouchesThrough: Bool = false
 
     /// Setter exposed so the chrome can wire its undo/redo buttons to the
     /// real canvas `UndoManager` once the view exists.
@@ -47,10 +90,11 @@ struct PencilCanvasView: UIViewRepresentable {
     /// `PKToolPicker`, the app must handle `UIPencilInteraction` explicitly.
     var onPencilDoubleTap: ((UIPencilInteraction) -> Void)? = nil
 
-    func makeUIView(context: Context) -> PKCanvasView {
-        let canvasView = PKCanvasView()
+    func makeUIView(context: Context) -> FingerPassThroughPKCanvasView {
+        let canvasView = FingerPassThroughPKCanvasView()
+        canvasView.passesFingerTouchesThrough = passesFingerTouchesThrough
+        canvasView.applyTouchRoutingPolicy()
         canvasView.drawingPolicy = drawingPolicy
-        // Transparent so the page template drawn behind the canvas shows through.
         canvasView.backgroundColor = .clear
         canvasView.isOpaque = false
         canvasView.drawing = drawing
@@ -58,12 +102,6 @@ struct PencilCanvasView: UIViewRepresentable {
         canvasView.delegate = context.coordinator
         canvasView.isUserInteractionEnabled = isDrawingEnabled
 
-        // Disable PKCanvasView's inherited UIScrollView zoom so the
-        // outer `ZoomablePageScrollView` cleanly owns pinch + pan.
-        // Trying to give PKCanvasView its OWN zoom requires returning a
-        // non-nil view from `viewForZooming(in:)`, but PencilKit doesn't
-        // expose a drawing-content view we can pick — so we let the
-        // outer scroll view handle it.
         canvasView.pinchGestureRecognizer?.isEnabled = false
         canvasView.panGestureRecognizer.isEnabled = false
         canvasView.minimumZoomScale = 1
@@ -74,26 +112,25 @@ struct PencilCanvasView: UIViewRepresentable {
         pencil.delegate = context.coordinator
         canvasView.addInteraction(pencil)
 
-        // We're not showing PKToolPicker; nothing else to set up here.
         DispatchQueue.main.async {
             onCanvasReady?(canvasView)
         }
         return canvasView
     }
 
-    func updateUIView(_ canvasView: PKCanvasView, context: Context) {
+    func updateUIView(_ canvasView: FingerPassThroughPKCanvasView, context: Context) {
+        if canvasView.passesFingerTouchesThrough != passesFingerTouchesThrough {
+            canvasView.passesFingerTouchesThrough = passesFingerTouchesThrough
+            canvasView.applyTouchRoutingPolicy()
+        }
         if canvasView.drawingPolicy != drawingPolicy {
             canvasView.drawingPolicy = drawingPolicy
         }
         if canvasView.isUserInteractionEnabled != isDrawingEnabled {
             canvasView.isUserInteractionEnabled = isDrawingEnabled
         }
-        // Apply the latest tool every refresh — PencilKit's tool object is
-        // a value type so cheap to recreate.
         canvasView.tool = tool
 
-        // Only swap the drawing on external changes (e.g. page flip), not
-        // while the user is mid-stroke.
         if canvasView.drawing != drawing && !context.coordinator.isDrawing {
             canvasView.drawing = drawing
         }
@@ -116,12 +153,6 @@ struct PencilCanvasView: UIViewRepresentable {
         }
 
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
-            // Must update the SwiftUI binding synchronously. If we defer with
-            // `DispatchQueue.main.async`, `updateUIView` can run first (e.g.
-            // after `canvasViewDidEndUsingTool` clears `isDrawing`) with a
-            // stale `drawing` binding and assign `canvasView.drawing = drawing`,
-            // which replaces the live canvas, clears undo history, and breaks
-            // toolbar undo / three-finger undo.
             if parent.drawing != canvasView.drawing {
                 parent.drawing = canvasView.drawing
             }

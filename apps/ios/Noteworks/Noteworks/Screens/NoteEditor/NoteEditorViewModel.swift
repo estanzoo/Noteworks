@@ -53,6 +53,15 @@ enum NoteEditorTool: String, Equatable {
         case .text, .image, .shape: return false
         }
     }
+
+    /// When true, finger taps pass through the canvas to stickers below
+    /// (Pencil still draws ink on the canvas layer).
+    var passesFingerToOverlays: Bool {
+        switch self {
+        case .pen, .highlighter, .text, .image, .shape: return true
+        case .eraser, .lasso: return false
+        }
+    }
 }
 
 /// Eraser sub-mode — JSX L2418. Object eraser deletes whole strokes,
@@ -65,9 +74,11 @@ enum NoteEraserMode: String, Equatable {
 /// Shape primitive offered by the Shape tool dropdown. Mirrors
 /// `shapeOptions` in noteworks-library.jsx — these are picked from the
 /// tool panel but the actual canvas insertion is a v2 feature.
-enum NoteShapeType: String, Equatable, CaseIterable, Identifiable {
+enum NoteShapeType: String, Equatable, CaseIterable, Identifiable, Codable {
     case rectangle
     case circle
+    case triangle
+    case diamond
     case arrow
     case line
 
@@ -77,6 +88,8 @@ enum NoteShapeType: String, Equatable, CaseIterable, Identifiable {
         switch self {
         case .rectangle: return "Rectangle"
         case .circle:    return "Circle"
+        case .triangle:  return "Triangle"
+        case .diamond:   return "Diamond"
         case .arrow:     return "Arrow"
         case .line:      return "Line"
         }
@@ -86,8 +99,18 @@ enum NoteShapeType: String, Equatable, CaseIterable, Identifiable {
         switch self {
         case .rectangle: return "rectangle"
         case .circle:    return "circle"
+        case .triangle:  return "triangle"
+        case .diamond:   return "diamond"
         case .arrow:     return "arrow.up.right"
         case .line:      return "minus"
+        }
+    }
+
+    /// Shapes that keep width/height aspect locked while resizing.
+    var locksAspectWhileResizing: Bool {
+        switch self {
+        case .circle: return true
+        default: return false
         }
     }
 }
@@ -400,6 +423,8 @@ final class NoteEditorViewModel: ObservableObject {
     @Published var pendingTextInsertNonce: Int = 0
     /// One-shot trigger to open the photo picker.
     @Published var pendingImagePickNonce: Int = 0
+    /// One-shot trigger to insert the current shape on the page.
+    @Published var pendingShapeInsertNonce: Int = 0
 
     // MARK: - Status text
 
@@ -950,7 +975,8 @@ final class NoteEditorViewModel: ObservableObject {
     func selectShapeType(_ type: NoteShapeType) {
         shapeType = type
         assignActiveToolTracksPencil(.shape)
-        flashStatus(shapeStatus())
+        pendingShapeInsertNonce &+= 1
+        flashStatus("\(shapeColorLabel) \(type.label.lowercased()) added")
     }
 
     func selectShapeSwatch(_ id: String) {
@@ -1476,6 +1502,30 @@ final class NoteEditorViewModel: ObservableObject {
 
     /// Persists raw image data + appends an `.image` overlay sized to fit
     /// half the page width while preserving aspect.
+    /// Drops a vector shape on the current page using the panel's type + color.
+    func insertShapeOverlay(store: NotesStore) -> String? {
+        guard let noteId else { return nil }
+        let overlay = NotePageOverlay.shape(
+            page: currentPage,
+            shapeType: shapeType.rawValue,
+            colorHex: shapeColor.toHexString(),
+            normRect: defaultNormRect(for: shapeType)
+        )
+        store.addOverlay(overlay, to: noteId)
+        return overlay.id
+    }
+
+    private func defaultNormRect(for type: NoteShapeType) -> CGRect {
+        switch type {
+        case .line:
+            return CGRect(x: 0.12, y: 0.46, width: 0.76, height: 0.08)
+        case .arrow:
+            return CGRect(x: 0.18, y: 0.4, width: 0.5, height: 0.2)
+        default:
+            return CGRect(x: 0.32, y: 0.38, width: 0.36, height: 0.36)
+        }
+    }
+
     func insertImageOverlay(store: NotesStore, data: Data, pixelSize: CGSize) -> String? {
         guard let noteId else { return nil }
         let filename = "\(UUID().uuidString).png"

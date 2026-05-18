@@ -257,6 +257,34 @@ final class PDFStorageService {
                   let data = store.loadOverlayImageData(for: noteId, filename: name),
                   let image = UIImage(data: data) else { return }
             drawImageAspectFill(image, in: rect, cornerRadius: 6, context: cg)
+        case .shape:
+            let shapeType = NoteShapeOverlayDrawing.resolvedType(overlay.shapeType)
+            if overlay.rotationDegrees != 0 {
+                cg.saveGState()
+                let center = CGPoint(x: rect.midX, y: rect.midY)
+                cg.translateBy(x: center.x, y: center.y)
+                cg.rotate(by: overlay.rotationDegrees * .pi / 180)
+                let local = CGRect(
+                    x: -rect.width / 2,
+                    y: -rect.height / 2,
+                    width: rect.width,
+                    height: rect.height
+                )
+                NoteShapeOverlayDrawing.draw(
+                    type: shapeType,
+                    in: local,
+                    colorHex: overlay.colorHex,
+                    context: cg
+                )
+                cg.restoreGState()
+            } else {
+                NoteShapeOverlayDrawing.draw(
+                    type: shapeType,
+                    in: rect,
+                    colorHex: overlay.colorHex,
+                    context: cg
+                )
+            }
         }
     }
 
