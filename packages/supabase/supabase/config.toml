@@ -138,6 +138,9 @@ verify_jwt = true
 [functions.search-posts]
 verify_jwt = true
 
+[functions.submit-feedback]
+verify_jwt = true
+
 [analytics]
 enabled = true
 port = 64327

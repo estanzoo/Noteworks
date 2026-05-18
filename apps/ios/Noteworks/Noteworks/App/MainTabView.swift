@@ -106,10 +106,6 @@ struct MainTabView: View {
             content()
                 .opacity(isActive ? 1 : 0)
                 .allowsHitTesting(isActive)
-                // A tiny rest offset on the inactive tab adds the soft "slide
-                // forward" feel of the JSX `default` transition (L6869) when
-                // it animates back to 0.
-                .offset(y: isActive ? 0 : 6)
         }
     }
 
@@ -171,7 +167,10 @@ struct TabItemButton: View {
 
     var body: some View {
         Button {
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+            // Match `MainTabView`'s tab cross-fade (0.22s ease). A spring
+            // here was bleeding into the whole tab subtree and could make
+            // Home's bubble layout feel like it "drops" when switching back.
+            withAnimation(.easeInOut(duration: 0.22)) {
                 selectedTab = tab
             }
         } label: {

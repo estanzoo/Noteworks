@@ -12,6 +12,12 @@ struct ProfileField: View {
     @Binding var value: String
     var placeholder: String = ""
     var multiline: Bool = false
+    /// When true, shows non-editable text with the same chrome as a
+    /// single-line `TextField` (used for Grade derived from onboarding).
+    var readOnly: Bool = false
+    /// When true, renders a `SecureField` instead of a `TextField` so
+    /// password input is masked. Ignored when `multiline` is true.
+    var secure: Bool = false
     var keyboardType: UIKeyboardType = .default
     var autocapitalization: TextInputAutocapitalization = .sentences
 
@@ -44,6 +50,25 @@ struct ProfileField: View {
                                     .allowsHitTesting(false)
                             }
                         }
+                } else if readOnly {
+                    Text(value.isEmpty ? placeholder : value)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 11)
+                        .font(.system(size: 14))
+                        .foregroundStyle(
+                            value.isEmpty ? ProfileTheme.textMuted : ProfileTheme.textPrimary
+                        )
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .lineLimit(1)
+                } else if secure {
+                    SecureField(placeholder, text: $value)
+                        .focused($focused)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 11)
+                        .font(.system(size: 14))
+                        .foregroundStyle(ProfileTheme.textPrimary)
+                        .textInputAutocapitalization(autocapitalization)
+                        .autocorrectionDisabled(true)
                 } else {
                     TextField(placeholder, text: $value)
                         .focused($focused)

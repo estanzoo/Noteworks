@@ -37,6 +37,13 @@ enum EmailVerificationStep {
     case email, verify
 }
 
+/// Two-step state machine for the "Change Password" popup. Mirrors the
+/// onboarding forgot-password flow: first we email a code, then the user
+/// types the code + new password.
+enum PasswordChangeStep {
+    case request, reset
+}
+
 enum MigrationStatus: String {
     case ready = "Ready"
     case queued = "Queued"
@@ -68,12 +75,27 @@ final class ProfileViewModel: ObservableObject {
     @Published var emailVerificationStep: EmailVerificationStep = .email
     @Published var emailDraft: String = ""
     @Published var emailVerificationCode: String = ""
-    @Published var previewVerificationCode: String = "248163"
     @Published var emailVerificationError: String = ""
+    /// True while we wait on Supabase to send the OTP or verify it.
+    /// Drives the Continue / Verify buttons into a loading state and
+    /// blocks duplicate submissions.
+    @Published var emailVerificationBusy: Bool = false
+
+    // Change-password popup state. Identical UX to the onboarding
+    // forgot-password flow: we send a 6-digit recovery code to the
+    // account email and let the user pick a new password.
+    @Published var editingPassword: Bool = false
+    @Published var passwordChangeStep: PasswordChangeStep = .request
+    @Published var passwordResetCode: String = ""
+    @Published var passwordNewValue: String = ""
+    @Published var passwordConfirmValue: String = ""
+    @Published var passwordChangeError: String = ""
+    @Published var passwordChangeBusy: Bool = false
+    @Published var passwordChangeSuccess: Bool = false
 
     // Hints (mirrors the state strings in the JSX).
     @Published var subscriptionHint: String = "Pro unlocks AI study workflows, higher monthly credit refills, and priority access to new beta features."
-    @Published var securityHint: String = "Your account already has 2 linked providers for smoother sign-in recovery."
+    @Published var securityHint: String = "Use an educational email so the blue verified badge appears under your profile photo."
     @Published var storageHint: String = "Local storage keeps recent notes, previews, and imports feeling instant on iPad."
 
     // Migration sources (JSX L5684–L5689).
@@ -108,16 +130,17 @@ final class ProfileViewModel: ObservableObject {
     // Small UI affordances.
     @Published var copied: Bool = false
 
-    // MARK: - Constants
+    // MARK: - Storage (live, measured from `DeviceStorageService`)
 
-    /// Mirrors JSX L5705–L5710.
-    let storageUsage: [(label: String, value: Int, detail: String)] = [
-        ("Note Library",  286, "Downloaded notebooks, page thumbnails, and recent edits"),
-        ("Media Cache",   148, "Images, preview renders, and imported visual assets"),
-        ("Offline Files",  94, "Files kept available for quick local access"),
-    ]
+    /// Latest snapshot of the on-device bucket sizes. Starts at zero so
+    /// the panel renders immediately on first launch; `refreshStorageReport()`
+    /// fills it in on appear.
+    @Published var storageReport: StorageReport = .empty
+    @Published var isMeasuringStorage: Bool = false
 
-    var totalStorageUsage: Int { storageUsage.reduce(0) { $0 + $1.value } }
+    var storageBuckets: [StorageReport.Bucket] { storageReport.buckets }
+    var totalStorageBytes: Int64 { storageReport.totalBytes }
+    var totalStorageFormatted: String { storageReport.totalBytes.formattedAsStorageSize() }
 
     let feedbackTypes: [String]     = ["Bug", "UX", "Idea", "Performance", "Love it"]
     let feedbackAreas: [String]     = ["Home", "Library", "Community", "Note Editor", "Profile", "Other"]
@@ -127,6 +150,58 @@ final class ProfileViewModel: ObservableObject {
 
     init() {
         self.aboutDraft = AboutDraft(from: .initial)
+        // Replace the placeholder `Profile.initial.version` with the
+        // real `CFBundleShortVersionString` (Build `CFBundleVersion`)
+        // so the General → Version Number row reflects the actual
+        // bundle we shipped, not a literal that drifts over time.
+        self.profile.version = Self.bundleVersionString()
+    }
+
+    /// Builds `"NoteWorks <marketing> (Build <build>)"` from Info.plist
+    /// keys. Falls back to a friendly placeholder when running in a
+    /// preview / test target that doesn't ship those keys.
+    static func bundleVersionString() -> String {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let marketing = (info["CFBundleShortVersionString"] as? String) ?? "0.0"
+        let build = (info["CFBundleVersion"] as? String) ?? "0"
+        return "NoteWorks \(marketing) (Build \(build))"
+    }
+
+    // MARK: - Storage actions
+
+    /// Walks the sandbox off-thread and publishes the result. Called
+    /// when the user opens the Storage panel and after any cache-clear
+    /// button so the new totals show up immediately.
+    func refreshStorageReport() {
+        guard !isMeasuringStorage else { return }
+        isMeasuringStorage = true
+        Task { @MainActor in
+            let report = await DeviceStorageService.measure()
+            storageReport = report
+            isMeasuringStorage = false
+        }
+    }
+
+    func clearMediaCache() {
+        guard !isMeasuringStorage else { return }
+        isMeasuringStorage = true
+        Task { @MainActor in
+            let report = await DeviceStorageService.clearMediaCache()
+            storageReport = report
+            storageHint = "Preview cache cleared. Core note files stay available offline."
+            isMeasuringStorage = false
+        }
+    }
+
+    func clearOfflineFiles() {
+        guard !isMeasuringStorage else { return }
+        isMeasuringStorage = true
+        Task { @MainActor in
+            let report = await DeviceStorageService.clearOfflineFiles()
+            storageReport = report
+            storageHint = "Imported overlay images removed. PencilKit ink stays on-device."
+            isMeasuringStorage = false
+        }
     }
 
     // MARK: - Hydration from AppState.profile
@@ -136,7 +211,12 @@ final class ProfileViewModel: ObservableObject {
     /// show real data instead of the JSX `PROFILE_INITIAL` placeholder.
     /// Subscription / credits / referral fields remain placeholder until a
     /// future backend ships them.
-    func hydrate(from userProfile: UserProfile) {
+    /// `bioFallbackIfMissing` is used only after an About-You save when the
+    /// GET profile response still omits `bio` (older edge deploys or
+    /// PostgREST omitting null keys) — without it `syncAboutDraftFromProfile`
+    /// would copy a stale empty `profile.bio` back onto the draft and the
+    /// hero card would never show what the user just submitted.
+    func hydrate(from userProfile: UserProfile, bioFallbackIfMissing: String? = nil) {
         if let name = userProfile.name, !name.trimmingCharacters(in: .whitespaces).isEmpty {
             profile.name = name
         }
@@ -149,21 +229,43 @@ final class ProfileViewModel: ObservableObject {
             profile.avatarUrl = avatar
             profile.photoData = nil
         }
-        if let school = userProfile.schoolAffiliation, !school.isEmpty {
-            profile.school = school
-        }
-        if let major = userProfile.major,
-           !major.trimmingCharacters(in: .whitespaces).isEmpty {
-            profile.major = major
-        } else {
-            // Server hasn't recorded a major yet (e.g. legacy account that
-            // onboarded before the field existed) — leave whatever the user
-            // had locally so the field doesn't blank out unexpectedly.
-        }
+        // Mirror `school` / `major`: missing or null `bio` in JSON becomes
+        // `nil` here — treat that like an empty string unless we just saved
+        // and pass a fallback string from that submit.
+        profile.bio = userProfile.bio ?? bioFallbackIfMissing ?? ""
+        // Always mirror school/major from the server so a save clears the
+        // field locally too (we used to gate on non-empty, which made
+        // empty-out edits feel like they didn't take).
+        profile.school = userProfile.schoolAffiliation ?? ""
+        profile.major = userProfile.major ?? ""
         if let year = userProfile.yearOfGraduation {
-            profile.grade = "Graduates \(year)"
+            profile.grade = gradeLabel(for: year)
         }
         syncAboutDraftFromProfile()
+    }
+
+    /// Converts the server-stored `year_of_graduation` into a "Year 1 / 2
+    /// / 3 / 4" label the user actually picked during onboarding (we
+    /// only persist the graduation year, so this back-derives study year
+    /// from `gradYear - currentYear`). Each school's program length
+    /// differs, so anything outside the standard 1–4 range gracefully
+    /// falls back to a friendly graduation-date string.
+    func gradeLabel(for graduationYear: Int) -> String {
+        // The onboarding "Not a student" path stores 2100 as a sentinel
+        // (see `OnboardingData.resolvedYearOfGraduation`).
+        if graduationYear >= 2100 { return "Not a student" }
+        let now = Calendar.current.component(.year, from: Date())
+        let yearsAway = graduationYear - now
+        switch yearsAway {
+        case 4: return "Year 1"
+        case 3: return "Year 2"
+        case 2: return "Year 3"
+        case 1: return "Year 4"
+        case 0: return "Final Year"
+        default:
+            if yearsAway < 0 { return "Alumni · Class of \(graduationYear)" }
+            return "Year 1 · Graduates \(graduationYear)"
+        }
     }
 
     /// Submitter for the "Save Changes" button in `AboutYouSection`. Reuses
@@ -175,9 +277,15 @@ final class ProfileViewModel: ObservableObject {
         let school = aboutDraft.school.trimmingCharacters(in: .whitespaces)
         let trimmedMajor = aboutDraft.major.trimmingCharacters(in: .whitespaces)
         let resolvedMajor: String? = trimmedMajor.isEmpty ? nil : trimmedMajor
+        let trimmedBio = aboutDraft.bio.trimmingCharacters(in: .whitespacesAndNewlines)
         let yearOfGrad = appState.profile?.yearOfGraduation ?? 2100
         let schoolEmail = appState.profile?.schoolEmail ?? profile.email
+        // Preserve whatever the server has for these arrays — the About-You
+        // section doesn't edit them. Sending the existing values makes the
+        // upsert a no-op for those columns. Importantly, `interests` is its
+        // own field now; do NOT forward `courseCodes` in its place.
         let courseCodes = appState.profile?.courseCodes ?? []
+        let interests = appState.profile?.interests ?? []
 
         let payload = OnboardingPayload(
             name: resolvedName,
@@ -185,14 +293,22 @@ final class ProfileViewModel: ObservableObject {
             schoolAffiliation: school.isEmpty ? (appState.profile?.schoolAffiliation ?? "") : school,
             schoolEmail: schoolEmail,
             courseCodes: courseCodes,
-            major: resolvedMajor
+            interests: interests,
+            major: resolvedMajor,
+            // Always send the trimmed bio (including empty string) so the
+            // user can clear it. `OnboardingPayload.bio` is `String?` only
+            // so the onboarding flow can omit it — the About-You editor
+            // is always authoritative.
+            bio: trimmedBio
         )
 
         guard let token = appState.accessToken else { return }
         do {
             try await appState.authService.submitOnboarding(payload, accessToken: token)
+            // Optimistic: hero + About You read `profile` before refresh returns.
+            profile.bio = trimmedBio
             if let next = await appState.refreshProfile() {
-                hydrate(from: next)
+                hydrate(from: next, bioFallbackIfMissing: trimmedBio)
             } else {
                 // Still apply the local edits so the user sees their changes.
                 saveAbout()
@@ -336,6 +452,7 @@ final class ProfileViewModel: ObservableObject {
         emailVerificationStep = .email
         emailVerificationCode = ""
         emailVerificationError = ""
+        emailVerificationBusy = false
         emailDraft = profile.email
     }
 
@@ -344,34 +461,67 @@ final class ProfileViewModel: ObservableObject {
         emailVerificationStep = .email
         emailVerificationCode = ""
         emailVerificationError = ""
+        emailVerificationBusy = false
         emailDraft = profile.email
     }
 
-    func sendEmailVerificationCode() {
-        let next = emailDraft.trimmingCharacters(in: .whitespaces)
+    /// Step 1 of the change-email flow: ask Supabase to dispatch a
+    /// 6-digit OTP to the new address. Mirrors the onboarding sign-up
+    /// verification — no preview code, no local state. The popup
+    /// advances to the `.verify` step once the request succeeds.
+    func sendEmailVerificationCode(using appState: AppState) {
+        let next = emailDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !next.isEmpty else { return }
-        previewVerificationCode = "248163"
-        emailVerificationStep = .verify
-        emailVerificationCode = ""
+        guard !emailVerificationBusy else { return }
+        emailVerificationBusy = true
         emailVerificationError = ""
-        securityHint = "Verification code sent to \(next). Enter the code to confirm the new email."
+        Task { @MainActor in
+            do {
+                try await appState.authService.requestEmailChange(newEmail: next)
+                emailVerificationStep = .verify
+                emailVerificationCode = ""
+                securityHint = "Verification code sent to \(next). Enter the code to confirm the new email."
+            } catch {
+                emailVerificationError = (error as? LocalizedError)?.errorDescription
+                    ?? error.localizedDescription
+            }
+            emailVerificationBusy = false
+        }
     }
 
-    func saveEmail() {
-        let next = emailDraft.trimmingCharacters(in: .whitespaces)
-        guard !next.isEmpty else { return }
-        guard emailVerificationCode.trimmingCharacters(in: .whitespaces) == previewVerificationCode else {
-            emailVerificationError = "That code doesn’t match. Please try the 6-digit verification code again."
-            return
-        }
-        profile.email = next
-        editingEmail = false
-        emailVerificationStep = .email
-        emailVerificationCode = ""
+    /// Step 2: verify the OTP. On success the local `profile.email` is
+    /// updated, the access token (which Supabase rotated for the new
+    /// email) is pushed back into `AppState`, and the server-backed
+    /// profile is refreshed so every surface reads the new value.
+    func saveEmail(using appState: AppState) {
+        let next = emailDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let code = emailVerificationCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !next.isEmpty, code.count == 6 else { return }
+        guard !emailVerificationBusy else { return }
+        emailVerificationBusy = true
         emailVerificationError = ""
-        securityHint = isAcademicEmail(next)
-            ? "Academic email verified. The blue badge now appears under the profile photo."
-            : "Email updated. Use an educational email to show a verified blue badge under the profile photo."
+        Task { @MainActor in
+            do {
+                let result = try await appState.authService.confirmEmailChange(
+                    newEmail: next,
+                    code: code
+                )
+                appState.handleAuthResult(result)
+                _ = await appState.refreshProfile()
+                profile.email = next
+                editingEmail = false
+                emailVerificationStep = .email
+                emailVerificationCode = ""
+                emailVerificationError = ""
+                securityHint = isAcademicEmail(next)
+                    ? "Academic email verified. The blue badge now appears under the profile photo."
+                    : "Email updated. Use an educational email to show a verified blue badge under the profile photo."
+            } catch {
+                emailVerificationError = (error as? LocalizedError)?.errorDescription
+                    ?? error.localizedDescription
+            }
+            emailVerificationBusy = false
+        }
     }
 
     func updateEmailDraft(_ value: String) {
@@ -385,6 +535,132 @@ final class ProfileViewModel: ObservableObject {
         emailVerificationError = ""
     }
 
+    // MARK: - Password popup (reuses the forgot-password OTP flow)
+
+    func openPasswordPopup() {
+        editingPassword = true
+        passwordChangeStep = .request
+        passwordResetCode = ""
+        passwordNewValue = ""
+        passwordConfirmValue = ""
+        passwordChangeError = ""
+        passwordChangeBusy = false
+        passwordChangeSuccess = false
+    }
+
+    func closePasswordPopup() {
+        editingPassword = false
+        passwordChangeStep = .request
+        passwordResetCode = ""
+        passwordNewValue = ""
+        passwordConfirmValue = ""
+        passwordChangeError = ""
+        passwordChangeBusy = false
+    }
+
+    func updatePasswordResetCode(_ value: String) {
+        let digits = value.filter { $0.isNumber }
+        passwordResetCode = String(digits.prefix(6))
+        passwordChangeError = ""
+    }
+
+    var canSendPasswordResetCode: Bool {
+        !passwordChangeBusy && !profile.email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var canSubmitPasswordReset: Bool {
+        !passwordChangeBusy
+            && passwordResetCode.count == 6
+            && passwordNewValue.count >= 8
+            && passwordNewValue == passwordConfirmValue
+    }
+
+    /// Step 1: dispatch a recovery code to the account's current email.
+    /// Same `resetPasswordForEmail` call the onboarding "Forgot password"
+    /// link uses — the user receives the standard recovery template.
+    func sendPasswordResetCode(using appState: AppState) {
+        let email = profile.email.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !email.isEmpty else {
+            passwordChangeError = "No email on file for this account."
+            return
+        }
+        guard !passwordChangeBusy else { return }
+        passwordChangeBusy = true
+        passwordChangeError = ""
+        Task { @MainActor in
+            do {
+                try await appState.authService.resetPassword(email: email)
+                passwordChangeStep = .reset
+                passwordResetCode = ""
+                passwordNewValue = ""
+                passwordConfirmValue = ""
+                securityHint = "Recovery code sent to \(email). Check your inbox and enter the 6-digit code below."
+            } catch {
+                passwordChangeError = (error as? LocalizedError)?.errorDescription
+                    ?? error.localizedDescription
+            }
+            passwordChangeBusy = false
+        }
+    }
+
+    /// Step 2: verify the recovery OTP and set the new password. Reuses
+    /// `confirmPasswordReset(email:code:newPassword:)`, which runs
+    /// `verifyOTP(type: .recovery)` followed by
+    /// `auth.update(user: UserAttributes(password:))` under the hood.
+    func confirmPasswordChange(using appState: AppState) {
+        let email = profile.email.trimmingCharacters(in: .whitespacesAndNewlines)
+        let code = passwordResetCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        let newPassword = passwordNewValue
+        guard !email.isEmpty, code.count == 6,
+              newPassword.count >= 8,
+              newPassword == passwordConfirmValue else { return }
+        guard !passwordChangeBusy else { return }
+        passwordChangeBusy = true
+        passwordChangeError = ""
+        Task { @MainActor in
+            do {
+                try await appState.authService.confirmPasswordReset(
+                    email: email,
+                    code: code,
+                    newPassword: newPassword
+                )
+                passwordChangeSuccess = true
+                securityHint = "Password updated. Use your new password the next time you sign in."
+                editingPassword = false
+                passwordChangeStep = .request
+                passwordResetCode = ""
+                passwordNewValue = ""
+                passwordConfirmValue = ""
+                // Auto-clear the success flash after a couple of seconds.
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 2_400_000_000)
+                    passwordChangeSuccess = false
+                }
+            } catch {
+                passwordChangeError = (error as? LocalizedError)?.errorDescription
+                    ?? error.localizedDescription
+            }
+            passwordChangeBusy = false
+        }
+    }
+
+    func resendPasswordResetCode(using appState: AppState) {
+        let email = profile.email.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !email.isEmpty, !passwordChangeBusy else { return }
+        passwordChangeBusy = true
+        passwordChangeError = ""
+        Task { @MainActor in
+            do {
+                try await appState.authService.resetPassword(email: email)
+                securityHint = "New recovery code sent to \(email)."
+            } catch {
+                passwordChangeError = (error as? LocalizedError)?.errorDescription
+                    ?? error.localizedDescription
+            }
+            passwordChangeBusy = false
+        }
+    }
+
     // MARK: - Feedback
 
     var canSubmitFeedback: Bool {
@@ -393,20 +669,68 @@ final class ProfileViewModel: ObservableObject {
             && (feedbackArea != "Other" || !feedbackAreaOther.trimmingCharacters(in: .whitespaces).isEmpty)
     }
 
-    func submitFeedback() {
-        guard canSubmitFeedback else { return }
+    /// Whether a `submit-feedback` POST is currently in flight. Drives
+    /// the Submit button's loading state and blocks duplicate taps.
+    @Published var feedbackSubmitting: Bool = false
+    /// Surfaced under the submit bar when the edge function rejects the
+    /// payload (validation or auth) or the network call fails.
+    @Published var feedbackSubmitError: String = ""
+
+    func submitFeedback(using appState: AppState) {
+        guard canSubmitFeedback, !feedbackSubmitting else { return }
         let contactEmail = feedbackFollowUp
             ? (feedbackOtherEmail.trimmingCharacters(in: .whitespaces).isEmpty ? profile.email : feedbackOtherEmail.trimmingCharacters(in: .whitespaces))
             : ""
-        feedbackTitle = ""
-        feedbackText = ""
-        if feedbackArea == "Other" { feedbackAreaOther = "" }
-        feedbackPhotos = []
-        feedbackSent = true
-        feedbackPopup = FeedbackPopupState(open: true, followUpEnabled: feedbackFollowUp, contactEmail: contactEmail)
+
+        // Snapshot the values into a payload *before* clearing the
+        // fields so we can resend on retry (and so the request isn't
+        // mutated mid-flight by the user typing again).
+        let trimmedAreaOther = feedbackAreaOther.trimmingCharacters(in: .whitespacesAndNewlines)
+        let payload = SubmitFeedbackRequest(
+            feedback_type: feedbackType,
+            area: feedbackArea,
+            area_other: feedbackArea == "Other" ? trimmedAreaOther : nil,
+            priority: feedbackPriority,
+            title: feedbackTitle.trimmingCharacters(in: .whitespacesAndNewlines),
+            body: feedbackText.trimmingCharacters(in: .whitespacesAndNewlines),
+            follow_up_enabled: feedbackFollowUp,
+            contact_email: feedbackFollowUp ? contactEmail : nil,
+            // Photo upload is intentionally deferred (no media bucket
+            // wired yet). The column accepts an empty array.
+            media_paths: [],
+            app_version: profile.version,
+            device_info: FeedbackService.currentDeviceInfo()
+        )
+
+        guard let token = appState.accessToken else {
+            feedbackSubmitError = "Session expired. Please sign in again to submit feedback."
+            return
+        }
+
+        feedbackSubmitting = true
+        feedbackSubmitError = ""
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 2_400_000_000)
-            feedbackSent = false
+            do {
+                _ = try await FeedbackService.shared.submitFeedback(payload, accessToken: token)
+                feedbackTitle = ""
+                feedbackText = ""
+                if feedbackArea == "Other" { feedbackAreaOther = "" }
+                feedbackPhotos = []
+                feedbackSent = true
+                feedbackPopup = FeedbackPopupState(
+                    open: true,
+                    followUpEnabled: feedbackFollowUp,
+                    contactEmail: contactEmail
+                )
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 2_400_000_000)
+                    feedbackSent = false
+                }
+            } catch {
+                feedbackSubmitError = (error as? LocalizedError)?.errorDescription
+                    ?? error.localizedDescription
+            }
+            feedbackSubmitting = false
         }
     }
 

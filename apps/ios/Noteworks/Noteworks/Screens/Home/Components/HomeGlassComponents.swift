@@ -184,6 +184,8 @@ struct CourseBubble: Identifiable {
 
 struct BubbleView: View {
     let course: CourseBubble
+    /// When `false`, only the title is shown (e.g. onboarding previews).
+    var showsNoteMeta: Bool = true
 
     private var titleSize: CGFloat {
         max(16, course.size * 0.09)
@@ -225,17 +227,19 @@ struct BubbleView: View {
                     .minimumScaleFactor(0.55)
                     .padding(.horizontal, 6)
 
-                HStack(spacing: 4) {
-                    Image("Icons/fluent_notebook-24-regular")
-                        .resizable()
-                        .renderingMode(.template)
-                        .aspectRatio(contentMode: .fit)
-                        .frame(width: 12, height: 12)
-                        .foregroundStyle(HomeTheme.textMuted)
+                if showsNoteMeta {
+                    HStack(spacing: 4) {
+                        Image("Icons/fluent_notebook-24-regular")
+                            .resizable()
+                            .renderingMode(.template)
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: 12, height: 12)
+                            .foregroundStyle(HomeTheme.textMuted)
 
-                    Text("\(course.noteCount) \(course.noteCount == 1 ? "Note" : "Notes")")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(HomeTheme.textMuted)
+                        Text("\(course.noteCount) \(course.noteCount == 1 ? "Note" : "Notes")")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(HomeTheme.textMuted)
+                    }
                 }
             }
             .padding(12)

@@ -54,10 +54,23 @@ struct OnboardingPayload: Encodable, Sendable {
     /// `school_affiliation` by name.
     var schoolId: String? = nil
     let schoolEmail: String
-    let courseCodes: [String]
+    /// Registrar-grade course identifiers (e.g. "ECON101"). Today this is
+    /// always an empty array — the onboarding "Field of Interests" step
+    /// no longer leaks into this field. Will be repopulated when we ship
+    /// a real course picker.
+    var courseCodes: [String] = []
+    /// Free-form topics the user picked on the "Any Field of Interests?"
+    /// step (e.g. "AI", "Design", "Soccer"). Persisted to `users.interests`.
+    var interests: [String] = []
     /// Optional program of study. When non-nil and non-empty, the server
     /// persists it onto `users.major`.
     var major: String? = nil
+    /// Optional short self-description. Only sent when the caller wants
+    /// to update the bio (the onboarding flow leaves it nil so the
+    /// server treats the column as "leave alone"; the Profile editor
+    /// sets it to the user's typed value, including an empty string to
+    /// clear the field).
+    var bio: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case name
@@ -66,7 +79,9 @@ struct OnboardingPayload: Encodable, Sendable {
         case schoolId = "school_id"
         case schoolEmail = "school_email"
         case courseCodes = "course_codes"
+        case interests
         case major
+        case bio
     }
 }
 
@@ -98,6 +113,14 @@ protocol AuthServiceProtocol: AnyObject {
     func submitOnboarding(_ payload: OnboardingPayload, accessToken: String) async throws
     func resetPassword(email: String) async throws
     func confirmPasswordReset(email: String, code: String, newPassword: String) async throws
+    /// Triggers Supabase's email-change flow: dispatches a 6-digit OTP /
+    /// confirmation link to the new email address. The user must call
+    /// `confirmEmailChange` with the OTP before the change takes effect.
+    func requestEmailChange(newEmail: String) async throws
+    /// Verifies the 6-digit OTP that Supabase sent to the user's new
+    /// email. On success the auth row's email is rotated and the
+    /// returned access token reflects the change.
+    func confirmEmailChange(newEmail: String, code: String) async throws -> AuthResult
     func getUserProfile(accessToken: String) async throws -> UserProfile
     /// Exchange the current refresh token for a fresh access token. Uses the
     /// Supabase Swift SDK so the new session is also persisted to Keychain.
@@ -228,6 +251,40 @@ final class SupabaseAuthService: AuthServiceProtocol {
             throw APIError.badRequest("Invalid or expired code. Please try again.")
         }
         try await client.auth.update(user: UserAttributes(password: newPassword))
+    }
+
+    func requestEmailChange(newEmail: String) async throws {
+        let trimmed = newEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw APIError.badRequest("Enter your new email address.")
+        }
+        // `auth.update(user:)` dispatches the confirmation email when an
+        // email field is supplied. By default Supabase requires
+        // confirmation on both the old and new addresses, but the
+        // 6-digit OTP that ships with the change-email template lets us
+        // gate everything off a single verifyOTP call against the new
+        // address (see `confirmEmailChange` below).
+        try await client.auth.update(user: UserAttributes(email: trimmed))
+    }
+
+    func confirmEmailChange(newEmail: String, code: String) async throws -> AuthResult {
+        let trimmedEmail = newEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+        let token = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedEmail.isEmpty else {
+            throw APIError.badRequest("Enter your new email address.")
+        }
+        guard !token.isEmpty else {
+            throw APIError.badRequest("Enter the verification code.")
+        }
+        let response = try await client.auth.verifyOTP(
+            email: trimmedEmail,
+            token: token,
+            type: .emailChange
+        )
+        guard let session = response.session else {
+            throw APIError.badRequest("That code doesn’t match. Please try the 6-digit verification code again.")
+        }
+        return authResult(from: session, fallbackEmail: trimmedEmail)
     }
 
     func getUserProfile(accessToken: String) async throws -> UserProfile {

@@ -17,22 +17,28 @@ struct GeneralSection: View {
     @EnvironmentObject var appState: AppState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Group {
-                switch viewModel.generalPanel {
-                case .overview:   overviewPanel
-                case .language:   languagePanel
-                case .migration:  migrationPanel
-                case .referral:   referralPanel
-                case .storage:    storagePanel
-                }
+        // Use the same 14pt offset + fade transition as the outer
+        // ProfileView detail panel, plus `.clipped()` on the column so
+        // the sliding content never visually crosses into the left
+        // sidebar (which is what made the previous `.move(edge: …)`
+        // animation feel like it slid across the whole settings card).
+        Group {
+            switch viewModel.generalPanel {
+            case .overview:   overviewPanel
+            case .language:   languagePanel
+            case .migration:  migrationPanel
+            case .referral:   referralPanel
+            case .storage:    storagePanel
             }
-            .transition(.asymmetric(
-                insertion: .opacity.combined(with: .move(edge: .trailing)),
-                removal: .opacity.combined(with: .move(edge: .leading))
-            ))
-            .animation(.easeOut(duration: 0.18), value: viewModel.generalPanel)
         }
+        .id(viewModel.generalPanel)
+        .transition(.generalSubPanel)
+        .animation(
+            .timingCurve(0.22, 0.61, 0.36, 1, duration: 0.22),
+            value: viewModel.generalPanel
+        )
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .clipped()
     }
 
     // MARK: - Overview
@@ -45,25 +51,41 @@ struct GeneralSection: View {
                 copy: "Keep language, storage, referral, migration, and version tools together in one quieter settings group."
             )
 
+            // Beta build: these sub-pages are not wired to real
+            // backends yet, so the rows render in a disabled "coming
+            // soon" state. They stay visible (instead of being hidden)
+            // so the layout matches the eventual shipping screen.
             ProfileOverviewRow(
                 title: "Language Selection",
-                detail: viewModel.profile.language
-            ) { withAnimation { viewModel.generalPanel = .language } }
+                detail: viewModel.profile.language,
+                disabled: true,
+                trailingLabel: "Soon"
+            ) {}
 
             ProfileOverviewRow(
                 title: "Data Migration",
-                detail: viewModel.queuedCount > 0 ? "\(viewModel.queuedCount) imports queued" : "Import from other apps"
-            ) { withAnimation { viewModel.generalPanel = .migration } }
+                detail: viewModel.queuedCount > 0 ? "\(viewModel.queuedCount) imports queued" : "Import from other apps",
+                disabled: true,
+                trailingLabel: "Soon"
+            ) {}
 
             ProfileOverviewRow(
                 title: "Referral Program",
-                detail: "Invite friend link and rewards"
-            ) { withAnimation { viewModel.generalPanel = .referral } }
+                detail: "Invite friend link and rewards",
+                disabled: true,
+                trailingLabel: "Soon"
+            ) {}
 
+            // Storage is now wired to the real `DeviceStorageService`
+            // walker — clicking through to the sub-panel shows actual
+            // bucket sizes for this install.
             ProfileOverviewRow(
                 title: "Storage",
-                detail: "\(viewModel.totalStorageUsage) MB stored on this device"
-            ) { withAnimation { viewModel.generalPanel = .storage } }
+                detail: "\(viewModel.totalStorageFormatted) stored on this device"
+            ) {
+                viewModel.refreshStorageReport()
+                withAnimation { viewModel.generalPanel = .storage }
+            }
 
             // Version number card
             VStack(alignment: .leading, spacing: 4) {
@@ -351,10 +373,16 @@ struct GeneralSection: View {
                     .font(.system(size: 12, weight: .bold))
                     .tracking(0.08 * 12)
                     .foregroundStyle(ProfileTheme.textMuted)
-                Text("\(viewModel.totalStorageUsage) MB")
-                    .font(.system(size: 28, weight: .bold))
-                    .tracking(-0.03 * 28)
-                    .foregroundStyle(ProfileTheme.textPrimary)
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text(viewModel.totalStorageFormatted)
+                        .font(.system(size: 28, weight: .bold))
+                        .tracking(-0.03 * 28)
+                        .foregroundStyle(ProfileTheme.textPrimary)
+                    if viewModel.isMeasuringStorage {
+                        ProgressView()
+                            .scaleEffect(0.7)
+                    }
+                }
                 Text(viewModel.storageHint)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(ProfileTheme.textSecondary)
@@ -365,24 +393,25 @@ struct GeneralSection: View {
             .profileInsetCard()
 
             VStack(spacing: 10) {
-                ForEach(Array(viewModel.storageUsage.enumerated()), id: \.offset) { _, item in
-                    let percent = viewModel.totalStorageUsage == 0
+                ForEach(viewModel.storageBuckets) { bucket in
+                    let total = viewModel.totalStorageBytes
+                    let percent = total == 0
                         ? 0.0
-                        : Double(item.value) / Double(viewModel.totalStorageUsage)
+                        : Double(bucket.bytes) / Double(total)
                     VStack(alignment: .leading, spacing: 8) {
                         HStack(alignment: .top, spacing: 12) {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(item.label)
+                                Text(bucket.label)
                                     .font(.system(size: 14, weight: .bold))
                                     .foregroundStyle(ProfileTheme.textPrimary)
-                                Text(item.detail)
+                                Text(bucket.detail)
                                     .font(.system(size: 12, weight: .medium))
                                     .foregroundStyle(ProfileTheme.textSecondary)
                                     .lineSpacing(3)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                             Spacer(minLength: 8)
-                            Text("\(item.value) MB")
+                            Text(bucket.bytes.formattedAsStorageSize())
                                 .font(.system(size: 13, weight: .bold))
                                 .foregroundStyle(ProfileTheme.accent)
                         }
@@ -394,12 +423,45 @@ struct GeneralSection: View {
 
             FlowLayout(spacing: 10) {
                 ProfileSecondaryButton(title: "Clear Preview Cache") {
-                    viewModel.storageHint = "Preview cache cleared. Core note files stay available offline."
+                    viewModel.clearMediaCache()
                 }
                 ProfileSecondaryButton(title: "Remove Unused Files") {
-                    viewModel.storageHint = "Unused offline files removed. Only pinned study assets remain on-device."
+                    viewModel.clearOfflineFiles()
                 }
             }
         }
+        .onAppear { viewModel.refreshStorageReport() }
+    }
+}
+
+// MARK: - Sub-panel transition
+
+private struct GeneralSubPanelModifier: ViewModifier {
+    let translation: CGFloat
+    let opacity: Double
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(opacity)
+            .offset(x: translation)
+    }
+}
+
+private extension AnyTransition {
+    /// Same idea as `ProfileDetailPanelModifier` in `ProfileView` — a 14pt
+    /// translate + fade — but scoped to the General sub-panels so the
+    /// "Back to General" / sub-row tap animation stays entirely inside
+    /// the right column instead of sliding across the sidebar.
+    static var generalSubPanel: AnyTransition {
+        .asymmetric(
+            insertion: .modifier(
+                active: GeneralSubPanelModifier(translation: 14, opacity: 0),
+                identity: GeneralSubPanelModifier(translation: 0, opacity: 1)
+            ),
+            removal: .modifier(
+                active: GeneralSubPanelModifier(translation: -14, opacity: 0),
+                identity: GeneralSubPanelModifier(translation: 0, opacity: 1)
+            )
+        )
     }
 }

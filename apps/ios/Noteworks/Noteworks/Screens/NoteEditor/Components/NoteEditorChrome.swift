@@ -183,6 +183,213 @@ struct DropdownSectionTitle: View {
     }
 }
 
+/// Section header with a trailing value tinted by the active tool color.
+struct DropdownSectionHeader: View {
+    let title: String
+    let detail: String
+    var detailColor: Color = NoteEditorTheme.accent
+
+    var body: some View {
+        HStack {
+            Text(title.uppercased())
+                .font(.system(size: 11, weight: .bold))
+                .tracking(0.08 * 11)
+                .foregroundStyle(NoteEditorTheme.textSecondary.opacity(0.95))
+            Spacer(minLength: 8)
+            Text(detail)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(detailColor)
+        }
+        .padding(.horizontal, 12)
+    }
+}
+
+// MARK: - Capsule option chip (NoteWorks_UI 3 `NoteOptionChip`)
+
+/// Pill toggle used inside the shape / text / eraser dropdowns. Tinted
+/// to whatever accent the surrounding tool uses (ink color, shape color,
+/// etc.) so the chip color animates with the live selection.
+struct NoteOptionChip: View {
+    let label: String
+    var symbol: String? = nil
+    var customLabelFont: Font? = nil
+    let isActive: Bool
+    var accentColor: Color = NoteEditorTheme.accent
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                if let symbol {
+                    Image(systemName: symbol)
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                Text(label)
+                    .font(customLabelFont ?? .system(size: 12, weight: .semibold))
+            }
+            .foregroundStyle(isActive ? accentColor : NoteEditorTheme.textSecondary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(
+                Capsule()
+                    .fill(isActive ? accentColor.opacity(0.14) : Color.white.opacity(0.55))
+            )
+            .overlay(
+                Capsule().strokeBorder(
+                    isActive ? accentColor.opacity(0.45) : Color.black.opacity(0.08),
+                    lineWidth: 1
+                )
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Eraser preview (NoteWorks_UI 3 size preview)
+
+struct EraserSizePreview: View {
+    let size: CGFloat
+    let isObjectMode: Bool
+
+    var body: some View {
+        HStack {
+            Spacer()
+            RoundedRectangle(cornerRadius: isObjectMode ? 9 : size / 2, style: .continuous)
+                .fill(Color(red: 0xC2/255, green: 0xDB/255, blue: 0xEB/255).opacity(0.95))
+                .overlay(
+                    RoundedRectangle(cornerRadius: isObjectMode ? 9 : size / 2, style: .continuous)
+                        .strokeBorder(Color(red: 0x8E/255, green: 0xAA/255, blue: 0xC0/255).opacity(0.46), lineWidth: 1)
+                )
+                .frame(width: size, height: size)
+                .shadow(color: Color(red: 0x76/255, green: 0x8F/255, blue: 0xA6/255).opacity(0.16), radius: 8, x: 0, y: 6)
+            Spacer()
+        }
+        .frame(minHeight: 42)
+        .animation(.easeOut(duration: 0.12), value: size)
+        .animation(.easeOut(duration: 0.18), value: isObjectMode)
+    }
+}
+
+// MARK: - Pen stroke preview (NoteWorks_UI 3 `PenThicknessPreview`)
+
+struct PenThicknessPreview: View {
+    let thickness: CGFloat
+    let color: Color
+
+    private var diameter: CGFloat {
+        let minThickness: CGFloat = 2
+        let maxThickness: CGFloat = 12
+        let normalized = (thickness - minThickness) / (maxThickness - minThickness)
+        let clamped = Swift.min(1, Swift.max(0, normalized))
+        return 8 + clamped * 38
+    }
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [color.opacity(0.17), color.opacity(0.10), .clear],
+                        center: .center,
+                        startRadius: 0,
+                        endRadius: 34
+                    )
+                )
+                .frame(width: 68, height: 68)
+
+            Circle()
+                .fill(color)
+                .frame(width: diameter, height: diameter)
+                .overlay(Circle().strokeBorder(.white.opacity(0.55), lineWidth: 1))
+                .shadow(color: color.opacity(0.20), radius: 13, x: 0, y: 10)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(minHeight: 78)
+        .padding(.top, 4)
+        .animation(.easeOut(duration: 0.14), value: diameter)
+        .animation(.easeOut(duration: 0.14), value: color)
+    }
+}
+
+// MARK: - Single-line ink palette (pen / highlighter dropdowns)
+
+struct InkColorPaletteRow: View {
+    let swatches: [NoteColorSwatch]
+    let selectedId: String?
+    let usingCustom: Bool
+    let customColor: Color
+    var swatchSize: CGFloat = 30
+    let onSelect: (NoteColorSwatch) -> Void
+    let onCustomColor: (Color) -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ForEach(swatches) { swatch in
+                inkSwatchButton(swatch)
+            }
+
+            if usingCustom {
+                Circle()
+                    .fill(customColor)
+                    .frame(width: swatchSize, height: swatchSize)
+                    .overlay(
+                        Circle().strokeBorder(NoteEditorTheme.accent, lineWidth: 2)
+                    )
+            }
+
+            ColorPicker(
+                "",
+                selection: Binding(
+                    get: { customColor },
+                    set: onCustomColor
+                ),
+                supportsOpacity: false
+            )
+            .labelsHidden()
+            .frame(width: swatchSize, height: swatchSize)
+            .background(
+                Circle()
+                    .strokeBorder(
+                        usingCustom ? NoteEditorTheme.accent.opacity(0.55) : Color.black.opacity(0.12),
+                        style: StrokeStyle(lineWidth: 1.5, dash: [4, 3])
+                    )
+            )
+            .overlay {
+                Image(systemName: "plus")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(NoteEditorTheme.textSecondary)
+                    .allowsHitTesting(false)
+            }
+        }
+        .padding(.horizontal, 12)
+    }
+
+    @ViewBuilder
+    private func inkSwatchButton(_ swatch: NoteColorSwatch) -> some View {
+        let isSelected = !usingCustom && swatch.id == selectedId
+        Button {
+            onSelect(swatch)
+        } label: {
+            Circle()
+                .fill(swatch.color)
+                .frame(width: swatchSize, height: swatchSize)
+                .overlay(
+                    Circle().strokeBorder(
+                        isSelected ? Color.white : Color.black.opacity(0.08),
+                        lineWidth: isSelected ? 2.5 : 1
+                    )
+                )
+                .shadow(
+                    color: isSelected ? swatch.color.opacity(0.35) : .clear,
+                    radius: isSelected ? 6 : 0,
+                    x: 0,
+                    y: isSelected ? 2 : 0
+                )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 // MARK: - Share / upload menu (matches NoteWorks_UI 2 header dropdown)
 
 /// Two-row panel opened from the share icon: community composer vs

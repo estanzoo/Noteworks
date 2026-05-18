@@ -44,6 +44,17 @@ struct CollegeStepView: View {
 
                             if data.isOAuthUser {
                                 OnboardingField(
+                                    label: "Name",
+                                    placeholder: "Your name",
+                                    disabled: false,
+                                    text: $data.name
+                                )
+                                OnboardingError(
+                                    show: attemptedNext && data.collegeOAuthNameError != nil,
+                                    text: data.collegeOAuthNameError ?? ""
+                                )
+
+                                OnboardingField(
                                     label: "School Email",
                                     placeholder: "you@university.edu",
                                     disabled: false,

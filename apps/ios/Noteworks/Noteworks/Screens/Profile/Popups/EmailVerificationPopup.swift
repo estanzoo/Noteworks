@@ -10,6 +10,7 @@ import SwiftUI
 
 struct EmailVerificationPopup: View {
     @ObservedObject var viewModel: ProfileViewModel
+    @EnvironmentObject var appState: AppState
 
     var body: some View {
         if viewModel.editingEmail {
@@ -74,28 +75,6 @@ struct EmailVerificationPopup: View {
                         keyboardType: .numberPad
                     )
 
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("PREVIEW CODE")
-                            .font(.system(size: 12, weight: .bold))
-                            .tracking(0.06 * 12)
-                            .foregroundStyle(ProfileTheme.textMuted)
-                        Text(viewModel.previewVerificationCode)
-                            .font(.system(size: 18, weight: .bold))
-                            .tracking(0.18 * 18)
-                            .foregroundStyle(ProfileTheme.textPrimary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 12)
-                    .background(
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .fill(ProfileTheme.accent.opacity(0.08))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .strokeBorder(ProfileTheme.accent.opacity(0.16), lineWidth: 1)
-                    )
-
                     if !viewModel.emailVerificationError.isEmpty {
                         Text(viewModel.emailVerificationError)
                             .font(.system(size: 13, weight: .medium))
@@ -106,24 +85,34 @@ struct EmailVerificationPopup: View {
                 }
             }
 
+            if !isVerifyStep, !viewModel.emailVerificationError.isEmpty {
+                Text(viewModel.emailVerificationError)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(ProfileTheme.negative)
+                    .lineSpacing(3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             HStack(spacing: 10) {
                 ProfileSecondaryButton(title: "Cancel") { viewModel.closeEmailPopup() }
                     .frame(maxWidth: .infinity)
 
                 if isVerifyStep {
                     ProfilePrimaryButton(
-                        title: "Verify",
-                        enabled: viewModel.emailVerificationCode.count == 6
+                        title: viewModel.emailVerificationBusy ? "Verifying…" : "Verify",
+                        enabled: !viewModel.emailVerificationBusy
+                            && viewModel.emailVerificationCode.count == 6
                     ) {
-                        viewModel.saveEmail()
+                        viewModel.saveEmail(using: appState)
                     }
                     .frame(maxWidth: .infinity)
                 } else {
                     ProfilePrimaryButton(
-                        title: "Continue",
-                        enabled: !viewModel.emailDraft.trimmingCharacters(in: .whitespaces).isEmpty
+                        title: viewModel.emailVerificationBusy ? "Sending…" : "Continue",
+                        enabled: !viewModel.emailVerificationBusy
+                            && !viewModel.emailDraft.trimmingCharacters(in: .whitespaces).isEmpty
                     ) {
-                        viewModel.sendEmailVerificationCode()
+                        viewModel.sendEmailVerificationCode(using: appState)
                     }
                     .frame(maxWidth: .infinity)
                 }

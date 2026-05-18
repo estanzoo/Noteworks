@@ -269,7 +269,9 @@ struct OnboardingYearOfStudyPicker: View {
                         .strokeBorder(OnboardingTheme.glassBorder, lineWidth: 1)
                 }
                 .shadow(color: .black.opacity(0.08), radius: 12, y: 4)
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                // `.top` made the dismiss animation slide upward out of the card.
+                // Options sit below the field — fade/slide out toward the bottom only.
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
         }
         .opacity(disabled ? 0.35 : 1)

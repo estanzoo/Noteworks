@@ -133,6 +133,16 @@ class OnboardingData: ObservableObject {
 
     // Step 3 — College
 
+    /// Display name for Google / Apple sign-in. Email-password users
+    /// already captured this on the sign-up step; OAuth users enter it
+    /// on the college screen above school email.
+    var collegeOAuthNameError: String? {
+        guard isOAuthUser else { return nil }
+        return name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "Please enter your name."
+            : nil
+    }
+
     /// Optional school-email error. Only enforced when the field is
     /// visible (OAuth users), since email-password sign-ups already
     /// captured the email up-front.
@@ -158,7 +168,8 @@ class OnboardingData: ObservableObject {
     }
 
     var isCollegeValid: Bool {
-        collegeSchoolEmailError == nil
+        collegeOAuthNameError == nil
+            && collegeSchoolEmailError == nil
             && collegeNameError == nil
             && yearOfStudyError == nil
     }
@@ -229,17 +240,16 @@ class OnboardingData: ObservableObject {
 
     var isInterestsValid: Bool { interestsError == nil }
 
-    /// Strings sent to `submit-onboarding` as `course_codes` (API shape).
+    /// Topics picked on the "Any Field of Interests?" step, deduped
+    /// (case-insensitive) and capped at 50 entries. Sent to the server
+    /// as `interests` on the `submit-onboarding` payload — written into
+    /// the dedicated `users.interests` column instead of the (mis-used)
+    /// `users.course_codes` array that previous builds relied on.
     ///
-    /// Today the UI sources these from the **Interests** chips — they are
-    /// hobbies/topics, not registrar course codes. The final onboarding
-    /// step (**CoursesStepView**) does **not** prefill from this list;
-    /// the user enters real classes there for Home bubbles only.
-    ///
-    /// Later product work can send a dedicated `interests` field and/or
-    /// a real course picker — the wire format for `course_codes` stays
-    /// whatever the edge function accepts.
-    var selectedCourseCodes: [String] {
+    /// The follow-up `CoursesStepView` collects real class identifiers
+    /// for Home bubbles; those go through `course_enrollments`, not
+    /// this list.
+    var selectedInterests: [String] {
         var seen = Set<String>()
         var result: [String] = []
         for raw in interests + customInterests {

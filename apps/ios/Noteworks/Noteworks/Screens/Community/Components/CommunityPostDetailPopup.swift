@@ -29,6 +29,7 @@ struct CommunityPostDetailPopup: View {
     @State private var commentDraft: String = ""
     @State private var isSubmittingComment: Bool = false
     @State private var attachmentPreview: PostAttachment?
+    @State private var imagePreviewURL: String?
     @State private var showDeleteConfirm: Bool = false
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -60,7 +61,11 @@ struct CommunityPostDetailPopup: View {
         _post = State(initialValue: initialPost)
     }
 
-    private var hasAttachments: Bool { !post.attachments.isEmpty }
+    /// Treat images and document attachments uniformly — both feed the
+    /// left preview pane (matches the New Post composer's behaviour).
+    private var hasAttachments: Bool {
+        !post.attachments.isEmpty || !post.media.isEmpty
+    }
     private var isCompact: Bool { horizontalSizeClass == .compact }
     private var isOwnPost: Bool { post.userId == currentUserId }
 
@@ -87,6 +92,15 @@ struct CommunityPostDetailPopup: View {
                     attachment: preview,
                     accessToken: accessToken,
                     onDismiss: { attachmentPreview = nil }
+                )
+                .transition(.opacity)
+                .zIndex(200)
+            }
+
+            if let imageURL = imagePreviewURL {
+                ImageLightbox(
+                    urlString: imageURL,
+                    onDismiss: { imagePreviewURL = nil }
                 )
                 .transition(.opacity)
                 .zIndex(200)
@@ -150,7 +164,9 @@ struct CommunityPostDetailPopup: View {
             post.author = PostAuthor(
                 id: profile.id,
                 name: profile.displayName,
-                avatarUrl: profile.avatarUrl
+                avatarUrl: profile.avatarUrl,
+                school: profile.schoolAffiliation,
+                major: profile.major
             )
         }
         comments = patchComments(
@@ -392,25 +408,11 @@ struct CommunityPostDetailPopup: View {
     // MARK: - Attachments pane
 
     private var attachmentsPane: some View {
-        ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 12) {
-                PostAttachmentStack(
-                    post: post,
-                    detail: true,
-                    onOpenAttachment: { attachmentPreview = $0 }
-                )
-            }
-            .padding(24)
-        }
-        .background(
-            LinearGradient(
-                colors: [
-                    Color(red: 252/255, green: 253/255, blue: 255/255).opacity(0.7),
-                    Color(red: 241/255, green: 246/255, blue: 250/255).opacity(0.48),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
+        PostAttachmentPreviewPane(
+            post: post,
+            accessToken: accessToken,
+            onOpenAttachment: { attachmentPreview = $0 },
+            onOpenImage: { imagePreviewURL = $0 }
         )
     }
 
@@ -422,7 +424,11 @@ struct CommunityPostDetailPopup: View {
 
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
-                    if hasAttachments && isCompact {
+                    // On compact width (iPhone) we don't render the side
+                    // preview pane, so attachments still need an inline
+                    // affordance here. On regular width the side pane
+                    // already shows the big preview + thumbnails.
+                    if !post.attachments.isEmpty && isCompact {
                         PostAttachmentStack(
                             post: post,
                             detail: true,
@@ -462,15 +468,38 @@ struct CommunityPostDetailPopup: View {
                 )
 
                 VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 8) {
+                    // Row 1: Author name + (optional) school affiliation —
+                    // mirrors the NoteWorks_UI 3 community detail mock
+                    // where "Alex Chen" is followed inline by his school.
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(post.authorName)
                             .font(.system(size: 16, weight: .bold))
                             .foregroundStyle(CommunityTheme.textPrimary)
-                        PostKindPill(kind: post.postKind)
+                            .lineLimit(1)
+                        if let school = post.author?.school, !school.isEmpty {
+                            Text(school)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(CommunityTheme.textSecondary)
+                                .lineLimit(1)
+                        }
                     }
-                    Text(relativeTime(post.createdAt))
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(CommunityTheme.textMuted)
+                    // Row 2: Major (when set) — shown right under the
+                    // name+school line, matching the mock's secondary
+                    // "MA Information Experience Design" caption.
+                    if let major = post.author?.major, !major.isEmpty {
+                        Text(major)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(CommunityTheme.textMuted)
+                            .lineLimit(1)
+                    }
+                    // Row 3: Post-kind chip + timestamp.
+                    HStack(spacing: 8) {
+                        PostKindPill(kind: post.postKind)
+                        Text(relativeTime(post.createdAt))
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(CommunityTheme.textMuted)
+                    }
+                    .padding(.top, 2)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -498,7 +527,11 @@ struct CommunityPostDetailPopup: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                PostMediaCarousel(media: post.media)
+                // On regular width the left preview pane already shows
+                // post images; only render the inline carousel on iPhone.
+                if isCompact {
+                    PostMediaCarousel(media: post.media)
+                }
             }
 
             FlowLayout(spacing: 8) {
@@ -510,10 +543,13 @@ struct CommunityPostDetailPopup: View {
                     Task { await toggleLike() }
                 }
 
-                Text("\(post.commentsCount) comments")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(CommunityTheme.textMuted)
-                    .padding(.horizontal, 4)
+                // Comments count rendered as a non-interactive pill so it
+                // sits flush with the Like pill on the same horizontal
+                // baseline (matches the NoteWorks_UI 3 detail mock).
+                CommunityCountPill(
+                    icon: "bubble.right",
+                    label: "\(post.commentsCount) \(post.commentsCount == 1 ? "comment" : "comments")"
+                )
 
                 ForEach(post.hashtags, id: \.self) { tag in
                     Button { onHashtagTap(tag) } label: {
@@ -661,6 +697,65 @@ struct CommunityPostDetailPopup: View {
             Rectangle()
                 .fill(Color(red: 219/255, green: 227/255, blue: 235/255).opacity(0.78))
                 .frame(height: 1)
+        }
+    }
+}
+
+// MARK: - Image lightbox
+
+/// Full-screen image viewer triggered from the preview pane / inline
+/// carousel. Pinch-to-zoom is intentionally light here — the goal is a
+/// quick "show me the photo bigger" affordance, not a full editor.
+private struct ImageLightbox: View {
+    let urlString: String
+    let onDismiss: () -> Void
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.85)
+                .ignoresSafeArea()
+                .onTapGesture { onDismiss() }
+
+            if let url = URL(string: urlString) {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFit()
+                            .padding(24)
+                    case .empty:
+                        ProgressView().tint(.white)
+                    case .failure:
+                        VStack(spacing: 10) {
+                            Image(systemName: "photo")
+                                .font(.system(size: 36))
+                                .foregroundStyle(.white.opacity(0.85))
+                            Text("Couldn't load image")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(.white)
+                        }
+                    @unknown default:
+                        EmptyView()
+                    }
+                }
+            }
+
+            VStack {
+                HStack {
+                    Spacer()
+                    Button(action: onDismiss) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 38, height: 38)
+                            .background(Circle().fill(Color.white.opacity(0.18)))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(20)
+                }
+                Spacer()
+            }
         }
     }
 }

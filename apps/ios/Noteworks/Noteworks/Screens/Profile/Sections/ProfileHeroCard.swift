@@ -27,6 +27,14 @@ struct ProfileHeroCard: View {
     private let horizontalThreshold: CGFloat = 720
     private var isCompact: Bool { availableWidth < horizontalThreshold }
 
+    private var trimmedHeroBio: String {
+        viewModel.profile.bio.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var heroBioPlaceholder: String {
+        "No bio yet — add one under About You, then save."
+    }
+
     var body: some View {
         GlassCard(padding: 24, cornerRadius: 24) {
             Group {
@@ -164,9 +172,9 @@ struct ProfileHeroCard: View {
                     .tracking(0.08 * 11)
                     .foregroundStyle(ProfileTheme.textMuted)
 
-                Text(viewModel.profile.bio)
+                Text(trimmedHeroBio.isEmpty ? heroBioPlaceholder : trimmedHeroBio)
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(ProfileTheme.textSecondary)
+                    .foregroundStyle(trimmedHeroBio.isEmpty ? ProfileTheme.textMuted : ProfileTheme.textSecondary)
                     .lineLimit(2)
                     .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -188,13 +196,6 @@ struct ProfileHeroCard: View {
                 ProfileAccentChip(text: "\(viewModel.profile.credits.balance) Credits Available")
                 Spacer(minLength: 0)
             }
-
-            // Caption
-            Text("Your photo appears in the top-right avatar, community posts, and shared note spaces to keep collaboration personal.")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(ProfileTheme.textSecondary)
-                .lineSpacing(4)
-                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

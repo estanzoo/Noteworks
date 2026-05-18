@@ -20,7 +20,7 @@
 
 import { requireAuth } from '../_shared/auth.ts'
 import { corsResponse, json, errorResponse } from '../_shared/cors.ts'
-import { displayName } from '../_shared/author.ts'
+import { displayName, nullIfBlank } from '../_shared/author.ts'
 
 /// Escape `%`, `_`, and `\` so the user-supplied query is treated as a
 /// pure substring under ILIKE. Without this, typing `100%_off` would
@@ -202,17 +202,25 @@ Deno.serve(async (req) => {
   // returns null for every author who isn't the caller, and the
   // client falls back to "Student").
   const authorIds = Array.from(new Set(sliced.map(p => p.user_id)))
-  const authorById = new Map<string, { id: string; name: string; avatar_url: string | null }>()
+  const authorById = new Map<string, {
+    id: string
+    name: string
+    avatar_url: string | null
+    school: string | null
+    major: string | null
+  }>()
   if (authorIds.length > 0) {
     const { data: profiles } = await supabase
       .from('user_profiles')
-      .select('id, name, avatar_url')
+      .select('id, name, avatar_url, school_affiliation, major')
       .in('id', authorIds)
     for (const row of profiles ?? []) {
       authorById.set(row.id as string, {
         id: row.id as string,
         name: displayName(row.name as string | null, null),
         avatar_url: (row.avatar_url as string | null) ?? null,
+        school: nullIfBlank(row.school_affiliation as string | null),
+        major: nullIfBlank(row.major as string | null),
       })
     }
   }
@@ -232,7 +240,7 @@ Deno.serve(async (req) => {
 
   const responsePosts = sliced.map((p) => {
     const author = authorById.get(p.user_id)
-      ?? { id: p.user_id, name: 'Student', avatar_url: null }
+      ?? { id: p.user_id, name: 'Student', avatar_url: null, school: null, major: null }
     return {
       id: p.id,
       user_id: p.user_id,

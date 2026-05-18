@@ -1,6 +1,6 @@
 import { requireAuth } from '../_shared/auth.ts'
 import { corsResponse, json, errorResponse } from '../_shared/cors.ts'
-import { displayName } from '../_shared/author.ts'
+import { displayName, nullIfBlank } from '../_shared/author.ts'
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return corsResponse()
@@ -88,7 +88,7 @@ Deno.serve(async (req) => {
   // avatar, not "Student" for everyone else.
   const { data: profileRow } = await supabase
     .from('user_profiles')
-    .select('id, name, avatar_url')
+    .select('id, name, avatar_url, school_affiliation, major')
     .eq('id', post.user_id)
     .maybeSingle()
 
@@ -97,8 +97,10 @@ Deno.serve(async (req) => {
         id: profileRow.id as string,
         name: displayName(profileRow.name as string | null, null),
         avatar_url: (profileRow.avatar_url as string | null) ?? null,
+        school: nullIfBlank(profileRow.school_affiliation as string | null),
+        major: nullIfBlank(profileRow.major as string | null),
       }
-    : { id: post.user_id, name: 'Student', avatar_url: null }
+    : { id: post.user_id, name: 'Student', avatar_url: null, school: null, major: null }
 
   return json({
     id: post.id,

@@ -51,6 +51,9 @@ struct ProfileView: View {
             EmailVerificationPopup(viewModel: viewModel)
                 .animation(.easeOut(duration: 0.18), value: viewModel.editingEmail)
 
+            PasswordChangePopup(viewModel: viewModel)
+                .animation(.easeOut(duration: 0.18), value: viewModel.editingPassword)
+
             FeedbackThanksPopup(viewModel: viewModel)
                 .animation(.easeOut(duration: 0.18), value: viewModel.feedbackPopup.open)
         }
@@ -228,6 +231,10 @@ struct ProfileView: View {
             detailPanel
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .frame(minHeight: 460, alignment: .topLeading)
+                // Keep the section transition's 14pt offset visually
+                // bounded to this column — without clipping the slide
+                // could otherwise visually overlap the sidebar.
+                .clipped()
         }
     }
 
@@ -238,6 +245,7 @@ struct ProfileView: View {
                 .fill(Color.black.opacity(0.04))
                 .frame(height: 1)
             detailPanel
+                .clipped()
         }
     }
 

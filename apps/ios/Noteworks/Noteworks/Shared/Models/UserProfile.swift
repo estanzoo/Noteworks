@@ -20,12 +20,23 @@ struct UserProfile: Codable, Equatable, Identifiable {
     var yearOfGraduation: Int?
     var schoolAffiliation: String?
     var schoolEmail: String?
+    /// Registrar-grade course identifiers (e.g. "ECON101"). Reserved
+    /// for an upcoming real course picker — historically this was
+    /// abused as a free-form interests bucket, which is now stored in
+    /// `interests` (see migration `20260517200000_add_users_interests`).
     var courseCodes: [String]?
+    /// Topics the user picked on the onboarding "Any Field of
+    /// Interests?" step (e.g. "AI", "Design", "Soccer"). Lives in its
+    /// own `users.interests` column so it doesn't muddy `courseCodes`.
+    var interests: [String]?
     /// Program of study (e.g. "Computer Science", "Information Experience
     /// Design"). Captured in Onboarding Step 4 → persisted by
-    /// `submit-onboarding`. Distinct from `courseCodes`, which is currently
-    /// used as a free-form interests/tags list.
+    /// `submit-onboarding`.
     var major: String?
+    /// Short self-description shown on the Profile hero card and About
+    /// You editor. Persisted by `submit-onboarding` whenever the caller
+    /// includes a `bio` key on the payload.
+    var bio: String?
     /// Public URL of the user's profile photo in the `avatars` storage
     /// bucket. Written by `upload-avatar` and surfaced everywhere the
     /// user appears (top-right pill, community posts, comments).

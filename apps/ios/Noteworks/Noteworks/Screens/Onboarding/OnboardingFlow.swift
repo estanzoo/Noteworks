@@ -442,7 +442,11 @@ struct OnboardingFlow: View {
                     schoolAffiliation: data.schoolAffiliationForSubmit,
                     schoolId: data.notAStudent ? nil : data.selectedSchoolId,
                     schoolEmail: resolvedSchoolEmail,
-                    courseCodes: data.selectedCourseCodes,
+                    // `courseCodes` is intentionally empty — real course
+                    // identifiers will land here once we ship a registrar
+                    // picker. Interests live in their own field.
+                    courseCodes: [],
+                    interests: data.selectedInterests,
                     major: resolvedMajor
                 )
                 try await appState.authService.submitOnboarding(
@@ -452,7 +456,7 @@ struct OnboardingFlow: View {
                 // Submit succeeded — surface the post-submit course
                 // setup step so the user lands on Home with bubbles
                 // already seeded. The submit-onboarding payload above
-                // already wrote `course_codes` server-side; this step
+                // wrote the user's `interests` server-side; this step
                 // is local-only and feeds `NotesStore.bubbleNames`.
                 step = .setupCourses
             } catch {

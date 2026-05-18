@@ -4,57 +4,117 @@
 //
 //  Layout helper for the home bubble field. The source of truth for
 //  bubble names + notes lives in `NotesStore`; this file turns that
-//  into laid-out `CourseBubble`s with:
+//  into laid-out `CourseBubble`s following the JSX mock at
+//  `others/NoteWorks_UI 3/noteworks-library.jsx` (`placeBubbles`
+//  L1460–L1510, `HomePage` L2179–L2278).
 //
-//  - **Size proportional to note count**, clamped between a minimum
-//    (readable) and a maximum (never dominates the screen).
-//  - **Non-overlapping positions** — a deterministic packer places the
-//    biggest bubble first and resolves collisions by spiraling outward
-//    from each bubble's preferred slot.
+//  Recipe:
+//  - **Order** by note count desc; Swift's `sorted` is stable, so ties
+//    keep the user's bubble-list insertion order (which is the JSX
+//    behaviour when explicit categories exist).
+//  - **Size** proportional to note count between 170pt and 260pt, with
+//    an empty-bubble base that depends on the total count so a screen
+//    full of zero-note bubbles still feels balanced.
+//  - **Position** from an art-directed slot table for 1–6 bubbles,
+//    with a 12-slot fallback for 7+ that wraps via `index % slots`.
+//  - **Uniform shrink-to-fit**: try the slot layout at scale 1.0; if
+//    any pair collides, scale everyone down by 3.5% and retry until
+//    they fit (or bottom out at 0.56). Replaces the old hash-spiral
+//    packer that produced the "randomly scattered" look on iPad.
 //
 
 import Foundation
 import CoreGraphics
 
-/// One bubble already laid out, used by the packer to detect collisions.
-/// Lives at file scope so the helpers below can share a single nominal
-/// type instead of passing tuple arrays around (Swift won't bridge
-/// `[Placed]` and `[(center: CGPoint, radius: CGFloat)]` implicitly).
-private struct PlacedBubble {
-    let center: CGPoint
-    let radius: CGFloat
-}
-
 enum HomeBubbleLayout {
 
     // MARK: - Tuning
+    //
+    // JSX uses linear scaling with `170 … 260` and a `112` floor. That
+    // works for ~equal counts but collapses on iPad when one bubble
+    // dominates the field — e.g. "Unnamed: 35 Notes" turns every other
+    // bubble into the same near-minimum size (`Mathematics: 5 Notes`
+    // ends up looking identical to `Physics: 1 Note`). We use `sqrt`
+    // scaling instead so the size curve is steeper at the low end, and
+    // raise the floor so even empty bubbles can render their label
+    // ("Engineering" was truncating to "Engineeri…" at the old `88`
+    // floor).
+    //
+    // Resulting feel: the leader still hits the max; mid-range bubbles
+    // are clearly larger than empty ones; empty bubbles are visibly
+    // smaller than any bubble with notes; nothing ever shrinks below a
+    // size that can fit a 10-character course code.
 
-    /// Smallest a bubble ever shrinks to. Below this the title + note
-    /// count stop being readable, so a bubble with 0 notes still renders
-    /// at this size.
-    private static let minBubbleSize: CGFloat = 110
+    /// Smallest size a bubble with notes can ever request before the
+    /// shrink-to-fit pass.
+    private static let minSize: CGFloat = 160
 
-    /// Largest a bubble can ever grow to in absolute points. We additionally
-    /// cap to a fraction of the container width inside `bubbles(from:in:)`
-    /// so on a phone-sized canvas the largest bubble never eats the whole
-    /// screen.
-    private static let maxBubbleSize: CGFloat = 210
+    /// Largest size — the bubble with the most notes hits this.
+    private static let maxSize: CGFloat = 280
 
-    /// Fraction of the container's shorter edge that the biggest bubble
-    /// is allowed to take up. Keeps small canvases sane.
-    private static let maxBubbleFraction: CGFloat = 0.36
+    /// Absolute lower bound after the shrink pass. Tuned so the title
+    /// label can render a typical course code ("Engineering",
+    /// "Mathematics") without truncating to an ellipsis.
+    private static let shrinkFloor: CGFloat = 115
 
-    /// Empty gap kept between bubble edges during packing.
-    private static let packingPadding: CGFloat = 16
+    /// Note count at which a bubble hits `maxSize`. Decoupled from the
+    /// observed maximum so a single outlier (e.g. 35 unnamed notes)
+    /// can't compress every other bubble's curve into a near-flat
+    /// region where 1 note and 2 notes render at the same size.
+    private static let sizingReferenceCount: Int = 8
 
-    /// Inset from the container edges so bubbles don't kiss the screen
-    /// border or run under the title row / FAB.
-    private static let edgeInset: CGFloat = 12
+    /// JSX padding rule (L1461): tighter on narrow canvases, roomier
+    /// on iPad-class widths.
+    private static func packingPadding(for container: CGSize) -> CGFloat {
+        min(container.width, container.height) < 520 ? 10 : 18
+    }
+
+    // MARK: - Slot tables (verbatim from JSX `slotSets` L1463–L1469)
+
+    private struct Slot { let x: CGFloat; let y: CGFloat }
+
+    private static let slotSets: [Int: [Slot]] = [
+        1: [Slot(x: 0.50, y: 0.50)],
+        // The JSX 2-bubble template is a desktop-card diagonal
+        // (`[(0.40, 0.30), (0.60, 0.47)]`) that on a wide iPad canvas
+        // reads as "one bubble in the upper-left, one in the lower-
+        // right" rather than a centred pair. We use a symmetric
+        // horizontal pair at the vertical middle so a freshly-
+        // onboarded user sees their two course bubbles balanced at the
+        // centre of the field.
+        2: [Slot(x: 0.38, y: 0.50), Slot(x: 0.62, y: 0.50)],
+        3: [Slot(x: 0.34, y: 0.30), Slot(x: 0.56, y: 0.30), Slot(x: 0.45, y: 0.52)],
+        4: [
+            Slot(x: 0.31, y: 0.29), Slot(x: 0.52, y: 0.29),
+            Slot(x: 0.42, y: 0.51), Slot(x: 0.69, y: 0.43),
+        ],
+        5: [
+            Slot(x: 0.28, y: 0.28), Slot(x: 0.49, y: 0.28), Slot(x: 0.68, y: 0.23),
+            Slot(x: 0.39, y: 0.50), Slot(x: 0.58, y: 0.50),
+        ],
+        6: [
+            Slot(x: 0.28, y: 0.28), Slot(x: 0.49, y: 0.28), Slot(x: 0.68, y: 0.23),
+            Slot(x: 0.39, y: 0.50), Slot(x: 0.58, y: 0.50), Slot(x: 0.75, y: 0.42),
+        ],
+    ]
+
+    /// JSX `defaultSlots` (L1470–L1478): the 6-slot template plus six
+    /// outer positions for 7+ bubbles. Index wraps via `i % count` so
+    /// bubbles 13+ reuse the same slots.
+    private static let defaultSlots: [Slot] = (slotSets[6] ?? []) + [
+        Slot(x: 0.22, y: 0.47),
+        Slot(x: 0.47, y: 0.14),
+        Slot(x: 0.70, y: 0.67),
+        Slot(x: 0.20, y: 0.18),
+        Slot(x: 0.88, y: 0.34),
+        Slot(x: 0.36, y: 0.69),
+    ]
 
     // MARK: - Public
 
     /// Builds the on-screen bubble list. Pass the container size from a
-    /// `GeometryReader` so the packer knows how much room it has.
+    /// `GeometryReader`; the slot table is fraction-based so the same
+    /// layout reflows naturally across iPad sizes / split view / rotation.
     @MainActor
     static func bubbles(from store: NotesStore, in containerSize: CGSize) -> [CourseBubble] {
         var names = store.bubbleNames
@@ -63,188 +123,362 @@ enum HomeBubbleLayout {
             names.append("Unnamed")
         }
 
-        struct Raw { let name: String; let noteCount: Int }
-        let raws = names.map { Raw(name: $0, noteCount: store.noteCount(for: $0)) }
+        struct Raw { let name: String; let count: Int }
+        let raws = names.map { Raw(name: $0, count: store.noteCount(for: $0)) }
 
-        guard !raws.isEmpty, containerSize.width > 0, containerSize.height > 0 else { return [] }
+        guard !raws.isEmpty,
+              containerSize.width > 0, containerSize.height > 0
+        else { return [] }
 
-        // Cap the upper bound so the biggest bubble never dominates a
-        // narrow container. On a wide iPad this falls back to `maxBubbleSize`.
-        let dynamicMax = min(
-            maxBubbleSize,
-            min(containerSize.width, containerSize.height) * maxBubbleFraction
-        )
-        let effectiveMax = max(minBubbleSize + 10, dynamicMax)
+        // JSX L2191–L2194: sort by count desc. Swift's `sorted` is
+        // stable, so ties retain `bubbleNames` insertion order — which
+        // matches the JSX `hasExplicitCategories ? 0 : localeCompare`
+        // branch for the explicit-categories case the iOS app always
+        // hits (NotesStore.bubbleNames is the source of truth).
+        let sortedRaws = raws.sorted { $0.count > $1.count }
 
-        // Relative scaling: the bubble with the most notes hits the cap,
-        // others scale proportionally. `sqrt` keeps mid-range bubbles from
-        // feeling dwarfed by the leader (a bubble with 25% of max notes
-        // ends up at 50% of the delta, not 25%).
-        let maxNotes = max(1, raws.map(\.noteCount).max() ?? 1)
-        let sized: [(name: String, noteCount: Int, size: CGFloat)] = raws.map { raw in
-            let t = sqrt(Double(raw.noteCount) / Double(maxNotes))
-            let size = minBubbleSize + CGFloat(t) * (effectiveMax - minBubbleSize)
-            return (raw.name, raw.noteCount, size.rounded())
+        // Sizing — `sqrt` curve over `minSize…maxSize`, normalised to a
+        // capped reference count instead of the raw `maxCount`.
+        //
+        // Why the cap: with a real maxCount like 35 ("Unnamed: 35
+        // Notes"), `sqrt(1/35)` and `sqrt(2/35)` differ by ~7% of the
+        // size range, so a 1-note bubble and a 2-note bubble look
+        // identical. Capping at `sizingReferenceCount = 8` stretches
+        // the visible curve over the realistic 1–8 note range, making
+        // each additional note clearly noticeable. Any bubble at or
+        // above the cap hits `maxSize`, so the "lots of notes" cue is
+        // preserved without per-count fidelity at the top end.
+        let actualMaxCount = max(1, sortedRaws.map(\.count).max() ?? 1)
+        let referenceMax = max(1, min(actualMaxCount, sizingReferenceCount))
+        let emptyBase: CGFloat = {
+            switch sortedRaws.count {
+            case ...1: return 200
+            case ...4: return 180
+            case ...6: return 160
+            default:   return 140
+            }
+        }()
+
+        let sized: [Sized] = sortedRaws.map { raw in
+            let size: CGFloat
+            if raw.count > 0 {
+                let normalised = min(1.0, Double(raw.count) / Double(referenceMax))
+                let ratio = sqrt(normalised)
+                size = (minSize + CGFloat(ratio) * (maxSize - minSize)).rounded()
+            } else {
+                size = emptyBase
+            }
+            return Sized(name: raw.name, count: raw.count, size: size)
         }
 
-        // Place the biggest bubbles first so they claim the center; smaller
-        // ones fill in around them. Within equal sizes we sort by name so
-        // the layout stays deterministic across launches.
-        let placeOrder = sized.enumerated().sorted { lhs, rhs in
-            if lhs.element.size != rhs.element.size { return lhs.element.size > rhs.element.size }
-            return lhs.element.name < rhs.element.name
-        }
+        let slotPlaced = placeBubbles(sized, in: containerSize)
 
-        var placed: [PlacedBubble] = []
-        var positions: [String: CGPoint] = [:]
+        // The JSX slot table biases the cluster toward the top of the
+        // field (`y` fractions sit between 0.23 and 0.52). On iPad the
+        // remaining lower half feels wasted, so shift the whole cluster
+        // down until the empty space above ≈ the empty space below.
+        // Bounds-checked so no bubble ever crosses the inset.
+        let centered = verticallyCenter(slotPlaced, in: containerSize)
 
-        for entry in placeOrder {
-            let bubble = entry.element
-            let radius = bubble.size / 2
-            let center = findSpot(
-                name: bubble.name,
-                radius: radius,
-                placed: placed,
-                container: containerSize
+        // Manual override: if the user has dragged a bubble in edit
+        // mode, honour that saved fractional offset instead of the slot
+        // position. Every manual placement is run through
+        // `resolveCollision` against the bubbles already placed, so a
+        // saved offset that now overlaps a sibling (e.g. another bubble
+        // grew, the container resized, two manuals were dropped near
+        // each other) gets pushed to the nearest non-overlapping spot
+        // instead of stacking. The output is guaranteed overlap-free.
+        let pad = packingPadding(for: containerSize)
+        // Mutable map keyed by name so collision resolution can update
+        // a bubble's position in place and the next manual sees the new
+        // location as an obstacle.
+        var positionByName: [String: Placed] = [:]
+        for p in centered { positionByName[p.name] = p }
+
+        // Stable iteration order — alphabetical — so two manuals that
+        // both want the same spot resolve to the same final layout on
+        // every render.
+        let manualOrder = centered
+            .filter {
+                guard let b = store.bubble(named: $0.name) else { return false }
+                return b.manualOffsetX != nil && b.manualOffsetY != nil
+            }
+            .sorted { $0.name.lowercased() < $1.name.lowercased() }
+
+        for p in manualOrder {
+            guard let bubble = store.bubble(named: p.name),
+                  let mx = bubble.manualOffsetX,
+                  let my = bubble.manualOffsetY
+            else { continue }
+            let r = p.size / 2
+            let requested = CGPoint(
+                x: containerSize.width / 2 + CGFloat(mx) * containerSize.width,
+                y: containerSize.height / 2 + CGFloat(my) * containerSize.height
             )
-            placed.append(PlacedBubble(center: center, radius: radius))
-            positions[bubble.name] = center
+            let obstacles = positionByName.values
+                .filter { $0.name != p.name }
+                .map { Obstacle(center: CGPoint(x: $0.x, y: $0.y), radius: $0.size / 2) }
+            let resolved = resolveCollision(
+                requested: requested,
+                radius: r,
+                obstacles: obstacles,
+                padding: pad,
+                bounds: containerSize
+            )
+            positionByName[p.name] = Placed(
+                name: p.name, count: p.count, size: p.size, x: resolved.x, y: resolved.y
+            )
         }
 
-        // Re-emit in the original order (so SwiftUI's ForEach stays stable
-        // against the bubble list, not the placement order) with the
-        // packed centers converted back to fractional offsets.
-        return sized.map { s in
-            let center = positions[s.name] ?? CGPoint(
-                x: containerSize.width / 2,
-                y: containerSize.height / 2
-            )
-            return CourseBubble(
-                name: s.name,
-                noteCount: s.noteCount,
-                size: s.size,
-                offsetX: (center.x - containerSize.width / 2) / containerSize.width,
-                offsetY: (center.y - containerSize.height / 2) / containerSize.height
+        // Final safety net: even with the shrink-to-fit pass and the
+        // per-bubble manual resolution, pathological inputs (6 bubbles
+        // all at max count on a narrow split-view canvas) can still
+        // leave a sub-pixel overlap. Run one full relaxation pass over
+        // every placed bubble so the rendered field is ALWAYS overlap-
+        // free, no matter what.
+        positionByName = enforceNonOverlap(positionByName, in: containerSize)
+
+        // Re-emit in `centered` order so the entrance stagger stays
+        // tied to the sorted-by-count order from earlier.
+        let finalPlaced: [Placed] = centered.map { positionByName[$0.name] ?? $0 }
+
+        // Emit in sorted-by-count order so the entrance stagger in
+        // `HomeView` runs biggest-bubble-first (mirrors JSX L2266 where
+        // `placed.map((bubble, index))` uses the sorted index for delay).
+        // SwiftUI keeps identity stable via `CourseBubble.id` (case-folded
+        // name), so reorder is a cross-fade, not a wipe.
+        return finalPlaced.map { p in
+            CourseBubble(
+                name: p.name,
+                noteCount: p.count,
+                size: p.size,
+                offsetX: (p.x - containerSize.width / 2) / containerSize.width,
+                offsetY: (p.y - containerSize.height / 2) / containerSize.height
             )
         }
     }
 
-    // MARK: - Packing
+    // MARK: - Collision avoidance
 
-    /// Finds a non-overlapping center for a bubble of `radius`. Starts
-    /// from a hash-derived preferred position so re-renders don't shuffle
-    /// the field; if that spot collides, spirals outward through evenly
-    /// spaced angles until a free slot is found.
-    private static func findSpot(
-        name: String,
+    /// One bubble treated as an obstacle for the collision resolver.
+    struct Obstacle {
+        let center: CGPoint
+        let radius: CGFloat
+    }
+
+    /// Live drag-time resolver used by `HomeBubbleCell`. Given where
+    /// the user's finger wants the bubble to be, returns the closest
+    /// non-overlapping centre considering every other rendered bubble.
+    /// The result is also clamped to the container's padded bounds so
+    /// the bubble can never disappear off-screen.
+    @MainActor
+    static func resolveDragPosition(
+        requestedCenter: CGPoint,
         radius: CGFloat,
-        placed: [PlacedBubble],
-        container: CGSize
+        siblings: [CourseBubble],
+        in container: CGSize
     ) -> CGPoint {
-        let seed = stableHash(name)
-        let minX = edgeInset + radius
-        let maxX = container.width - edgeInset - radius
-        let minY = edgeInset + radius
-        let maxY = container.height - edgeInset - radius
-
-        // Degenerate container — return center as a safe fallback.
-        guard maxX > minX, maxY > minY else {
-            return CGPoint(x: container.width / 2, y: container.height / 2)
+        let pad = packingPadding(for: container)
+        let obstacles: [Obstacle] = siblings.map { sib in
+            Obstacle(
+                center: CGPoint(
+                    x: container.width / 2 + sib.offsetX * container.width,
+                    y: container.height / 2 + sib.offsetY * container.height
+                ),
+                radius: sib.size / 2
+            )
         }
+        return resolveCollision(
+            requested: requestedCenter,
+            radius: radius,
+            obstacles: obstacles,
+            padding: pad,
+            bounds: container
+        )
+    }
 
-        let preferred = preferredPosition(seed: seed, radius: radius, container: container)
-
-        if !overlaps(preferred, radius: radius, placed: placed) {
-            return preferred
-        }
-
-        // Spiral search anchored at the bubble's own preferred spot — NOT
-        // the container center. Anchoring at center pulled every bumped
-        // bubble inward, producing the "all squeezed in the middle" look.
-        // Spiraling around the preferred spot keeps the constellation
-        // spread across the whole canvas.
-        let maxReach = hypot(maxX - minX, maxY - minY)
-        let radialStep: CGFloat = max(8, minBubbleSize * 0.35)
-        let anglesPerRing = 18
-
-        // Bias the starting angle by the seed so different bubbles try
-        // different sweeps before settling.
-        let angleOffset = Double(seed % 1000) / 1000.0 * 2 * .pi
-
-        var currentReach: CGFloat = max(radius * 0.8, radialStep)
-        while currentReach <= maxReach {
-            for i in 0..<anglesPerRing {
-                let theta = angleOffset + (Double(i) / Double(anglesPerRing)) * 2 * .pi
-                var candidate = CGPoint(
-                    x: preferred.x + cos(theta) * currentReach,
-                    y: preferred.y + sin(theta) * currentReach
+    /// Whole-field relaxation pass. For every bubble, push it out of
+    /// every other bubble using `resolveCollision`, looping until no
+    /// bubble moves (or 6 iterations elapse, whichever first). Used as
+    /// the final layout step so the rendered field can never overlap,
+    /// even in pathological inputs where the shrink-to-fit pass had to
+    /// fall back to its bottom scale.
+    private static func enforceNonOverlap(
+        _ placed: [String: Placed],
+        in container: CGSize
+    ) -> [String: Placed] {
+        guard placed.count > 1 else { return placed }
+        var result = placed
+        let pad = packingPadding(for: container)
+        // Stable iteration order so identical inputs converge to the
+        // same output on every render.
+        let names = result.keys.sorted { $0.lowercased() < $1.lowercased() }
+        let maxIterations = 6
+        for _ in 0..<maxIterations {
+            var moved = false
+            for name in names {
+                guard let p = result[name] else { continue }
+                let obstacles = result.values
+                    .filter { $0.name != name }
+                    .map { Obstacle(center: CGPoint(x: $0.x, y: $0.y), radius: $0.size / 2) }
+                let resolved = resolveCollision(
+                    requested: CGPoint(x: p.x, y: p.y),
+                    radius: p.size / 2,
+                    obstacles: obstacles,
+                    padding: pad,
+                    bounds: container
                 )
-                candidate.x = min(max(candidate.x, minX), maxX)
-                candidate.y = min(max(candidate.y, minY), maxY)
-                if !overlaps(candidate, radius: radius, placed: placed) {
-                    return candidate
+                if abs(resolved.x - p.x) > 0.5 || abs(resolved.y - p.y) > 0.5 {
+                    result[name] = Placed(
+                        name: p.name, count: p.count, size: p.size,
+                        x: resolved.x, y: resolved.y
+                    )
+                    moved = true
                 }
             }
-            currentReach += radialStep
+            if !moved { break }
         }
-
-        // Fully crowded canvas — fall back to the clamped preferred spot.
-        // Some overlap is preferable to placing the bubble off-screen.
-        return CGPoint(
-            x: min(max(preferred.x, minX), maxX),
-            y: min(max(preferred.y, minY), maxY)
-        )
+        return result
     }
 
-    /// Preferred center derived from the bubble's name, biased toward a
-    /// constellation pattern around the container's center. The result
-    /// is already clamped to the legal region.
-    private static func preferredPosition(seed: UInt64, radius: CGFloat, container: CGSize) -> CGPoint {
-        let minX = edgeInset + radius
-        let maxX = container.width - edgeInset - radius
-        let minY = edgeInset + radius
-        let maxY = container.height - edgeInset - radius
-
-        let usableWidth = max(0, maxX - minX)
-        let usableHeight = max(0, maxY - minY)
-
-        // Use the full legal region (95% of the canvas, minus the bubble's
-        // own radius which is already baked into minX/maxX). A wider span
-        // here was the second half of the "everything squeezed in the
-        // middle" bug — combined with the seed hash's natural mid-bias,
-        // the old 0.10–0.90 window left bubbles hugging the centerline on
-        // a wide iPad canvas.
-        let fx = (Double(seed % 950) / 1000.0) + 0.025  // 0.025 – 0.975
-        let fy = (Double((seed / 950) % 950) / 1000.0) + 0.025
-        return CGPoint(
-            x: minX + CGFloat(fx) * usableWidth,
-            y: minY + CGFloat(fy) * usableHeight
-        )
-    }
-
-    private static func overlaps(
-        _ center: CGPoint,
+    /// Iteratively pushes `requested` out of every obstacle until no
+    /// overlaps remain (or we hit `maxIterations`, in which case the
+    /// best-effort position is returned). Two overlapping obstacles
+    /// resolve in a few passes because each push can re-introduce
+    /// overlap with a neighbour; clamping is applied each iteration.
+    private static func resolveCollision(
+        requested: CGPoint,
         radius: CGFloat,
-        placed: [PlacedBubble]
-    ) -> Bool {
-        for p in placed {
-            let dx = p.center.x - center.x
-            let dy = p.center.y - center.y
-            let dist = sqrt(dx * dx + dy * dy)
-            // `packingPadding` guarantees a visible gap between any two
-            // bubbles even when they're packed tight.
-            let minDist = radius + p.radius + packingPadding
-            if dist < minDist { return true }
+        obstacles: [Obstacle],
+        padding: CGFloat,
+        bounds container: CGSize
+    ) -> CGPoint {
+        let minX = padding + radius
+        let maxX = max(minX, container.width - padding - radius)
+        let minY = padding + radius
+        let maxY = max(minY, container.height - padding - radius)
+
+        var pos = CGPoint(
+            x: min(maxX, max(minX, requested.x)),
+            y: min(maxY, max(minY, requested.y))
+        )
+        guard !obstacles.isEmpty else { return pos }
+
+        let maxIterations = 10
+        for _ in 0..<maxIterations {
+            var moved = false
+            for obs in obstacles {
+                let dx = pos.x - obs.center.x
+                let dy = pos.y - obs.center.y
+                let dist = sqrt(dx * dx + dy * dy)
+                let minDist = radius + obs.radius + padding
+                if dist + 0.5 < minDist {
+                    if dist < 0.001 {
+                        // Centres coincide — push out along an
+                        // arbitrary axis (toward the container centre)
+                        // so we have a defined direction.
+                        let toCenterX = container.width / 2 - obs.center.x
+                        let toCenterY = container.height / 2 - obs.center.y
+                        let mag = max(0.001, sqrt(toCenterX * toCenterX + toCenterY * toCenterY))
+                        pos.x = obs.center.x + (toCenterX / mag) * minDist
+                        pos.y = obs.center.y + (toCenterY / mag) * minDist
+                    } else {
+                        let scale = minDist / dist
+                        pos.x = obs.center.x + dx * scale
+                        pos.y = obs.center.y + dy * scale
+                    }
+                    pos.x = min(maxX, max(minX, pos.x))
+                    pos.y = min(maxY, max(minY, pos.y))
+                    moved = true
+                }
+            }
+            if !moved { break }
         }
-        return false
+        return pos
     }
 
-    /// djb2 — stable across processes (Swift's `hash(into:)` is not).
-    private static func stableHash(_ s: String) -> UInt64 {
-        var h: UInt64 = 5381
-        for byte in s.utf8 {
-            h = (h &* 33) &+ UInt64(byte)
+    /// Shifts every bubble vertically so the empty space above the
+    /// cluster matches the empty space below. Count-independent: works
+    /// the same for 1, 5, or 10 bubbles. Clamped so the shift never
+    /// pushes a bubble past the container's vertical inset.
+    private static func verticallyCenter(_ placed: [Placed], in container: CGSize) -> [Placed] {
+        guard !placed.isEmpty else { return placed }
+        let pad = packingPadding(for: container)
+        let topY = placed.map { $0.y - $0.size / 2 }.min() ?? 0
+        let botY = placed.map { $0.y + $0.size / 2 }.max() ?? container.height
+        let desired = ((container.height - botY) - topY) / 2
+        let maxDown = max(0, container.height - pad - botY)
+        let maxUp = max(0, topY - pad)
+        let shift = max(-maxUp, min(maxDown, desired))
+        guard abs(shift) > 0.5 else { return placed }
+        return placed.map {
+            Placed(name: $0.name, count: $0.count, size: $0.size, x: $0.x, y: $0.y + shift)
         }
-        return h
+    }
+
+    // MARK: - Packing (JSX `placeBubbles` L1460–L1510)
+
+    private struct Sized {
+        let name: String
+        let count: Int
+        let size: CGFloat
+    }
+
+    private struct Placed {
+        let name: String
+        let count: Int
+        let size: CGFloat
+        let x: CGFloat
+        let y: CGFloat
+    }
+
+    private static func placeBubbles(_ sized: [Sized], in container: CGSize) -> [Placed] {
+        let padding = packingPadding(for: container)
+        let slots = slotSets[min(sized.count, 6)] ?? defaultSlots
+
+        // JSX `buildPlaced` (L1481–L1491): scale every bubble uniformly,
+        // map index → slot, clamp to the inside of the container so the
+        // bubble + its padding never crosses the edge.
+        func buildPlaced(scale: CGFloat) -> [Placed] {
+            sized.enumerated().map { i, bubble in
+                let slot = slots[i % slots.count]
+                let scaled = max(shrinkFloor, (bubble.size * scale).rounded())
+                let r = scaled / 2
+                let x = min(container.width - r - padding, max(r + padding, slot.x * container.width))
+                let y = min(container.height - r - padding, max(r + padding, slot.y * container.height))
+                return Placed(name: bubble.name, count: bubble.count, size: scaled, x: x, y: y)
+            }
+        }
+
+        // JSX `fits` (L1493–L1503): pairwise distance must exceed the
+        // sum of radii plus the layout padding.
+        func fits(_ placed: [Placed]) -> Bool {
+            guard placed.count > 1 else { return true }
+            for i in 0..<placed.count {
+                for j in (i + 1)..<placed.count {
+                    let dx = placed[i].x - placed[j].x
+                    let dy = placed[i].y - placed[j].y
+                    let minDist = placed[i].size / 2 + placed[j].size / 2 + padding
+                    if dx * dx + dy * dy < minDist * minDist { return false }
+                }
+            }
+            return true
+        }
+
+        // JSX L1505–L1509: try 100% → 58% in 3.5% steps. First scale
+        // that fits wins. Stride down through floats by hand because
+        // `stride(through:)` on `Double`/`CGFloat` can overshoot the
+        // bound by an epsilon and skip the 0.58 attempt.
+        var scale: CGFloat = 1.0
+        while scale >= 0.58 {
+            let candidate = buildPlaced(scale: scale)
+            if fits(candidate) { return candidate }
+            scale -= 0.035
+        }
+
+        // JSX L1510 fallback: pathological canvas — return the 56%
+        // layout even though some bubbles may overlap. Better than
+        // pushing bubbles off-screen.
+        return buildPlaced(scale: 0.56)
     }
 }

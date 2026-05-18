@@ -39,6 +39,8 @@ private let editorTextSecondary = Color(red: 60/255, green: 60/255, blue: 67/255
 private let editorTextMuted = Color(red: 60/255, green: 60/255, blue: 67/255).opacity(0.4)
 private let editorGlassBorder = Color.white.opacity(0.5)
 private let editorErrorRed = Color(red: 0xC4/255, green: 0x44/255, blue: 0x44/255)
+private let editorNotePaper = Color(red: 0xFE/255, green: 0xFC/255, blue: 0xF4/255)
+private let editorNotePaperDot = Color.black.opacity(0.06)
 
 private let accentGradient = LinearGradient(
     colors: [editorAccent, editorAccentLight],
@@ -99,6 +101,39 @@ private struct PendingMediaItem: Identifiable, Equatable {
     }
 }
 
+// MARK: - Unified preview item
+//
+// The composer keeps images, documents, and library notes in separate
+// pieces of state (different upload pipelines), but the new attachment
+// preview pane treats them as one ordered list. This view-only enum is
+// the bridge — the order is photos first, then documents/notes, matching
+// the order they appear inline on the right-hand side of the form.
+
+private enum EditorPreviewItem: Identifiable, Equatable {
+    case image(id: String, data: Data)
+    /// `data` is the raw file bytes. When the file extension is "PDF"
+    /// (the only document type the picker accepts today) the preview
+    /// tile rasterises the first page via `PDFFirstPageImage`.
+    case document(id: String, filename: String, ext: String, data: Data)
+    case note(id: String, title: String, subtitle: String?)
+
+    var id: String {
+        switch self {
+        case .image(let id, _): return "img-\(id)"
+        case .document(let id, _, _, _): return "doc-\(id)"
+        case .note(let id, _, _): return "note-\(id)"
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .image: return "Photo"
+        case .document(_, let filename, _, _): return filename
+        case .note(_, let title, _): return title.isEmpty ? "Untitled note" : title
+        }
+    }
+}
+
 // MARK: - Post Editor Popup
 
 struct PostEditorPopup: View {
@@ -114,6 +149,7 @@ struct PostEditorPopup: View {
 
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var notesStore: NotesStore
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     @State private var postTitle: String
     @State private var postBody: String
@@ -222,6 +258,62 @@ struct PostEditorPopup: View {
             .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
+    /// Flattened, ordered list of every pending attachment (images +
+    /// documents + library notes) for the left-hand preview pane. Photos
+    /// come first so that an image-only post lands on an image preview
+    /// (matches noteworks-library.jsx L7628 `ComposerAttachmentPreview`).
+    private var previewItems: [EditorPreviewItem] {
+        var items: [EditorPreviewItem] = []
+        for media in mediaItems {
+            items.append(.image(id: media.id, data: media.data))
+        }
+        for attachment in attachments {
+            if attachedLibraryNoteIds.contains(attachment.id) {
+                items.append(.note(
+                    id: attachment.id,
+                    title: attachment.filename,
+                    subtitle: noteSubtitle(for: attachment.id)
+                ))
+            } else {
+                items.append(.document(
+                    id: attachment.id,
+                    filename: attachment.filename,
+                    ext: fileExtension(for: attachment.filename),
+                    data: attachment.data
+                ))
+            }
+        }
+        return items
+    }
+
+    private var hasAnyAttachment: Bool { !previewItems.isEmpty }
+
+    /// We only split into the side-by-side layout on regular-width
+    /// classes — on iPhone the preview lives above the form as a small
+    /// strip (kept inline by the existing thumbnail rows).
+    private var showsPreviewPane: Bool {
+        hasAnyAttachment && horizontalSizeClass != .compact
+    }
+
+    /// Sentence shown under the title in the preview pane when the
+    /// body is empty. Mirrors `previewMeta` in the JSX (L7632).
+    private var previewSecondaryLine: String {
+        var parts: [String] = []
+        parts.append(postKind.label)
+        if let course = selectedBubbleName, !course.isEmpty {
+            parts.append(course)
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func noteSubtitle(for noteId: String) -> String? {
+        guard let note = notesStore.notes.first(where: { $0.id == noteId }) else {
+            return nil
+        }
+        let subject = (note.subject?.isEmpty == false) ? note.subject! : "Uncategorized"
+        return subject
+    }
+
     var body: some View {
         ZStack {
             Rectangle()
@@ -230,48 +322,28 @@ struct PostEditorPopup: View {
                 .ignoresSafeArea()
                 .onTapGesture { dismiss() }
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    header
-                    titleField
-                    bodyField
-                    attachButtonsRow
-                    notePickerInline
-                    attachedLibraryNotesPreview
-                    mediaPreviews
-                    documentPreviews
-                    courseSection
-                    tagsSection
-                    postToSection
-                    if let error = errorMessage {
-                        Text(error)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(editorErrorRed)
-                            .padding(.bottom, 12)
-                    }
-                    publishButton
+            popupShell
+                .frame(
+                    maxWidth: showsPreviewPane ? 960 : 540,
+                    maxHeight: 760
+                )
+                .background(
+                    RoundedRectangle(cornerRadius: 28)
+                        .fill(.ultraThinMaterial)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 28)
+                                .fill(Color.white.opacity(0.78))
+                        }
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 28))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 28)
+                        .strokeBorder(editorGlassBorder, lineWidth: 1)
                 }
-                .padding(.horizontal, 28)
-                .padding(.top, 24)
-                .padding(.bottom, 28)
-            }
-            .frame(maxWidth: 540, maxHeight: 760)
-            .background(
-                RoundedRectangle(cornerRadius: 28)
-                    .fill(.ultraThinMaterial)
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 28)
-                            .fill(Color.white.opacity(0.78))
-                    }
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 28))
-            .overlay {
-                RoundedRectangle(cornerRadius: 28)
-                    .strokeBorder(editorGlassBorder, lineWidth: 1)
-            }
-            .shadow(color: .black.opacity(0.12), radius: 32, y: 12)
-            .shadow(color: .black.opacity(0.04), radius: 8, y: 4)
-            .padding(.horizontal, 32)
+                .shadow(color: .black.opacity(0.12), radius: 32, y: 12)
+                .shadow(color: .black.opacity(0.04), radius: 8, y: 4)
+                .padding(.horizontal, showsPreviewPane ? 24 : 32)
+                .animation(.easeInOut(duration: 0.22), value: showsPreviewPane)
         }
         .ignoresSafeArea(.keyboard)
         .onAppear {
@@ -309,6 +381,54 @@ struct PostEditorPopup: View {
         }
     }
 
+    // MARK: - Shell layout
+
+    @ViewBuilder
+    private var popupShell: some View {
+        if showsPreviewPane {
+            HStack(spacing: 0) {
+                previewPane
+                    .frame(minWidth: 300, idealWidth: 360, maxWidth: 420)
+                    .frame(maxHeight: .infinity)
+                Rectangle()
+                    .fill(Color(red: 219/255, green: 227/255, blue: 235/255).opacity(0.74))
+                    .frame(width: 1)
+                formScroll
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        } else {
+            formScroll
+        }
+    }
+
+    private var formScroll: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                header
+                titleField
+                bodyField
+                attachButtonsRow
+                notePickerInline
+                attachedLibraryNotesPreview
+                mediaPreviews
+                documentPreviews
+                courseSection
+                tagsSection
+                postToSection
+                if let error = errorMessage {
+                    Text(error)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(editorErrorRed)
+                        .padding(.bottom, 12)
+                }
+                publishButton
+            }
+            .padding(.horizontal, 28)
+            .padding(.top, 24)
+            .padding(.bottom, 28)
+        }
+    }
+
     private func dismiss() {
         titleFocused = false
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
@@ -316,6 +436,247 @@ struct PostEditorPopup: View {
                 isPresented = false
             }
         }
+    }
+
+    // MARK: - Attachment preview pane (left side)
+    //
+    // Mirrors `ComposerAttachmentPreview` in noteworks-library.jsx L7628:
+    // header label + primary attachment caption, a big primary preview
+    // tile, then a thumbnail strip + "N attached file…" footer.
+
+    @ViewBuilder
+    private var previewPane: some View {
+        let items = previewItems
+        let primary = items.first
+        let captionTitle: String = {
+            let t = trimmedTitle
+            if !t.isEmpty { return t }
+            return primary?.displayName ?? "Untitled post"
+        }()
+        let captionSecondary: String = {
+            let b = trimmedBody
+            if !b.isEmpty { return b }
+            return previewSecondaryLine
+        }()
+
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("ATTACHMENT PREVIEW")
+                    .font(.system(size: 11, weight: .heavy))
+                    .tracking(1.1)
+                    .foregroundStyle(editorTextMuted)
+                Text(captionTitle)
+                    .font(.system(size: 19, weight: .heavy))
+                    .tracking(-0.5)
+                    .foregroundStyle(editorTextPrimary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                if !captionSecondary.isEmpty {
+                    Text(captionSecondary)
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(editorTextSecondary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                }
+            }
+
+            if let primary {
+                primaryPreviewTile(for: primary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                Spacer(minLength: 0)
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(Array(items.prefix(8).enumerated()), id: \.element.id) { index, item in
+                            thumbnailTile(for: item, isActive: index == 0)
+                        }
+                    }
+                }
+                Text("\(items.count) attached \(items.count == 1 ? "file" : "files") will publish with this post.")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(editorTextMuted)
+            }
+        }
+        .padding(22)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(
+            LinearGradient(
+                colors: [
+                    Color(red: 224/255, green: 238/255, blue: 248/255).opacity(0.58),
+                    Color.white.opacity(0.34),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+    }
+
+    // MARK: - Preview tiles
+
+    @ViewBuilder
+    private func primaryPreviewTile(for item: EditorPreviewItem) -> some View {
+        RoundedRectangle(cornerRadius: 24, style: .continuous)
+            .fill(Color.white.opacity(0.52))
+            .overlay(
+                primaryPreviewContent(for: item)
+                    .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.74), lineWidth: 1)
+            )
+            .shadow(color: Color(red: 73/255, green: 99/255, blue: 124/255).opacity(0.12), radius: 18, y: 8)
+            .frame(minHeight: 240)
+    }
+
+    @ViewBuilder
+    private func primaryPreviewContent(for item: EditorPreviewItem) -> some View {
+        switch item {
+        case .image(_, let data):
+            if let image = UIImage(data: data) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                LinearGradient(
+                    colors: [editorAccent.opacity(0.18), Color.white.opacity(0.6)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            }
+
+        case .document(let id, let filename, let ext, let data):
+            if ext == "PDF", !data.isEmpty {
+                PDFFirstPageImage(
+                    data: data,
+                    cacheKey: "composer-\(id)",
+                    fileLabel: filename
+                )
+            } else {
+                PDFPlaceholderTile(label: filename, ext: ext)
+            }
+
+        case .note(_, let title, let subtitle):
+            ZStack {
+                LinearGradient(
+                    colors: [
+                        Color(red: 222/255, green: 236/255, blue: 246/255).opacity(0.8),
+                        Color.white.opacity(0.72),
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                noteCardMock(title: title, subtitle: subtitle)
+                    .frame(maxWidth: 220)
+                    .padding(20)
+            }
+        }
+    }
+
+    private func noteCardMock(title: String, subtitle: String?) -> some View {
+        RoundedRectangle(cornerRadius: 22, style: .continuous)
+            .fill(
+                LinearGradient(
+                    colors: [editorNotePaper, Color(red: 0xFF/255, green: 0xFB/255, blue: 0xE8/255)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .strokeBorder(Color(red: 228/255, green: 229/255, blue: 220/255), lineWidth: 1)
+            )
+            .overlay(
+                VStack(alignment: .leading, spacing: 8) {
+                    Capsule()
+                        .fill(Color(red: 242/255, green: 123/255, blue: 232/255).opacity(0.62))
+                        .frame(height: 12)
+                        .padding(.trailing, 14)
+                    Capsule()
+                        .fill(Color.black.opacity(0.09))
+                        .frame(height: 8)
+                        .padding(.trailing, 44)
+                    Capsule()
+                        .fill(Color.black.opacity(0.08))
+                        .frame(height: 8)
+                        .padding(.trailing, 26)
+                    Spacer(minLength: 8)
+                    Capsule()
+                        .fill(editorAccent.opacity(0.16))
+                        .frame(height: 8)
+                    Capsule()
+                        .fill(editorAccent.opacity(0.12))
+                        .frame(width: 110, height: 8)
+                    Text(title.isEmpty ? "Untitled note" : title)
+                        .font(.system(size: 11, weight: .heavy))
+                        .foregroundStyle(editorTextPrimary)
+                        .lineLimit(1)
+                        .padding(.top, 6)
+                    if let subtitle, !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(editorTextMuted)
+                            .lineLimit(1)
+                    }
+                }
+                .padding(18)
+            )
+            .aspectRatio(0.72, contentMode: .fit)
+            .shadow(color: Color(red: 72/255, green: 90/255, blue: 117/255).opacity(0.14), radius: 20, y: 12)
+    }
+
+    @ViewBuilder
+    private func thumbnailTile(for item: EditorPreviewItem, isActive: Bool) -> some View {
+        let stroke = isActive ? editorAccent.opacity(0.72) : Color.white.opacity(0.76)
+        let strokeWidth: CGFloat = isActive ? 2 : 1
+        ZStack {
+            switch item {
+            case .image(_, let data):
+                if let image = UIImage(data: data) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    Color.black.opacity(0.05)
+                }
+
+            case .document(let id, _, let ext, let data):
+                if ext == "PDF", !data.isEmpty {
+                    PDFFirstPageImage(
+                        data: data,
+                        cacheKey: "composer-thumb-\(id)",
+                        fileLabel: nil,
+                        padding: 4
+                    )
+                } else {
+                    Color.white.opacity(0.64)
+                    Text(ext)
+                        .font(.system(size: 10, weight: .heavy))
+                        .tracking(0.6)
+                        .foregroundStyle(isActive ? editorAccent : editorTextMuted)
+                }
+
+            case .note:
+                Color.white.opacity(0.64)
+                Image(systemName: "doc.text")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(isActive ? editorAccent : editorTextMuted)
+            }
+        }
+        .frame(width: 54, height: 54)
+        .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .strokeBorder(stroke, lineWidth: strokeWidth)
+        )
+        .shadow(
+            color: isActive ? editorAccent.opacity(0.18) : .clear,
+            radius: 8, y: 4
+        )
     }
 
     // MARK: - Header

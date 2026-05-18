@@ -93,14 +93,18 @@ struct AboutYouSection: View {
         )
     }
 
+    /// Grade is derived from onboarding (`year_of_graduation`); use the
+    /// same `ProfileField` chrome as School / Major so the column widths
+    /// and row heights line up in the horizontal `ViewThatFits` layout.
     private var gradeField: some View {
         ProfileField(
             label: "Grade",
             value: Binding(
-                get: { viewModel.aboutDraft.grade },
-                set: { viewModel.aboutDraft.grade = $0; viewModel.aboutSaved = false }
+                get: { viewModel.profile.grade },
+                set: { _ in }
             ),
-            placeholder: "Grade / year"
+            placeholder: "Set during onboarding",
+            readOnly: true
         )
     }
 

@@ -28,76 +28,7 @@ struct InterestsStepView: View {
                         OnboardingHeader(title: "Any Field of Interests?", onBack: onBack)
 
                         OnboardingRow(disabled: false, onNext: handleNext) {
-                            Text("Select topics you're passionate about.")
-                                .font(.system(size: 15))
-                                .foregroundStyle(OnboardingTheme.textSecondary)
-                                .lineSpacing(4)
-                                .padding(.bottom, 20)
-
-                            OnboardingError(
-                                show: attemptedNext && data.interestsError != nil,
-                                text: data.interestsError ?? ""
-                            )
-
-                            // Preset interest chips
-                            FlowLayout(spacing: 10) {
-                                ForEach(OnboardingData.presetInterests, id: \.self) { interest in
-                                    InterestChip(
-                                        label: interest,
-                                        isSelected: data.interests.contains(interest),
-                                        action: { toggleInterest(interest) }
-                                    )
-                                }
-                            }
-                            .padding(.bottom, 20)
-
-                            // Custom interest chips
-                            if !data.customInterests.isEmpty {
-                                FlowLayout(spacing: 10) {
-                                    ForEach(data.customInterests, id: \.self) { interest in
-                                        CustomInterestChip(
-                                            label: interest,
-                                            onRemove: { data.customInterests.removeAll { $0 == interest } }
-                                        )
-                                    }
-                                }
-                                .padding(.bottom, 12)
-                            }
-
-                            // Custom input
-                            HStack(spacing: 10) {
-                                Text("Other")
-                                    .font(.system(size: 15, weight: .medium))
-                                    .foregroundStyle(OnboardingTheme.textSecondary)
-
-                                ZStack(alignment: .trailing) {
-                                    TextField("Type & press Enter...", text: $customInput)
-                                        .font(.system(size: 15))
-                                        .foregroundStyle(OnboardingTheme.textPrimary)
-                                        .padding(.horizontal, 14)
-                                        .padding(.vertical, 12)
-                                        .background(OnboardingTheme.glassBg)
-                                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                                        .overlay {
-                                            RoundedRectangle(cornerRadius: 12)
-                                                .strokeBorder(OnboardingTheme.glassBorder, lineWidth: 1.5)
-                                        }
-                                        .onSubmit { addCustom() }
-
-                                    if !customInput.trimmingCharacters(in: .whitespaces).isEmpty {
-                                        Button(action: addCustom) {
-                                            Image(systemName: "plus")
-                                                .font(.system(size: 12, weight: .bold))
-                                                .foregroundStyle(.white)
-                                                .frame(width: 32, height: 32)
-                                                .background(OnboardingTheme.accentGradient)
-                                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                                        }
-                                        .buttonStyle(.plain)
-                                        .padding(.trailing, 8)
-                                    }
-                                }
-                            }
+                            interestFormFields
                         }
 
                         SkipButton(action: onNext)
@@ -111,6 +42,74 @@ struct InterestsStepView: View {
         .offset(y: visible ? 0 : 16)
         .onAppear {
             withAnimation(.easeOut(duration: 0.5)) { visible = true }
+        }
+    }
+
+    @ViewBuilder
+    private var interestFormFields: some View {
+        Text("Select topics you're passionate about.")
+            .font(.system(size: 15))
+            .foregroundStyle(OnboardingTheme.textSecondary)
+            .lineSpacing(4)
+            .padding(.bottom, 20)
+
+        OnboardingError(
+            show: attemptedNext && data.interestsError != nil,
+            text: data.interestsError ?? ""
+        )
+
+        FlowLayout(spacing: 10) {
+            ForEach(OnboardingData.presetInterests, id: \.self) { interest in
+                InterestChip(
+                    label: interest,
+                    isSelected: data.interests.contains(interest),
+                    action: { toggleInterest(interest) }
+                )
+            }
+            ForEach(data.customInterests, id: \.self) { interest in
+                InterestChip(
+                    label: interest,
+                    isSelected: true,
+                    action: {
+                        data.customInterests.removeAll { $0 == interest }
+                    }
+                )
+            }
+        }
+        .padding(.bottom, 20)
+
+        HStack(spacing: 10) {
+            Text("Other")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(OnboardingTheme.textSecondary)
+
+            ZStack(alignment: .trailing) {
+                TextField("Type & press Enter...", text: $customInput)
+                    .font(.system(size: 15))
+                    .foregroundStyle(OnboardingTheme.textPrimary)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .background(OnboardingTheme.glassBg)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 12)
+                            .strokeBorder(OnboardingTheme.glassBorder, lineWidth: 1.5)
+                    }
+                    .onSubmit { addCustom() }
+
+                if !customInput.trimmingCharacters(in: .whitespaces).isEmpty {
+                    Button(action: addCustom) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 32, height: 32)
+                            .background(OnboardingTheme.accentGradient)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.trailing, 8)
+                }
+            }
         }
     }
 
@@ -163,36 +162,6 @@ private struct InterestChip: View {
                 }
         }
         .buttonStyle(.plain)
-    }
-}
-
-// MARK: - Custom Interest Chip (with remove)
-
-private struct CustomInterestChip: View {
-    let label: String
-    let onRemove: () -> Void
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Text(label)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(OnboardingTheme.accentDark)
-
-            Button(action: onRemove) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(OnboardingTheme.accentDark)
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(OnboardingTheme.accent.opacity(0.12))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(OnboardingTheme.accent.opacity(0.5), lineWidth: 1.5)
-        }
     }
 }
 

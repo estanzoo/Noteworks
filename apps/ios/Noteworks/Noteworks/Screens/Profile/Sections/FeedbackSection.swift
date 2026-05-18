@@ -11,6 +11,7 @@ import PhotosUI
 
 struct FeedbackSection: View {
     @ObservedObject var viewModel: ProfileViewModel
+    @EnvironmentObject var appState: AppState
     @State private var photoItems: [PhotosPickerItem] = []
 
     var body: some View {
@@ -277,26 +278,35 @@ struct FeedbackSection: View {
     // MARK: - Submit bar
 
     private var submitBar: some View {
-        HStack(alignment: .center, spacing: 16) {
-            Text(
-                viewModel.feedbackSent
-                    ? "\(viewModel.feedbackType) feedback for \(viewModel.effectiveFeedbackArea) captured for the next beta pass."
-                    : "This report will be tagged as \(viewModel.feedbackPriority.lowercased()) impact in \(viewModel.effectiveFeedbackArea.lowercased())."
-            )
-            .font(.system(size: 13, weight: .medium))
-            .foregroundStyle(viewModel.feedbackSent ? ProfileTheme.positive : ProfileTheme.textSecondary)
-            .lineSpacing(4)
-            .fixedSize(horizontal: false, vertical: true)
-
-            Spacer(minLength: 12)
-
-            ProfilePrimaryButton(
-                title: "Submit Beta Feedback",
-                enabled: viewModel.canSubmitFeedback
-            ) {
-                viewModel.submitFeedback()
+        VStack(alignment: .leading, spacing: 10) {
+            if !viewModel.feedbackSubmitError.isEmpty {
+                Text(viewModel.feedbackSubmitError)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(ProfileTheme.negative)
+                    .lineSpacing(4)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .frame(maxWidth: 220)
+            HStack(alignment: .center, spacing: 16) {
+                Text(
+                    viewModel.feedbackSent
+                        ? "\(viewModel.feedbackType) feedback for \(viewModel.effectiveFeedbackArea) captured for the next beta pass."
+                        : "This report will be tagged as \(viewModel.feedbackPriority.lowercased()) impact in \(viewModel.effectiveFeedbackArea.lowercased())."
+                )
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(viewModel.feedbackSent ? ProfileTheme.positive : ProfileTheme.textSecondary)
+                .lineSpacing(4)
+                .fixedSize(horizontal: false, vertical: true)
+
+                Spacer(minLength: 12)
+
+                ProfilePrimaryButton(
+                    title: viewModel.feedbackSubmitting ? "Sending…" : "Submit Beta Feedback",
+                    enabled: viewModel.canSubmitFeedback && !viewModel.feedbackSubmitting
+                ) {
+                    viewModel.submitFeedback(using: appState)
+                }
+                .frame(maxWidth: 220)
+            }
         }
         .padding(.top, 4)
     }

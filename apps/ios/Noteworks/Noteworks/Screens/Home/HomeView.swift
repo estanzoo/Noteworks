@@ -26,12 +26,21 @@ struct HomeView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var store: NotesStore
 
-    @State private var bubblesVisible = false
     @State private var showSearch = false
     @State private var showNotifications = false
     @State private var fabOpen = false
     @State private var bubbleEditorMode: BubbleEditorMode? = nil
     @State private var newNoteRoute: NewNoteRoute? = nil
+
+    // Edit mode = "jiggle mode" mirroring the iOS Home Screen. Long-pressing
+    // a bubble surfaces a context menu; choosing "Move Bubbles" flips
+    // `isEditingLayout` to true, the bubbles wiggle, and any of them can
+    // be dragged. Manual positions persist on `NotesStore` so they survive
+    // app launches.
+    @State private var isEditingLayout = false
+    @State private var draggingName: String? = nil
+    @State private var dragOffset: CGSize = .zero
+    @State private var pendingDeleteName: String? = nil
 
     private var unreadCount: Int { appState.notifications.unreadCount }
 
@@ -82,6 +91,14 @@ struct HomeView: View {
             .padding(.trailing, 16)
             .padding(.bottom, 84)
         }
+        // Pin the entire Home surface against the software keyboard. When the
+        // BubbleEditorDialog (or any other text-input overlay) opens, SwiftUI's
+        // default keyboard avoidance would otherwise shrink the bubbleField's
+        // GeometryReader and reflow every bubble. The dialog itself sits in
+        // its own overlay, so the title bar / bubbles behind it should stay
+        // exactly where they were — mirroring how the note-editor chrome
+        // ignores the keyboard while the title field is being edited.
+        .ignoresSafeArea(.keyboard, edges: .bottom)
         .overlay { notificationOverlay }
         .overlay { searchOverlay }
         .overlay { bubbleEditorOverlay }
@@ -89,11 +106,43 @@ struct HomeView: View {
         .navigationDestination(item: $newNoteRoute) { route in
             NoteEditorView(noteId: route.noteId)
         }
-        .onAppear {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-                bubblesVisible = true
+        .confirmationDialog(
+            "Delete this bubble?",
+            isPresented: Binding(
+                get: { pendingDeleteName != nil },
+                set: { if !$0 { pendingDeleteName = nil } }
+            ),
+            presenting: pendingDeleteName,
+            actions: { name in
+                Button("Delete \"\(name)\"", role: .destructive) {
+                    handleConfirmedDelete(name)
+                    pendingDeleteName = nil
+                }
+                Button("Cancel", role: .cancel) {
+                    pendingDeleteName = nil
+                }
+            },
+            message: { _ in
+                Text("Notes in this bubble will move to the Unnamed bucket.")
             }
+        )
+        .onAppear {
+            // The onboarding flow can finish while a TextField is still the
+            // first responder (e.g. the courses step's input). Without this,
+            // ContentView swaps in MainTabView while the keyboard is still
+            // animating away, leaving a half-second of "Home behind a
+            // keyboard" — the messy display the user reported.
+            dismissKeyboard()
         }
+    }
+
+    private func dismissKeyboard() {
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
+        )
     }
 
     // MARK: - FAB actions
@@ -128,13 +177,21 @@ struct HomeView: View {
                 onSubmit: { name in
                     switch mode {
                     case .create:
-                        if let error = store.addBubble(name: name) {
-                            return .failure(message: error)
+                        var mutationError: String?
+                        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+                            mutationError = store.addBubble(name: name)
+                        }
+                        if let mutationError {
+                            return .failure(message: mutationError)
                         }
                         resolveBubbleCourse(name)
                     case .rename(let original):
-                        if let error = store.renameBubble(from: original, to: name) {
-                            return .failure(message: error)
+                        var mutationError: String?
+                        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+                            mutationError = store.renameBubble(from: original, to: name)
+                        }
+                        if let mutationError {
+                            return .failure(message: mutationError)
                         }
                         resolveBubbleCourse(name)
                     }
@@ -226,38 +283,140 @@ struct HomeView: View {
         GeometryReader { geo in
             // Recompute the layout against the live container size so
             // the packer can guarantee no overlap on this exact canvas
-            // (phone, iPad, split-view, rotation all just work).
+            // (iPhone, iPad, split-view, rotation all just work).
             let bubbles = HomeBubbleLayout.bubbles(from: store, in: geo.size)
             ZStack {
+                // Tap-out backdrop: when in edit mode, tapping any empty
+                // area exits jiggle mode (mirrors the iPadOS Home Screen
+                // gesture). zIndex(-1) keeps bubbles on top.
+                if isEditingLayout {
+                    Color.black.opacity(0.001)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            withAnimation(.easeInOut(duration: 0.22)) {
+                                isEditingLayout = false
+                                draggingName = nil
+                                dragOffset = .zero
+                            }
+                        }
+                        .zIndex(-1)
+                }
+
                 ForEach(Array(bubbles.enumerated()), id: \.element.id) { index, course in
-                    Button {
-                        // Set the filter first so CourseSpaceView's
-                        // `onChange(of: store.libraryFilter)` (it now
-                        // reacts even when not visible) adopts the
-                        // bubble. The tab cross-fade is owned by
-                        // MainTabView's `.animation(_, value:)` modifier
-                        // — a `withAnimation` here would conflict.
-                        store.libraryFilter = course.name
-                        resolveBubbleCourse(course.name)
-                        selectedTab = .notebook
-                    } label: {
-                        BubbleView(course: course)
+                    HomeBubbleCell(
+                        course: course,
+                        // Siblings = every other bubble's rendered
+                        // position. The cell uses these as obstacles
+                        // during drag so a manual move can never push
+                        // one bubble on top of another (matches the
+                        // layout's non-overlap guarantee).
+                        siblings: bubbles.filter { $0.id != course.id },
+                        index: index,
+                        geometry: geo.size,
+                        isEditing: isEditingLayout,
+                        hasManualOffset: store.bubble(named: course.name)?.manualOffsetX != nil,
+                        isReservedName: Self.isReservedBubbleName(course.name),
+                        draggingName: $draggingName,
+                        dragOffset: $dragOffset,
+                        onTap: { handleBubbleTap(course.name) },
+                        onRename: { handleRenameBubble(course.name) },
+                        onMoveAll: { handleEnterEditMode() },
+                        onResetPosition: { handleResetPosition(course.name) },
+                        onDelete: { pendingDeleteName = course.name },
+                        onCommitDrag: { fx, fy in
+                            store.setBubbleManualOffset(name: course.name, offsetX: fx, offsetY: fy)
+                        }
+                    )
+                }
+
+                // "Done" pill — discoverable exit from jiggle mode.
+                // Pinned top-trailing inside the field so it never sits
+                // under the FloatingTabBar or the FAB.
+                if isEditingLayout {
+                    VStack {
+                        HStack {
+                            Spacer()
+                            doneEditingPill
+                                .padding(.top, 8)
+                                .padding(.trailing, 16)
+                        }
+                        Spacer()
                     }
-                    .buttonStyle(BubblePressStyle())
-                    .position(
-                        x: geo.size.width / 2 + course.offsetX * geo.size.width,
-                        y: geo.size.height / 2 + course.offsetY * geo.size.height
-                    )
-                    .scaleEffect(bubblesVisible ? 1 : 0.6)
-                    .opacity(bubblesVisible ? 1 : 0)
-                    .animation(
-                        .spring(response: 0.5, dampingFraction: 0.6)
-                            .delay(Double(index) * 0.08),
-                        value: bubblesVisible
-                    )
+                    .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .topTrailing)))
+                    .zIndex(20)
                 }
             }
         }
+    }
+
+    private var doneEditingPill: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.22)) {
+                isEditingLayout = false
+                draggingName = nil
+                dragOffset = .zero
+            }
+        } label: {
+            Text("Done")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(HomeTheme.accent)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(Color.white.opacity(0.55))
+                .background(.ultraThinMaterial)
+                .clipShape(Capsule())
+                .overlay {
+                    Capsule().strokeBorder(HomeTheme.accent.opacity(0.35), lineWidth: 1)
+                }
+                .shadow(color: .black.opacity(0.06), radius: 4, x: 0, y: 2)
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Bubble actions
+
+    private func handleBubbleTap(_ name: String) {
+        // Set the filter first so CourseSpaceView's `onChange(of:
+        // store.libraryFilter)` (it now reacts even when not visible)
+        // adopts the bubble. The tab cross-fade is owned by MainTabView's
+        // `.animation(_, value:)` modifier — a `withAnimation` here would
+        // conflict.
+        store.libraryFilter = name
+        resolveBubbleCourse(name)
+        selectedTab = .notebook
+    }
+
+    private func handleRenameBubble(_ name: String) {
+        withAnimation(.easeOut(duration: 0.2)) {
+            bubbleEditorMode = .rename(originalName: name)
+        }
+    }
+
+    private func handleEnterEditMode() {
+        withAnimation(.easeInOut(duration: 0.22)) {
+            isEditingLayout = true
+        }
+    }
+
+    private func handleResetPosition(_ name: String) {
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+            store.clearBubbleManualOffset(name: name)
+        }
+    }
+
+    private func handleConfirmedDelete(_ name: String) {
+        withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
+            store.deleteBubble(name: name)
+        }
+    }
+
+    /// Bubbles whose names are managed by the system — they show up
+    /// when there are orphaned notes (`Unnamed`) or for a fresh empty
+    /// account (`Untitled Bubble`). JSX L2276 hides the action menu
+    /// on these, so we do the same.
+    private static func isReservedBubbleName(_ name: String) -> Bool {
+        let lower = name.lowercased()
+        return NotesStore.reservedBubbleNames.contains(lower) || lower == "untitled bubble"
     }
 
     private func resolveBubbleCourse(_ name: String) {
@@ -348,6 +507,220 @@ struct HomeView: View {
             .transition(.opacity)
             .zIndex(50)
         }
+    }
+}
+
+// MARK: - HomeBubbleCell
+//
+// One bubble inside the `bubbleField` ZStack. Wraps the existing
+// `BubbleView` with:
+//
+// - A `Button` + `.contextMenu` in normal mode (long-press surfaces
+//   Rename / Move / Reset Position / Delete, mirroring the iOS Home
+//   Screen pattern).
+// - A `DragGesture` in edit mode, with a subtle wiggle (`rotationEffect`
+//   driven by `wigglePhase` + `.repeatForever(autoreverses: true)`).
+// - A lifted scale + zIndex while it's the actively dragged bubble.
+// - Spring animations on position so reset / re-sort / drag-commit all
+//   tween into place rather than snap.
+//
+// The cell is intentionally dumb — every side effect is a closure owned
+// by `HomeView`, so this struct can stay private to the file and
+// participate in #Preview without dragging extra dependencies in.
+private struct HomeBubbleCell: View {
+    let course: CourseBubble
+    let siblings: [CourseBubble]
+    let index: Int
+    let geometry: CGSize
+    let isEditing: Bool
+    let hasManualOffset: Bool
+    let isReservedName: Bool
+    @Binding var draggingName: String?
+    @Binding var dragOffset: CGSize
+
+    let onTap: () -> Void
+    let onRename: () -> Void
+    let onMoveAll: () -> Void
+    let onResetPosition: () -> Void
+    let onDelete: () -> Void
+    let onCommitDrag: (Double, Double) -> Void
+
+    /// Flipped once on entering edit mode. The implicit `.animation`
+    /// modifier with `.repeatForever(autoreverses: true)` then bounces
+    /// the rotation between `-wiggleAngle` and `+wiggleAngle` forever —
+    /// classic Home Screen jiggle.
+    @State private var wigglePhase: Bool = false
+
+    private static let wiggleAngle: Double = 1.4
+
+    private var isBeingDragged: Bool { draggingName == course.name }
+
+    /// While the bubble is being dragged we stop the wiggle so the
+    /// finger isn't fighting a rotating target — feels much more
+    /// responsive than letting the dragged bubble keep oscillating.
+    private var wiggleActive: Bool { isEditing && !isBeingDragged }
+
+    var body: some View {
+        bubbleContent
+            .rotationEffect(.degrees(wiggleActive ? (wigglePhase ? Self.wiggleAngle : -Self.wiggleAngle) : 0))
+            .animation(.easeOut(duration: 0.2), value: isEditing)
+            // Smooth scale/shadow/rotation transition when grabbing or
+            // releasing a bubble — without this the lift snaps in
+            // instantly and feels jolty.
+            .animation(.spring(response: 0.28, dampingFraction: 0.78), value: isBeingDragged)
+            .animation(
+                wiggleActive
+                    // Slight per-bubble duration jitter so the cluster
+                    // desynchronises after a few seconds — looks more
+                    // organic than every bubble wiggling in lockstep.
+                    ? .easeInOut(duration: 0.13 + Double(index % 5) * 0.012)
+                        .repeatForever(autoreverses: true)
+                    : nil,
+                value: wigglePhase
+            )
+            .onChange(of: isEditing) { _, on in
+                if on { wigglePhase.toggle() }
+            }
+            // When the user releases a dragged bubble we're still in
+            // edit mode but the wiggle stopped during the drag. Toggle
+            // `wigglePhase` so the repeatForever animation re-kicks in
+            // on this bubble and it rejoins the jiggle.
+            .onChange(of: isBeingDragged) { wasDragging, nowDragging in
+                if wasDragging && !nowDragging && isEditing {
+                    wigglePhase.toggle()
+                }
+            }
+            .scaleEffect(isBeingDragged ? 1.05 : 1.0)
+            .shadow(
+                color: isBeingDragged ? .black.opacity(0.18) : .clear,
+                radius: isBeingDragged ? 18 : 0,
+                x: 0,
+                y: isBeingDragged ? 10 : 0
+            )
+            .position(
+                x: geometry.width / 2 + course.offsetX * geometry.width,
+                y: geometry.height / 2 + course.offsetY * geometry.height
+            )
+            .offset(isBeingDragged ? dragOffset : .zero)
+            // CRITICAL: explicitly disable animation on dragOffset
+            // changes. Without this, the surrounding `.animation(_,
+            // value:)` modifiers (especially the wiggle's repeatForever)
+            // can implicitly interpolate the
+            // per-frame drag updates, which manifests as the "rubber
+            // band / heavy" drag feel the user noticed.
+            .animation(nil, value: dragOffset)
+            .zIndex(isBeingDragged ? 10 : 0)
+            // Do not attach implicit position animations here. A spring on
+            // `course.offsetX` / `offsetY` also runs when the tab layer
+            // cross-fades back in and `GeometryReader` delivers a slightly
+            // different size — every bubble "settles" downward. Moves that
+            // should animate (drag commit, reset, delete, add/rename) already
+            // wrap their `NotesStore` mutations in `withAnimation` on the
+            // Home side or inside the drag gesture.
+    }
+
+    @ViewBuilder
+    private var bubbleContent: some View {
+        if isEditing {
+            BubbleView(course: course)
+                .contentShape(Circle())
+                .gesture(dragGesture)
+        } else {
+            Button(action: onTap) {
+                BubbleView(course: course)
+                    // Without this, iPadOS draws its automatic pointer
+                    // hover effect as a rounded-rectangle around the
+                    // Button's bounding box — looks like a "double
+                    // circle" rim sitting just outside the real bubble.
+                    // Pinning the shape to a circle makes the hover
+                    // (and hit testing) match the bubble itself.
+                    .contentShape(Circle())
+                    .hoverEffect(.lift)
+            }
+            .buttonStyle(BubblePressStyle())
+            .focusEffectDisabled()
+            .contextMenu {
+                if !isReservedName {
+                    Button {
+                        onRename()
+                    } label: {
+                        Label("Rename Bubble", systemImage: "pencil")
+                    }
+                    Button {
+                        onMoveAll()
+                    } label: {
+                        Label("Move Bubbles", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
+                    }
+                    if hasManualOffset {
+                        Button {
+                            onResetPosition()
+                        } label: {
+                            Label("Reset Position", systemImage: "arrow.uturn.backward")
+                        }
+                    }
+                    Button(role: .destructive) {
+                        onDelete()
+                    } label: {
+                        Label("Delete Bubble", systemImage: "trash")
+                    }
+                }
+            }
+        }
+    }
+
+    private var dragGesture: some Gesture {
+        // `minimumDistance: 1` keeps the drag snappy (finger barely
+        // moves before the bubble tracks) while still ignoring perfect
+        // taps. Pure taps stay no-ops because the cell isn't a Button
+        // in edit mode — there's nothing for a tap to trigger.
+        DragGesture(minimumDistance: 1)
+            .onChanged { value in
+                let baseX = geometry.width / 2 + course.offsetX * geometry.width
+                let baseY = geometry.height / 2 + course.offsetY * geometry.height
+                let requested = CGPoint(
+                    x: baseX + value.translation.width,
+                    y: baseY + value.translation.height
+                )
+                // Hard collision avoidance — the bubble can never enter
+                // another bubble's circle, no matter where the finger
+                // is. If the finger drags past a sibling, the bubble
+                // slides around its edge.
+                let resolved = HomeBubbleLayout.resolveDragPosition(
+                    requestedCenter: requested,
+                    radius: course.size / 2,
+                    siblings: siblings,
+                    in: geometry
+                )
+                let clamped = CGSize(
+                    width: resolved.x - baseX,
+                    height: resolved.y - baseY
+                )
+
+                // Wrap the state mutation in a no-animation transaction
+                // so the per-frame offset updates can't accidentally be
+                // animated by any outer `.animation(_:value:)` scope —
+                // belt-and-braces alongside `.animation(nil, value:)`
+                // on the modifier chain.
+                var txn = Transaction()
+                txn.disablesAnimations = true
+                withTransaction(txn) {
+                    if draggingName != course.name {
+                        draggingName = course.name
+                    }
+                    dragOffset = clamped
+                }
+            }
+            .onEnded { _ in
+                // dragOffset already holds the collision-resolved delta
+                // — just convert back to fractional and persist.
+                let finalOffsetX = Double(course.offsetX) + Double(dragOffset.width / max(geometry.width, 1))
+                let finalOffsetY = Double(course.offsetY) + Double(dragOffset.height / max(geometry.height, 1))
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+                    onCommitDrag(finalOffsetX, finalOffsetY)
+                    draggingName = nil
+                    dragOffset = .zero
+                }
+            }
     }
 }
 

@@ -49,6 +49,34 @@ struct CommunityReactionPill: View {
     }
 }
 
+/// Non-interactive pill used on the detail header to surface counts
+/// alongside the Like pill (comments, views, …). Same height/border/
+/// padding as the inactive `CommunityReactionPill` so the row reads as
+/// a uniform strip of chips.
+struct CommunityCountPill: View {
+    let icon: String
+    let label: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+            Text(label)
+        }
+        .font(.system(size: 12, weight: .bold))
+        .foregroundStyle(CommunityTheme.textMuted)
+        .padding(.horizontal, 10)
+        .frame(minHeight: 28)
+        .background(Capsule().fill(Color.white.opacity(0.56)))
+        .overlay(
+            Capsule()
+                .strokeBorder(
+                    Color(red: 220/255, green: 228/255, blue: 236/255).opacity(0.9),
+                    lineWidth: 1
+                )
+        )
+    }
+}
+
 /// Compact heart button used on the post card itself — same heart icon
 /// plus a count, no label.
 struct CommunityCardReactionButton: View {

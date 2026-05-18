@@ -3,18 +3,17 @@
     "version": "1.0.0",
     "private": true,
     "scripts": {
-      "dev": "supabase start",
-      "stop": "supabase stop",
-      "reset": "supabase db reset",
-      "migrate:new": "supabase migration new",
-      "migrate:up": "supabase db push",
-      "types:gen": "supabase gen types typescript --local",
-      "studio": "supabase studio",
-      "functions:serve": "supabase functions serve",
-      "functions:deploy": "supabase functions deploy"
+        "dev": "supabase start",
+        "stop": "supabase stop",
+        "reset": "supabase db reset",
+        "migrate:new": "supabase migration new",
+        "migrate:up": "supabase db push",
+        "types:gen": "supabase gen types typescript --local",
+        "studio": "supabase studio",
+        "functions:serve": "supabase functions serve",
+        "functions:deploy": "supabase functions deploy"
     },
-    "dependencies": {},
     "devDependencies": {
-      "supabase": "^1.142.2"
+        "supabase": "^1.226.4"
     }
-  }
+}

@@ -29,3 +29,15 @@ export function displayName(
 
   return 'Student'
 }
+
+/**
+ * Return a trimmed string when it has content, or `null` otherwise.
+ * Used when projecting nullable text columns (school_affiliation,
+ * major, …) onto API responses so the client always sees either a
+ * non-empty string or `null` — never `""` or `"   "`.
+ */
+export function nullIfBlank(raw: string | null | undefined): string | null {
+  if (raw == null) return null
+  const trimmed = raw.trim()
+  return trimmed.length > 0 ? trimmed : null
+}

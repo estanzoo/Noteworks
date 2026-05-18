@@ -24,6 +24,8 @@ enum NoteEditorPanel: Equatable, Hashable {
     case pen
     case highlighter
     case eraser
+    case shape
+    case text
     case more
     case background
     case rotate
@@ -81,8 +83,8 @@ struct NoteEditorToolStrip: View {
                 toolButton(.eraser, symbol: "eraser", panel: .eraser)
                 toolButton(.highlighter, symbol: "highlighter", panel: .highlighter)
                 toolButton(.lasso, symbol: "lasso", panel: nil)
-                toolButton(.shape, symbol: "square.on.circle", panel: nil)
-                toolButton(.text, symbol: "textformat", panel: nil)
+                toolButton(.shape, symbol: "square.on.circle", panel: .shape)
+                toolButton(.text, symbol: "textformat", panel: .text)
                 toolButton(.image, symbol: "photo", panel: nil)
             }
 
@@ -154,106 +156,56 @@ struct PenDropdownPanel: View {
     @ObservedObject var viewModel: NoteEditorViewModel
 
     var body: some View {
-        ChromeDropdownPanel(width: 240) {
+        ChromeDropdownPanel(width: 308) {
             VStack(alignment: .leading, spacing: 10) {
-                DropdownSectionTitle(text: "Brush")
-                HStack(spacing: 6) {
-                    ForEach(NotePenBrush.allCases) { brush in
-                        brushTile(brush)
-                    }
-                }
-                .padding(.horizontal, 12)
+                DropdownSectionHeader(
+                    title: "Ink color",
+                    detail: viewModel.penColorLabel,
+                    detailColor: viewModel.penColor
+                )
 
-                Divider().padding(.horizontal, 12)
-
-                DropdownSectionTitle(text: "Color")
-                PaletteSwatchRow(
-                    swatches: NoteColorSwatch.penPalette,
+                InkColorPaletteRow(
+                    swatches: NoteColorSwatch.penInkPalette,
                     selectedId: viewModel.penSwatchId,
                     usingCustom: viewModel.penUsesCustomColor,
-                    // 9 swatches at 24pt + 8pt spacing don't fit on one
-                    // row inside the 240pt dropdown — wrap to 5 + 4
-                    // instead. This is what fixes the "color is out of
-                    // bounds" overflow you saw after we widened the
-                    // pen palette.
-                    maxPerRow: 5
-                ) { swatch in
-                    viewModel.selectPenSwatch(swatch.id)
-                }
-                .padding(.horizontal, 12)
-
-                HStack {
-                    ColorPicker(
-                        "",
-                        selection: Binding(
-                            get: { viewModel.penCustomColor },
-                            set: { viewModel.setPenCustomColor($0) }
-                        ),
-                        supportsOpacity: false
-                    )
-                    .labelsHidden()
-                    Text("Custom")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(viewModel.penUsesCustomColor
-                                         ? NoteEditorTheme.accent
-                                         : NoteEditorTheme.textSecondary)
-                }
-                .padding(.horizontal, 12)
+                    customColor: viewModel.penCustomColor,
+                    onSelect: { viewModel.selectPenSwatch($0.id) },
+                    onCustomColor: { viewModel.setPenCustomColor($0) }
+                )
 
                 Divider().padding(.horizontal, 12)
 
-                DropdownSectionTitle(text: "Stroke")
-                HStack(spacing: 8) {
+                DropdownSectionHeader(
+                    title: "Stroke",
+                    detail: viewModel.penThicknessLabel,
+                    detailColor: viewModel.penColor
+                )
+
+                VStack(spacing: 8) {
                     Slider(value: Binding(
                         get: { viewModel.penThickness },
                         set: { viewModel.setPenThickness($0) }
                     ), in: 2...12)
-                    .tint(NoteEditorTheme.accent)
-                    Text("\(Int(viewModel.penThickness))")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(NoteEditorTheme.textPrimary)
-                        .frame(width: 24, alignment: .trailing)
+                    .tint(viewModel.penColor)
+
+                    HStack {
+                        Text("Fine")
+                        Spacer()
+                        Text("Bold")
+                    }
+                    .font(.system(size: 11, weight: .bold))
+                    .tracking(0.04 * 11)
+                    .textCase(.uppercase)
+                    .foregroundStyle(NoteEditorTheme.textSecondary.opacity(0.85))
+
+                    PenThicknessPreview(
+                        thickness: viewModel.penThickness,
+                        color: viewModel.penColor
+                    )
                 }
                 .padding(.horizontal, 12)
             }
         }
-    }
-
-    /// Single brush tile: SF Symbol over a name label, with an
-    /// accent-tinted background when this is the active brush. Tapping
-    /// activates the brush and the underlying `selectPenBrush` call also
-    /// snaps the active tool to `.pen`, so the user can switch brush
-    /// from the highlighter/eraser without first re-arming the pen.
-    @ViewBuilder
-    private func brushTile(_ brush: NotePenBrush) -> some View {
-        let isActive = viewModel.penBrush == brush
-        Button {
-            viewModel.selectPenBrush(brush)
-        } label: {
-            VStack(spacing: 3) {
-                Image(systemName: brush.symbol)
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(isActive ? NoteEditorTheme.accent : NoteEditorTheme.textPrimary)
-                Text(brush.label)
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(isActive ? NoteEditorTheme.accent : NoteEditorTheme.textSecondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
-            .background(
-                RoundedRectangle(cornerRadius: 9)
-                    .fill(isActive ? NoteEditorTheme.accent.opacity(0.14) : Color.white.opacity(0.5))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 9)
-                    .strokeBorder(isActive ? NoteEditorTheme.accent.opacity(0.5)
-                                            : Color.black.opacity(0.06),
-                                  lineWidth: 1)
-            )
-        }
-        .buttonStyle(.plain)
     }
 }
 

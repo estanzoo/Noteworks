@@ -29,7 +29,16 @@ struct CoursesStepView: View {
     /// isn't obvious from the button label alone.
     @State private var showSkipConfirm = false
 
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
     // MARK: - Derived
+
+    private var showsSplitPreview: Bool { horizontalSizeClass == .regular }
+
+    /// Bubble labels from the current draft rows (matches `handleContinue`).
+    private var previewBubbleLabels: [String] {
+        rowsWithContent.compactMap { $0.bubbleLabel(for: displayMode) }
+    }
 
     /// Filter rows down to those with any meaningful input so blanks
     /// at the bottom don't disable Continue. Mirrors JSX
@@ -94,39 +103,17 @@ struct CoursesStepView: View {
                         }
                         .padding(.bottom, 8)
 
-                        header
-                            .padding(.bottom, 18)
-
-                        displayModeCard
-                            .padding(.bottom, 14)
-
-                        VStack(spacing: 12) {
-                            ForEach($rows) { $row in
-                                CourseRowCard(
-                                    row: $row,
-                                    displayMode: displayMode,
-                                    canRemove: rows.count > 1,
-                                    onRemove: { removeRow(id: row.id) }
-                                )
+                        if showsSplitPreview {
+                            HStack(alignment: .top, spacing: 20) {
+                                courseFormColumn
+                                CourseHomePreviewPane(labels: previewBubbleLabels)
+                                    .frame(width: 300)
                             }
+                        } else {
+                            courseFormColumn
+                            CourseHomePreviewPane(labels: previewBubbleLabels)
+                                .padding(.top, 12)
                         }
-
-                        if hasInvalidRows {
-                            Text("Add a course name for every course. If the bubble should use a course code, include the code too.")
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(OnboardingTheme.errorColor)
-                                .padding(.top, 10)
-                        }
-
-                        if displayMode == .name {
-                            Text("Course names are limited to \(CourseDraft.nameMaxChars) characters so Home bubbles stay readable.")
-                                .font(.system(size: 11.5, weight: .semibold))
-                                .foregroundStyle(OnboardingTheme.textSecondary.opacity(0.85))
-                                .padding(.top, 10)
-                        }
-
-                        addCourseButton
-                            .padding(.top, 18)
 
                         bottomActions
                             .padding(.top, 22)
@@ -143,6 +130,46 @@ struct CoursesStepView: View {
             primeRowsIfNeeded()
             withAnimation(.easeOut(duration: 0.5)) { visible = true }
         }
+    }
+
+    @ViewBuilder
+    private var courseFormColumn: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+                .padding(.bottom, 18)
+
+            displayModeCard
+                .padding(.bottom, 14)
+
+            VStack(spacing: 12) {
+                ForEach($rows) { $row in
+                    CourseRowCard(
+                        row: $row,
+                        displayMode: displayMode,
+                        canRemove: rows.count > 1,
+                        onRemove: { removeRow(id: row.id) }
+                    )
+                }
+            }
+
+            if hasInvalidRows {
+                Text("Add a course name for every course. If the bubble should use a course code, include the code too.")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(OnboardingTheme.errorColor)
+                    .padding(.top, 10)
+            }
+
+            if displayMode == .name {
+                Text("Course names are limited to \(CourseDraft.nameMaxChars) characters so Home bubbles stay readable.")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(OnboardingTheme.textSecondary.opacity(0.85))
+                    .padding(.top, 10)
+            }
+
+            addCourseButton
+                .padding(.top, 18)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - Sub-views
@@ -386,6 +413,116 @@ struct CoursesStepView: View {
             row.bubbleLabel(for: displayMode)
         }
         onSave(labels)
+    }
+}
+
+// MARK: - Home preview (course bubbles — NoteWorks_UI course-setup column)
+
+private struct CourseHomePreviewPane: View {
+    let labels: [String]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("HOME PREVIEW")
+                .font(.system(size: 12, weight: .heavy))
+                .tracking(1.2)
+                .foregroundStyle(OnboardingTheme.textSecondary.opacity(0.85))
+
+            Text("Your course bubbles")
+                .font(.system(size: 20, weight: .bold))
+                .tracking(-0.4)
+                .foregroundStyle(OnboardingTheme.textPrimary)
+
+            Text("These names become the bubbles on Home.")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(OnboardingTheme.textSecondary)
+                .lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
+
+            ZStack {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(Color.white.opacity(0.42))
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .strokeBorder(OnboardingTheme.glassBorder, lineWidth: 1)
+
+                if labels.isEmpty {
+                    Text("Add at least one course on the left to preview your bubbles.")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(OnboardingTheme.textSecondary.opacity(0.75))
+                        .multilineTextAlignment(.center)
+                        .padding(20)
+                } else if labels.count == 1, let label = labels.first {
+                    let size = Self.bubbleDiameter(for: label)
+                    BubbleView(
+                        course: CourseBubble(
+                            name: label,
+                            noteCount: 0,
+                            size: size,
+                            offsetX: 0,
+                            offsetY: 0
+                        ),
+                        showsNoteMeta: false
+                    )
+                    .modifier(PreviewBubbleFloatModifier(delay: 0))
+                    .frame(maxWidth: .infinity, minHeight: 200)
+                } else {
+                    FlowLayout(spacing: 14) {
+                        ForEach(Array(labels.enumerated()), id: \.offset) { index, label in
+                            let size = Self.bubbleDiameter(for: label)
+                            BubbleView(
+                                course: CourseBubble(
+                                    name: label,
+                                    noteCount: 0,
+                                    size: size,
+                                    offsetX: 0,
+                                    offsetY: 0
+                                ),
+                                showsNoteMeta: false
+                            )
+                            .modifier(PreviewBubbleFloatModifier(delay: Double(index) * 0.24))
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(18)
+                }
+            }
+            .frame(minHeight: 200)
+        }
+        .padding(16)
+        .background(Color.white.opacity(0.28))
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .strokeBorder(OnboardingTheme.glassBorder, lineWidth: 1)
+        }
+    }
+
+    private static func bubbleDiameter(for label: String) -> CGFloat {
+        let base: CGFloat = 88
+        let byLength = CGFloat(label.count) * 3.2
+        return min(132, max(base, base + byLength - 18))
+    }
+}
+
+/// Matches `NoteWorks_UI 3` / `noteworks-library.jsx` `bubbleFloat`:
+/// `0%,100% { translateY(0) scale(1) }` / `50% { translateY(-8px) scale(1.018) }`
+/// with `3.8s ease-in-out` and `index * 0.24s` delay per bubble.
+private struct PreviewBubbleFloatModifier: ViewModifier {
+    let delay: Double
+    @State private var floating = false
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(floating ? 1.018 : 1.0)
+            .offset(y: floating ? -8 : 0)
+            .task {
+                if delay > 0 {
+                    try? await Task.sleep(for: .seconds(delay))
+                }
+                withAnimation(.easeInOut(duration: 1.9).repeatForever(autoreverses: true)) {
+                    floating = true
+                }
+            }
     }
 }
 

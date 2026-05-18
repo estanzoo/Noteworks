@@ -7,6 +7,9 @@ const MAX_MAJOR = 255
 const MAX_EMAIL = 255
 const MAX_COURSE_CODE = 50
 const MAX_COURSE_CODES = 50
+const MAX_INTEREST = 50
+const MAX_INTERESTS = 50
+const MAX_BIO = 280
 const MIN_GRADUATION_YEAR = 2000
 const MAX_GRADUATION_YEAR = 2100
 
@@ -19,7 +22,12 @@ type ValidBody = {
   school_id: string | null
   school_email: string
   course_codes: string[]
+  /// Free-form topics the user picked on the "Any Field of Interests?"
+  /// step. Stored in its own column (`users.interests`) — distinct from
+  /// `course_codes`, which is reserved for registrar-grade identifiers.
+  interests: string[]
   major: string | null
+  bio: string | null
 }
 
 function validate(body: unknown): ValidBody | { errors: Record<string, string> } {
@@ -40,10 +48,23 @@ function validate(body: unknown): ValidBody | { errors: Record<string, string> }
     typeof o.school_id === 'string' && /^[0-9a-f-]{36}$/i.test(o.school_id) ? o.school_id : null
   const school_email = typeof o.school_email === 'string' ? o.school_email.trim() : ''
   const majorRaw = typeof o.major === 'string' ? o.major.trim() : ''
+  // Bio is optional. We accept null / missing as "no change" by sending
+  // null through; the upsert below leaves the column at whatever value
+  // was previously stored when explicitly null.
+  const bioProvided = Object.prototype.hasOwnProperty.call(o, 'bio')
+  const bioRaw = typeof o.bio === 'string' ? o.bio.trim() : ''
 
   let course_codes: string[] = []
   if (Array.isArray(o.course_codes)) {
     course_codes = o.course_codes
+      .filter((c): c is string => typeof c === 'string')
+      .map((c) => c.trim())
+      .filter((c) => c.length > 0)
+  }
+
+  let interests: string[] = []
+  if (Array.isArray(o.interests)) {
+    interests = o.interests
       .filter((c): c is string => typeof c === 'string')
       .map((c) => c.trim())
       .filter((c) => c.length > 0)
@@ -77,10 +98,26 @@ function validate(body: unknown): ValidBody | { errors: Record<string, string> }
     }
   }
 
+  if (interests.length > MAX_INTERESTS)
+    errors.interests = `At most ${MAX_INTERESTS} interests allowed`
+  for (let i = 0; i < interests.length; i++) {
+    if (interests[i].length > MAX_INTEREST) {
+      errors[`interests[${i}]`] = `Interest must be at most ${MAX_INTEREST} characters`
+      break
+    }
+  }
+
   if (majorRaw.length > MAX_MAJOR) {
     errors.major = `Major must be at most ${MAX_MAJOR} characters`
   }
   const major = majorRaw.length > 0 ? majorRaw : null
+
+  if (bioProvided && bioRaw.length > MAX_BIO) {
+    errors.bio = `Bio must be at most ${MAX_BIO} characters`
+  }
+  // `null` here means "caller didn't send a bio key, leave whatever's in
+  // the column alone". An explicit empty string clears the field.
+  const bio: string | null = bioProvided ? (bioRaw.length > 0 ? bioRaw : '') : null
 
   if (Object.keys(errors).length > 0) return { errors }
   return {
@@ -90,7 +127,9 @@ function validate(body: unknown): ValidBody | { errors: Record<string, string> }
     school_id,
     school_email,
     course_codes,
+    interests,
     major,
+    bio,
   }
 }
 
@@ -118,26 +157,41 @@ Deno.serve(async (req) => {
 
   const now = new Date().toISOString()
 
+  // Upsert (not just update) so the row self-heals if `public.users` is
+  // somehow missing for this authenticated user — e.g. an Apple sign-in
+  // whose `handle_new_user` trigger silently failed at signup time
+  // (this used to surface as "User profile not found" on the Interests
+  // step). The RLS INSERT policy on `public.users` is open and the
+  // SELECT/UPDATE policies both gate on `auth.uid() = id`, so the
+  // synthetic INSERT can only ever create a row for the caller.
+  const upsertRow: Record<string, unknown> = {
+    id: user.id,
+    email: user.email ?? `${user.id}@noreply.local`,
+    name: validated.name,
+    year_of_graduation: validated.year_of_graduation,
+    school_affiliation: validated.school_affiliation,
+    school_email: validated.school_email,
+    course_codes: validated.course_codes,
+    interests: validated.interests,
+    major: validated.major,
+    onboarding_completed_at: now,
+    updated_at: now,
+  }
+  // Only forward `bio` to the upsert when the caller explicitly included
+  // it on the payload. The onboarding flow itself never sends a bio (the
+  // field doesn't exist on those steps); the Profile → About You editor
+  // reuses this same endpoint and is the only caller that sets it.
+  if (validated.bio !== null) {
+    upsertRow.bio = validated.bio
+  }
+
   const { data: updated, error: updateError } = await supabase
     .from('users')
-    .update({
-      name: validated.name,
-      year_of_graduation: validated.year_of_graduation,
-      school_affiliation: validated.school_affiliation,
-      school_email: validated.school_email,
-      course_codes: validated.course_codes,
-      major: validated.major,
-      onboarding_completed_at: now,
-      updated_at: now,
-    })
-    .eq('id', user.id)
+    .upsert(upsertRow, { onConflict: 'id' })
     .select()
     .single()
 
   if (updateError) {
-    if (updateError.code === 'PGRST116') {
-      return errorResponse('Not found', 'User profile not found', 404)
-    }
     return errorResponse('Update failed', updateError.message, 500)
   }
 

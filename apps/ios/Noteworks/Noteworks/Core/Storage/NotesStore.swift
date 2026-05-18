@@ -78,22 +78,35 @@ enum NotePageBackground: String, Codable, CaseIterable, Hashable {
 
 /// Local bubble metadata. `name` remains the user-facing bubble label while
 /// `courseId` stores the backend `courses.id` used by notes/posts.
+///
+/// `manualOffsetX` / `manualOffsetY` are populated when the user drags a
+/// bubble in Home's edit mode. They're fractional offsets from the
+/// container center (range roughly `-0.5 … 0.5`), so they survive iPad
+/// rotation, split-view resize, and different iPad sizes. `nil` means
+/// "use the auto slot layout in `HomeBubbleLayout`" — that's the
+/// default for every bubble until the user moves it.
 struct NoteBubble: Codable, Identifiable, Equatable, Hashable {
     let id: String
     var name: String
     var courseId: String?
     var courseCode: String?
+    var manualOffsetX: Double?
+    var manualOffsetY: Double?
 
     init(
         id: String = UUID().uuidString,
         name: String,
         courseId: String? = nil,
-        courseCode: String? = nil
+        courseCode: String? = nil,
+        manualOffsetX: Double? = nil,
+        manualOffsetY: Double? = nil
     ) {
         self.id = id
         self.name = name
         self.courseId = courseId
         self.courseCode = courseCode
+        self.manualOffsetX = manualOffsetX
+        self.manualOffsetY = manualOffsetY
     }
 }
 
@@ -584,6 +597,31 @@ final class NotesStore: ObservableObject {
         if libraryFilter?.caseInsensitiveCompare(name) == .orderedSame {
             libraryFilter = nil
         }
+        saveDebounced()
+    }
+
+    /// Persists the user's manual position for a bubble (set during the
+    /// Home edit-mode drag). Coordinates are fractional offsets from the
+    /// container center; pass `nil`s via `clearBubbleManualOffset` to
+    /// fall back to the auto slot layout.
+    func setBubbleManualOffset(name: String, offsetX: Double, offsetY: Double) {
+        guard let idx = bubbles.firstIndex(where: {
+            $0.name.caseInsensitiveCompare(name) == .orderedSame
+        }) else { return }
+        bubbles[idx].manualOffsetX = offsetX
+        bubbles[idx].manualOffsetY = offsetY
+        saveDebounced()
+    }
+
+    /// Clears any manual position, returning the bubble to the auto
+    /// slot it would have received from `HomeBubbleLayout`.
+    func clearBubbleManualOffset(name: String) {
+        guard let idx = bubbles.firstIndex(where: {
+            $0.name.caseInsensitiveCompare(name) == .orderedSame
+        }) else { return }
+        guard bubbles[idx].manualOffsetX != nil || bubbles[idx].manualOffsetY != nil else { return }
+        bubbles[idx].manualOffsetX = nil
+        bubbles[idx].manualOffsetY = nil
         saveDebounced()
     }
 

@@ -39,8 +39,7 @@ enum NoteEditorTool: String, Equatable {
     /// still a stub for v1.
     var isImplemented: Bool {
         switch self {
-        case .pen, .highlighter, .eraser, .lasso, .text, .image: return true
-        case .shape: return false
+        case .pen, .highlighter, .eraser, .lasso, .text, .image, .shape: return true
         }
     }
 
@@ -61,6 +60,65 @@ enum NoteEditorTool: String, Equatable {
 enum NoteEraserMode: String, Equatable {
     case regular
     case object
+}
+
+/// Shape primitive offered by the Shape tool dropdown. Mirrors
+/// `shapeOptions` in noteworks-library.jsx — these are picked from the
+/// tool panel but the actual canvas insertion is a v2 feature.
+enum NoteShapeType: String, Equatable, CaseIterable, Identifiable {
+    case rectangle
+    case circle
+    case arrow
+    case line
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .rectangle: return "Rectangle"
+        case .circle:    return "Circle"
+        case .arrow:     return "Arrow"
+        case .line:      return "Line"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .rectangle: return "rectangle"
+        case .circle:    return "circle"
+        case .arrow:     return "arrow.up.right"
+        case .line:      return "minus"
+        }
+    }
+}
+
+/// Font family offered by the Text tool dropdown. Mirrors JSX
+/// `fontOptions` (SF Pro / Georgia / Marker).
+enum NoteTextFont: String, Equatable, CaseIterable, Identifiable {
+    case sf
+    case serif
+    case marker
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .sf:     return "SF Pro"
+        case .serif:  return "Georgia"
+        case .marker: return "Marker"
+        }
+    }
+
+    /// SwiftUI font matching this family at the requested size. Marker
+    /// has no system equivalent on iOS; rounded reads as a friendly
+    /// hand-drawn substitute.
+    func displayFont(size: CGFloat, weight: Font.Weight = .medium) -> Font {
+        switch self {
+        case .sf:     return .system(size: size, weight: weight, design: .default)
+        case .serif:  return .system(size: size, weight: weight, design: .serif)
+        case .marker: return .system(size: size, weight: weight, design: .rounded)
+        }
+    }
 }
 
 /// Brush "feel" exposed under the Pen tool. Maps to a PencilKit
@@ -198,6 +256,7 @@ extension NoteColorSwatch {
     static let palette: [NoteColorSwatch] = [
         NoteColorSwatch(id: "black",    label: "Black",    color: Color(red: 0x18/255, green: 0x18/255, blue: 0x1F/255)),
         NoteColorSwatch(id: "graphite", label: "Graphite", color: Color(red: 0x4D/255, green: 0x4D/255, blue: 0x52/255)),
+        NoteColorSwatch(id: "charcoal", label: "Charcoal", color: Color(red: 0x6B/255, green: 0x74/255, blue: 0x81/255)),
         NoteColorSwatch(id: "red",      label: "Red",      color: Color(red: 0xE5/255, green: 0x3E/255, blue: 0x3E/255)),
         NoteColorSwatch(id: "blue",     label: "Blue",     color: Color(red: 0x3E/255, green: 0x7A/255, blue: 0xE5/255)),
         NoteColorSwatch(id: "green",    label: "Green",    color: Color(red: 0x2E/255, green: 0xA5/255, blue: 0x5B/255)),
@@ -207,8 +266,18 @@ extension NoteColorSwatch {
         NoteColorSwatch(id: "pink",     label: "Pink",     color: Color(red: 0xF7/255, green: 0x95/255, blue: 0xC0/255)),
     ]
 
-    /// Pen palette — full nine-swatch spectrum led by Black so a new note
-    /// opens in the most common writing color.
+    /// Pen ink row in the tool dropdown — six swatches on one line,
+    /// matching NoteWorks_UI 3.
+    static let penInkPalette: [NoteColorSwatch] = [
+        palette.first { $0.id == "graphite" }!,
+        palette.first { $0.id == "charcoal" }!,
+        palette.first { $0.id == "yellow"  }!,
+        palette.first { $0.id == "lime"    }!,
+        palette.first { $0.id == "cyan"    }!,
+        palette.first { $0.id == "pink"    }!,
+    ]
+
+    /// Full pen palette for any code that still needs every writing color.
     static let penPalette: [NoteColorSwatch] = palette
 
     /// Highlighter palette — the four bright pastels from the original
@@ -275,6 +344,22 @@ final class NoteEditorViewModel: ObservableObject {
     /// First-tap arms the "Clear page" button red, second tap actually
     /// fires (mirrors JSX `clearPageArmed` L2454).
     @Published var clearPageArmed: Bool = false
+
+    // Shape
+    @Published var shapeType: NoteShapeType = .rectangle
+    @Published var shapeSwatchId: String = "black"
+    @Published var shapeCustomColor: Color = Color(red: 0x6E/255, green: 0x8B/255, blue: 0xFF/255)
+    @Published var shapeUsesCustomColor: Bool = false
+
+    // Text overlay defaults — picked from the Text tool dropdown and
+    // used by `TextOverlayEditorSheet` when the user composes a new
+    // overlay.
+    @Published var textFont: NoteTextFont = .sf
+    /// Default font size (14…44 pt) the editor sheet starts with.
+    @Published var textSize: CGFloat = 20
+    @Published var textSwatchId: String = "black"
+    @Published var textCustomColor: Color = Color(red: 0x6E/255, green: 0x8B/255, blue: 0xFF/255)
+    @Published var textUsesCustomColor: Bool = false
 
     // MARK: - AI Enhancements
 
@@ -380,6 +465,11 @@ final class NoteEditorViewModel: ObservableObject {
         return NoteColorSwatch.swatch(named: penSwatchId)?.label ?? "Black"
     }
 
+    /// Stroke width label shown in the pen dropdown (e.g. "0.6 mm").
+    var penThicknessLabel: String {
+        String(format: "%.1f mm", Double(penThickness) / 10)
+    }
+
     var highlighterColor: Color {
         if highlighterUsesCustomColor { return highlighterCustomColor }
         return NoteColorSwatch.swatch(named: highlighterSwatchId)?.color
@@ -390,6 +480,30 @@ final class NoteEditorViewModel: ObservableObject {
     var highlighterColorLabel: String {
         if highlighterUsesCustomColor { return "Custom" }
         return NoteColorSwatch.swatch(named: highlighterSwatchId)?.label ?? "Yellow"
+    }
+
+    var shapeColor: Color {
+        if shapeUsesCustomColor { return shapeCustomColor }
+        return NoteColorSwatch.swatch(named: shapeSwatchId)?.color
+            ?? NoteColorSwatch.swatch(named: "black")?.color
+            ?? .black
+    }
+
+    var shapeColorLabel: String {
+        if shapeUsesCustomColor { return "Custom" }
+        return NoteColorSwatch.swatch(named: shapeSwatchId)?.label ?? "Black"
+    }
+
+    var textColor: Color {
+        if textUsesCustomColor { return textCustomColor }
+        return NoteColorSwatch.swatch(named: textSwatchId)?.color
+            ?? NoteColorSwatch.swatch(named: "black")?.color
+            ?? .black
+    }
+
+    var textColorLabel: String {
+        if textUsesCustomColor { return "Custom" }
+        return NoteColorSwatch.swatch(named: textSwatchId)?.label ?? "Black"
     }
 
     /// Tool object the canvas should use right now. Recomputed every time
@@ -755,18 +869,28 @@ final class NoteEditorViewModel: ObservableObject {
         if activeTool != tool {
             assignActiveToolTracksPencil(tool)
         }
-        // Text + image tools are one-shot: every tap reopens the
-        // insertion sheet/picker so the user can add multiple items
-        // without round-tripping through another tool first.
+        // Image tool is one-shot: every activate reopens the picker so
+        // the user can add multiple photos without re-arming. Text has
+        // a panel now, so its sheet trigger lives behind `triggerTextInsert()`
+        // (fired by an "Insert text" button inside the panel).
         switch tool {
-        case .text:
-            pendingTextInsertNonce &+= 1
         case .image:
             pendingImagePickNonce &+= 1
         default:
             break
         }
         flashStatus(toolReadyStatus(for: tool))
+    }
+
+    /// Called from the Text dropdown panel — bumps the nonce so
+    /// `NoteEditorView` opens the text editor sheet with the panel's
+    /// current font/size/color defaults.
+    func triggerTextInsert() {
+        if activeTool != .text {
+            assignActiveToolTracksPencil(.text)
+        }
+        pendingTextInsertNonce &+= 1
+        flashStatus("Insert text")
     }
 
     func selectPenSwatch(_ id: String) {
@@ -821,6 +945,56 @@ final class NoteEditorViewModel: ObservableObject {
         flashStatus(eraserStatus())
     }
 
+    // MARK: Shape
+
+    func selectShapeType(_ type: NoteShapeType) {
+        shapeType = type
+        assignActiveToolTracksPencil(.shape)
+        flashStatus(shapeStatus())
+    }
+
+    func selectShapeSwatch(_ id: String) {
+        shapeUsesCustomColor = false
+        shapeSwatchId = id
+        assignActiveToolTracksPencil(.shape)
+        flashStatus(shapeStatus())
+    }
+
+    func setShapeCustomColor(_ color: Color) {
+        shapeCustomColor = color
+        shapeUsesCustomColor = true
+        assignActiveToolTracksPencil(.shape)
+        flashStatus(shapeStatus())
+    }
+
+    // MARK: Text
+
+    func selectTextFont(_ font: NoteTextFont) {
+        textFont = font
+        assignActiveToolTracksPencil(.text)
+        flashStatus(textStatus())
+    }
+
+    func setTextSize(_ value: CGFloat) {
+        textSize = max(14, min(44, value))
+        assignActiveToolTracksPencil(.text)
+        flashStatus(textStatus())
+    }
+
+    func selectTextSwatch(_ id: String) {
+        textUsesCustomColor = false
+        textSwatchId = id
+        assignActiveToolTracksPencil(.text)
+        flashStatus(textStatus())
+    }
+
+    func setTextCustomColor(_ color: Color) {
+        textCustomColor = color
+        textUsesCustomColor = true
+        assignActiveToolTracksPencil(.text)
+        flashStatus(textStatus())
+    }
+
     // MARK: - Status helpers
 
     private func toolReadyStatus(for tool: NoteEditorTool) -> String {
@@ -829,10 +1003,18 @@ final class NoteEditorViewModel: ObservableObject {
         case .highlighter: return highlighterStatus()
         case .eraser: return eraserStatus()
         case .lasso: return "Lasso ready"
-        case .shape: return "Shape · coming soon"
-        case .text: return "Tap to drop a text box"
+        case .shape: return shapeStatus()
+        case .text: return textStatus()
         case .image: return "Pick an image to insert"
         }
+    }
+
+    private func shapeStatus() -> String {
+        "\(shapeColorLabel) \(shapeType.label.lowercased()) ready"
+    }
+
+    private func textStatus() -> String {
+        "\(textFont.label) \(Int(textSize)) pt · \(textColorLabel)"
     }
 
     private func penStatus() -> String {

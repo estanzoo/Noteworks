@@ -23,6 +23,28 @@ struct PostAuthor: Codable, Equatable, Identifiable {
     /// `nil` if the user hasn't uploaded a photo yet — the avatar view
     /// falls back to coloured initials in that case.
     let avatarUrl: String?
+    /// School affiliation set during onboarding (e.g. "Royal Academy of
+    /// Arts"). Surfaced next to the author's name on the community post
+    /// detail header. Returned by `get-post(s)` / `search-posts` via the
+    /// `user_profiles` view.
+    var school: String?
+    /// Program of study (e.g. "MA Information Experience Design").
+    /// Shown right under `school` on the post detail header.
+    var major: String?
+
+    init(
+        id: String,
+        name: String?,
+        avatarUrl: String?,
+        school: String? = nil,
+        major: String? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.avatarUrl = avatarUrl
+        self.school = school
+        self.major = major
+    }
 }
 
 // MARK: - Attachments

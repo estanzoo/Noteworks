@@ -179,7 +179,13 @@ struct NoteEditorView: View {
                             guard !token.isEmpty else { throw CommunityError.unauthorized }
                             var created = try await CommunityService.shared.createPost(request, accessToken: token)
                             if let me = appState.profile {
-                                created.author = PostAuthor(id: me.id, name: me.displayName, avatarUrl: me.avatarUrl)
+                                created.author = PostAuthor(
+                                    id: me.id,
+                                    name: me.displayName,
+                                    avatarUrl: me.avatarUrl,
+                                    school: me.schoolAffiliation,
+                                    major: me.major
+                                )
                             }
                             return created
                         }
@@ -559,7 +565,8 @@ struct NoteEditorView: View {
         switch panel {
         case .ai:                        return 308
         case .more, .background, .rotate: return 220
-        case .pen, .highlighter, .eraser: return 248
+        case .pen:                       return 308
+        case .highlighter, .eraser:      return 248
         case .bookmark:                   return 0
         case .share:                      return 272
         }

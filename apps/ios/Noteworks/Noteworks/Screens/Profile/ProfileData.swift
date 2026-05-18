@@ -104,7 +104,11 @@ extension Profile {
         major: "",
         grade: "",
         subscription: Subscription(
-            plan: "Free",
+            // Beta-period default: every signed-in user is on Pro until
+            // the billing flow ships. Surfaces (hero card chip, AT A
+            // GLANCE pill, Subscription panel) all read from this so
+            // they stay in sync.
+            plan: "NoteWorks Pro",
             status: "Active",
             renewsOn: ""
         ),

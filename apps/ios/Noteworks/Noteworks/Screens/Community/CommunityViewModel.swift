@@ -297,7 +297,13 @@ final class CommunityViewModel: ObservableObject {
         // the post correctly without a follow-up fetch.
         var withAuthor = created
         if let me = appState?.profile {
-            withAuthor.author = PostAuthor(id: me.id, name: me.displayName, avatarUrl: me.avatarUrl)
+            withAuthor.author = PostAuthor(
+                id: me.id,
+                name: me.displayName,
+                avatarUrl: me.avatarUrl,
+                school: me.schoolAffiliation,
+                major: me.major
+            )
         }
         posts.insert(withAuthor, at: 0)
         return withAuthor

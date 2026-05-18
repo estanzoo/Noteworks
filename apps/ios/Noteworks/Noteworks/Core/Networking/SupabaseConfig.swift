@@ -18,6 +18,14 @@ enum SupabaseConfig {
         URL(string: "\(functionsBase)/submit-onboarding")!
     }
 
+    /// `POST /submit-feedback` — persists a Profile → Feedback row
+    /// after validating it. The client uploads photo bytes separately
+    /// (out of scope for the first cut) and passes back the storage
+    /// paths in `media_paths[]`.
+    static var submitFeedbackURL: URL {
+        URL(string: "\(functionsBase)/submit-feedback")!
+    }
+
     static var resolveCourseURL: URL {
         URL(string: "\(functionsBase)/resolve-course")!
     }
