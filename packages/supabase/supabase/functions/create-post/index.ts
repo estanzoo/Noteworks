@@ -1,5 +1,7 @@
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0'
 import { requireAuth } from '../_shared/auth.ts'
 import { corsResponse, json, errorResponse } from '../_shared/cors.ts'
+import { resolvePostMediaUrls } from '../_shared/post-media-urls.ts'
 
 const MAX_TITLE = 255
 const MAX_BODY = 10_000
@@ -32,8 +34,7 @@ function validate(raw: unknown): ValidatedInput | Response {
   else if (title.length > MAX_TITLE) errors.title = `Title must be at most ${MAX_TITLE} characters`
 
   const body = typeof o.body === 'string' ? o.body.trim() : ''
-  if (!body) errors.body = 'Body is required'
-  else if (body.length > MAX_BODY) errors.body = `Body must be at most ${MAX_BODY} characters`
+  if (body.length > MAX_BODY) errors.body = `Body must be at most ${MAX_BODY} characters`
 
   const visibility = o.visibility === 'private' ? 'private' as const : 'public' as const
 
@@ -161,16 +162,25 @@ Deno.serve(async (req) => {
 
   // Persist image attachments uploaded ahead of time via upload-post-media.
   // The client passes back the storage path returned by that endpoint.
+  let media: { kind: string; url: string }[] = []
   if (validated.media_paths.length > 0) {
+    const admin = createClient(
+      Deno.env.get('SUPABASE_URL')!,
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+    )
     const rows = validated.media_paths.map(path => ({
       post_id: post.id,
+      user_id: user.id,
       kind: 'image' as const,
       storage_path: path,
     }))
-    const { error: mediaErr } = await supabase.from('post_media').insert(rows)
+    const { error: mediaErr } = await admin.from('post_media').insert(rows)
     if (mediaErr) {
-      console.error('post_media insert failed:', mediaErr.message)
+      return errorResponse('Insert failed', `post_media: ${mediaErr.message}`, 500)
     }
+    media = await resolvePostMediaUrls(
+      validated.media_paths.map(path => ({ kind: 'image', storage_path: path })),
+    )
   }
 
   // Upsert hashtags and link (batched — 2 queries instead of N*3)
@@ -203,7 +213,7 @@ Deno.serve(async (req) => {
     comments_count: 0,
     hashtags: hashtagNames,
     attachments: validated.attachment_note_ids,
-    media_paths: validated.media_paths,
+    media,
     created_at: post.created_at,
     updated_at: post.updated_at,
   }, 201)

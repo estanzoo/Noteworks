@@ -1,6 +1,7 @@
 import { requireAuth } from '../_shared/auth.ts'
 import { corsResponse, json, errorResponse } from '../_shared/cors.ts'
 import { displayName, nullIfBlank } from '../_shared/author.ts'
+import { resolvePostMediaUrls } from '../_shared/post-media-urls.ts'
 
 // Cursor format:
 //   When school-prioritized feed is active, the cursor encodes the phase:
@@ -322,13 +323,17 @@ Deno.serve(async (req) => {
     .in('post_id', postIds)
 
   const mediaByPost: Record<string, { kind: string; url: string }[]> = {}
+  const mediaGrouped = new Map<string, { kind: string; storage_path: string }[]>()
   for (const row of mediaRows ?? []) {
-    const { data: pub } = supabase.storage.from('post-media').getPublicUrl(row.storage_path as string)
-    if (!mediaByPost[row.post_id as string]) mediaByPost[row.post_id as string] = []
-    mediaByPost[row.post_id as string].push({
+    const postId = row.post_id as string
+    if (!mediaGrouped.has(postId)) mediaGrouped.set(postId, [])
+    mediaGrouped.get(postId)!.push({
       kind: row.kind as string,
-      url: pub.publicUrl,
+      storage_path: row.storage_path as string,
     })
+  }
+  for (const [postId, rows] of mediaGrouped.entries()) {
+    mediaByPost[postId] = await resolvePostMediaUrls(rows)
   }
 
   const responsePosts = combined.map(p => {

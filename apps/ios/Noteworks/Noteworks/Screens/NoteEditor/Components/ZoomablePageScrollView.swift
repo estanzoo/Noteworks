@@ -9,12 +9,8 @@
 //  Gesture routing:
 //    • Apple Pencil touches → PencilKit drawing.
 //    • Finger pinch / pan → outer scroll view zoom and movement.
-//    • Finger horizontal page drag at 1× → whole-page slide navigation.
-//
-//  The outer scroll view zoom applies a transform to the hosted view.
-//  The coordinator bumps the embedded `PKCanvasView`'s `contentScaleFactor`
-//  to `screenScale × maxScale` once the SwiftUI hierarchy has laid out,
-//  so PencilKit rasterizes at higher resolution and looks sharper when zoomed.
+//    • Finger horizontal page drag at ~1× → whole-page slide navigation.
+//    • Double-tap → toggle between fit and ~2.5× zoom at the tap point.
 //
 
 import SwiftUI
@@ -24,19 +20,9 @@ import PencilKit
 struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
 
     let contentSize: CGSize
-    var minScale: CGFloat = 1.0
-    var maxScale: CGFloat = 3.0
-    /// When `true`, a "next" swipe would create a brand-new page rather
-    /// than just navigate to an existing one. We use this signal to add
-    /// a progressive rubber-band feel during the drag, raise the commit
-    /// distance, and fire a subtle haptic when the finger enters the
-    /// "create" zone — so the user can _feel_ the difference between
-    /// navigating between existing pages and creating one.
+    var maxScale: CGFloat = 8.0
+    var doubleTapZoomScale: CGFloat = 2.5
     var nextSwipeCreatesPage: Bool = false
-    /// When `true`, the user is on page 1 and a "previous" swipe can't
-    /// go anywhere. The drag rubber-bands at the boundary and the
-    /// callback still fires once enough commitment is shown so the
-    /// caller can surface a status notification.
     var atFirstPage: Bool = false
     var onSwipeNext: (() -> Void)? = nil
     var onSwipePrevious: (() -> Void)? = nil
@@ -45,17 +31,27 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
     func makeUIView(context: Context) -> UIScrollView {
         let scrollView = UIScrollView()
         scrollView.delegate = context.coordinator
-        scrollView.minimumZoomScale = minScale
         scrollView.maximumZoomScale = maxScale
+        // Allow temporary pinch-out below the default size; release snaps
+        // back to `baselineZoomScale` (see `scrollViewDidEndZooming`).
         scrollView.bouncesZoom = true
-        scrollView.showsVerticalScrollIndicator = false
-        scrollView.showsHorizontalScrollIndicator = false
+        scrollView.showsVerticalScrollIndicator = true
+        scrollView.showsHorizontalScrollIndicator = true
+        scrollView.indicatorStyle = .default
         scrollView.contentInsetAdjustmentBehavior = .never
+        scrollView.keyboardDismissMode = .interactive
+        scrollView.decelerationRate = .fast
         scrollView.backgroundColor = .clear
+
+        scrollView.bounces = false
+        scrollView.alwaysBounceVertical = false
+        scrollView.alwaysBounceHorizontal = false
 
         scrollView.panGestureRecognizer.minimumNumberOfTouches = 1
         scrollView.panGestureRecognizer.maximumNumberOfTouches = 2
-        scrollView.panGestureRecognizer.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        scrollView.panGestureRecognizer.allowedTouchTypes = [
+            NSNumber(value: UITouch.TouchType.direct.rawValue)
+        ]
 
         let pagePan = UIPanGestureRecognizer(
             target: context.coordinator,
@@ -68,9 +64,14 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         scrollView.addGestureRecognizer(pagePan)
         scrollView.panGestureRecognizer.require(toFail: pagePan)
 
-        scrollView.bounces = false
-        scrollView.alwaysBounceVertical = false
-        scrollView.alwaysBounceHorizontal = false
+        let doubleTap = UITapGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleDoubleTap(_:))
+        )
+        doubleTap.numberOfTapsRequired = 2
+        doubleTap.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        doubleTap.delegate = context.coordinator
+        scrollView.addGestureRecognizer(doubleTap)
 
         let host = UIHostingController(rootView: content())
         host.view.backgroundColor = .clear
@@ -80,6 +81,7 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
 
         context.coordinator.host = host
         context.coordinator.maxZoom = maxScale
+        context.coordinator.doubleTapZoomScale = doubleTapZoomScale
         context.coordinator.contentSize = contentSize
         context.coordinator.onSwipeNext = onSwipeNext
         context.coordinator.onSwipePrevious = onSwipePrevious
@@ -88,14 +90,21 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         context.coordinator.pagePanGesture = pagePan
 
         DispatchQueue.main.async {
-            context.coordinator.applyMaxResolutionIfPossible()
+            context.coordinator.updateZoomLimits(scrollView)
+            context.coordinator.applyInitialFillZoomIfNeeded(scrollView)
+            context.coordinator.applyCanvasResolution(for: scrollView.zoomScale)
             context.coordinator.recenter(scrollView)
+            scrollView.setContentOffset(
+                CGPoint(x: -scrollView.contentInset.left, y: -scrollView.contentInset.top),
+                animated: false
+            )
         }
         return scrollView
     }
 
     func updateUIView(_ scrollView: UIScrollView, context: Context) {
         context.coordinator.maxZoom = maxScale
+        context.coordinator.doubleTapZoomScale = doubleTapZoomScale
         context.coordinator.onSwipeNext = onSwipeNext
         context.coordinator.onSwipePrevious = onSwipePrevious
         context.coordinator.nextSwipeCreatesPage = nextSwipeCreatesPage
@@ -104,14 +113,22 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
 
         if context.coordinator.contentSize != contentSize {
             scrollView.zoomScale = 1.0
+            context.coordinator.resetInitialFillZoom()
             context.coordinator.host?.view.frame = CGRect(origin: .zero, size: contentSize)
             scrollView.contentSize = contentSize
             context.coordinator.contentSize = contentSize
             DispatchQueue.main.async {
-                context.coordinator.applyMaxResolutionIfPossible()
+                context.coordinator.updateZoomLimits(scrollView)
+                context.coordinator.applyInitialFillZoomIfNeeded(scrollView)
+                context.coordinator.applyCanvasResolution(for: scrollView.zoomScale)
                 context.coordinator.recenter(scrollView)
+                scrollView.setContentOffset(
+                    CGPoint(x: -scrollView.contentInset.left, y: -scrollView.contentInset.top),
+                    animated: false
+                )
             }
         } else {
+            context.coordinator.updateZoomLimits(scrollView)
             context.coordinator.recenter(scrollView)
         }
     }
@@ -121,18 +138,23 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
     final class Coordinator: NSObject, UIScrollViewDelegate, UIGestureRecognizerDelegate {
         var host: UIHostingController<Content>?
         var contentSize: CGSize = .zero
-        var maxZoom: CGFloat = 3.0
+        var maxZoom: CGFloat = 8.0
+        var doubleTapZoomScale: CGFloat = 2.5
+        /// Scale that fits the entire page inside the viewport (pinch-out target).
+        var fitEntirePageScale: CGFloat = 1.0
         var onSwipeNext: (() -> Void)?
         var onSwipePrevious: (() -> Void)?
         var nextSwipeCreatesPage: Bool = false
         var atFirstPage: Bool = false
         weak var pagePanGesture: UIPanGestureRecognizer?
         private var isSlidingPage = false
-        /// One-shot guard so we don't buzz on every frame the finger sits
-        /// past the "create page" cue threshold — fires once per gesture
-        /// when entering the zone, resets when the gesture ends or the
-        /// finger pulls back below the threshold.
         private var didFireBoundaryHaptic = false
+        private var didApplyInitialFillZoom = false
+        /// Slight scale-up only when the page is much smaller than the viewport.
+        private let initialFillMargin: CGFloat = 0.88
+        private let maxInitialFillZoom: CGFloat = 1.05
+        /// Default zoom after initial layout — used as the pinch-out floor.
+        private(set) var baselineZoomScale: CGFloat = 1.0
 
         func viewForZooming(in scrollView: UIScrollView) -> UIView? {
             host?.view
@@ -140,12 +162,45 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
 
         func scrollViewDidZoom(_ scrollView: UIScrollView) {
             recenter(scrollView)
+            applyCanvasResolution(for: scrollView.zoomScale)
+        }
+
+        func scrollViewDidEndZooming(
+            _ scrollView: UIScrollView,
+            with view: UIView?,
+            atScale scale: CGFloat
+        ) {
+            snapToBaselineZoomIfNeeded(scrollView)
+            recenter(scrollView)
+            applyCanvasResolution(for: scrollView.zoomScale)
+        }
+
+        func scrollViewDidLayoutSubviews(_ scrollView: UIScrollView) {
+            updateZoomLimits(scrollView)
+            applyInitialFillZoomIfNeeded(scrollView)
+            recenter(scrollView)
+        }
+
+        @objc func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
+            guard let scrollView = gesture.view as? UIScrollView else { return }
+            let location = gesture.location(in: scrollView)
+            let baseline = baselineZoomScale > 0 ? baselineZoomScale : 1.0
+            let isZoomedIn = scrollView.zoomScale > baseline * 1.12
+            let targetScale: CGFloat
+            if isZoomedIn {
+                targetScale = baseline
+            } else {
+                targetScale = min(doubleTapZoomScale, scrollView.maximumZoomScale)
+            }
+            let clamped = min(max(targetScale, scrollView.minimumZoomScale), scrollView.maximumZoomScale)
+            let rect = zoomRect(for: clamped, center: location, in: scrollView)
+            scrollView.zoom(to: rect, animated: true)
         }
 
         @objc func handlePagePan(_ sender: UIPanGestureRecognizer) {
             guard let scrollView = sender.view as? UIScrollView,
                   let pageView = host?.view,
-                  scrollView.zoomScale <= 1.05 else {
+                  scrollView.zoomScale <= 1.08 else {
                 resetPageSlide(animated: true)
                 return
             }
@@ -169,20 +224,11 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
                 let raw = translation.x
                 let isNextSwipe = raw < 0
                 let isPrevSwipe = raw > 0
-                // "Resistance zones": the swipe would either create a new
-                // page (next-direction past the last page) or rubber-band
-                // at the first-page boundary. In both cases we want the
-                // page to lag behind the finger so the user feels the
-                // boundary instead of breezing through it.
                 let creatingNewPage = isNextSwipe && nextSwipeCreatesPage
                 let atPrevBoundary = isPrevSwipe && atFirstPage
                 let displayedX: CGFloat
                 if creatingNewPage || atPrevBoundary {
                     displayedX = Coordinator.rubberBand(raw, dimension: width)
-                    // Light haptic the first time the finger crosses
-                    // into the "create page" cue zone — small, intentional
-                    // nudge so the user feels they're past the edge of
-                    // existing pages, not a navigation tap.
                     let cueThreshold = max(width * 0.22, 80)
                     if creatingNewPage, !didFireBoundaryHaptic, abs(raw) > cueThreshold {
                         UIImpactFeedbackGenerator(style: .light).impactOccurred(intensity: 0.7)
@@ -207,18 +253,11 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
                 let atPrevBoundary = !isNextSwipe && atFirstPage
                 let inResistanceZone = creatingNewPage || atPrevBoundary
 
-                // Inside the resistance zone we require noticeably more
-                // commitment before committing — both a longer raw drag
-                // and a higher flick velocity. That makes the boundary
-                // _feel_ like a boundary instead of just being slightly
-                // stickier than usual.
                 let normalDistance = max(70, width * 0.18)
                 let resistDistance = max(140, width * 0.34)
                 let distanceThreshold = inResistanceZone ? resistDistance : normalDistance
                 let velocityThreshold: CGFloat = inResistanceZone ? 1050 : 650
 
-                // Match GoodNotes / Notability: swipe left → next page (page exits left);
-                // swipe right → previous page (page exits right).
                 let shouldGoNext = translation.x < -distanceThreshold || velocity.x < -velocityThreshold
                 let shouldGoPrevious = translation.x > distanceThreshold || velocity.x > velocityThreshold
                 if shouldGoNext || shouldGoPrevious {
@@ -243,14 +282,6 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
             }
         }
 
-        /// Apple's standard rubber-band curve: small offsets pass through
-        /// almost linearly, large offsets are aggressively damped. Output
-        /// asymptotes at `dimension` so a full-screen finger drag still
-        /// only moves the page ~35 % of the way.
-        ///
-        ///     f(x) = sign(x) · d · (1 − 1 / (c · |x| / d + 1))
-        ///
-        /// `c = 0.55` matches `UIScrollView`'s default bounce feel.
         static func rubberBand(_ offset: CGFloat, dimension: CGFloat, coefficient: CGFloat = 0.55) -> CGFloat {
             guard dimension > 0 else { return offset }
             let magnitude = Swift.abs(offset)
@@ -271,29 +302,116 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
                   let scrollView = pan.view as? UIScrollView else {
                 return true
             }
-            guard scrollView.zoomScale <= 1.05 else { return false }
+            guard scrollView.zoomScale <= 1.08 else { return false }
             let velocity = pan.velocity(in: scrollView)
             return abs(velocity.x) > abs(velocity.y) * 1.2
         }
 
+        func updateZoomLimits(_ scrollView: UIScrollView) {
+            guard contentSize.width > 0, contentSize.height > 0,
+                  scrollView.bounds.width > 0, scrollView.bounds.height > 0 else { return }
+
+            let fitW = scrollView.bounds.width / contentSize.width
+            let fitH = scrollView.bounds.height / contentSize.height
+            fitEntirePageScale = min(fitW, fitH)
+
+            // Default resting zoom — pinch-out below this bounces back on release.
+            let baseline = baselineZoomScale > 0 ? baselineZoomScale : 1.0
+            scrollView.minimumZoomScale = baseline
+            scrollView.maximumZoomScale = maxZoom
+
+            // Only correct drift from layout changes, not an active pinch-out.
+            if scrollView.zoomScale < baseline - 0.01, !scrollView.isZooming {
+                scrollView.setZoomScale(baseline, animated: false)
+            }
+        }
+
+        /// After pinch-out, return to the default page size the user opened with.
+        func snapToBaselineZoomIfNeeded(_ scrollView: UIScrollView) {
+            let baseline = baselineZoomScale > 0 ? baselineZoomScale : 1.0
+            guard scrollView.zoomScale < baseline - 0.008 else { return }
+            scrollView.setZoomScale(baseline, animated: true)
+        }
+
+        func resetInitialFillZoom() {
+            didApplyInitialFillZoom = false
+            baselineZoomScale = 1.0
+        }
+
+        /// When the fitted page is smaller than the viewport (common on
+        /// landscape), scale up slightly so the first view feels natural.
+        func applyInitialFillZoomIfNeeded(_ scrollView: UIScrollView) {
+            guard !didApplyInitialFillZoom,
+                  contentSize.width > 0, contentSize.height > 0,
+                  scrollView.bounds.width > 0, scrollView.bounds.height > 0 else { return }
+
+            let fitW = scrollView.bounds.width / contentSize.width
+            let fitH = scrollView.bounds.height / contentSize.height
+            let fillScale = min(fitW, fitH)
+            guard fillScale > 1.02 else {
+                baselineZoomScale = 1.0
+                didApplyInitialFillZoom = true
+                updateZoomLimits(scrollView)
+                return
+            }
+
+            let target = min(fillScale * initialFillMargin, maxInitialFillZoom)
+            let zoom = max(1.0, target)
+            scrollView.zoomScale = zoom
+            baselineZoomScale = zoom
+            didApplyInitialFillZoom = true
+            updateZoomLimits(scrollView)
+            recenter(scrollView)
+        }
+
         func recenter(_ scrollView: UIScrollView) {
             guard let view = host?.view else { return }
-            let xOffset = max((scrollView.bounds.width - view.frame.width) * 0.5, 0)
-            let yOffset = max((scrollView.bounds.height - view.frame.height) * 0.5, 0)
+            // The zoom view's `frame` already reflects the current
+            // zoomScale — multiplying by zoomScale again over-counts and
+            // forces xOffset to 0, which is what made the page collapse
+            // against the leading edge when zoomed in.
+            let zoomedWidth = view.frame.width
+            let zoomedHeight = view.frame.height
+            let minVerticalMargin: CGFloat = 24
+            let xOffset = max((scrollView.bounds.width - zoomedWidth) * 0.5, 0)
+
+            let top: CGFloat
+            let bottom: CGFloat
+            if zoomedHeight + minVerticalMargin * 2 <= scrollView.bounds.height {
+                let vertical = max((scrollView.bounds.height - zoomedHeight) * 0.5, minVerticalMargin)
+                top = vertical
+                bottom = vertical
+            } else {
+                top = minVerticalMargin
+                bottom = minVerticalMargin
+            }
+
             scrollView.contentInset = UIEdgeInsets(
-                top: yOffset,
+                top: top,
                 left: xOffset,
-                bottom: yOffset,
+                bottom: bottom,
                 right: xOffset
             )
         }
 
-        func applyMaxResolutionIfPossible() {
+        func applyCanvasResolution(for zoomScale: CGFloat) {
             guard let canvas = findCanvas(in: host?.view) else { return }
-            let scale = UIScreen.main.scale * maxZoom
-            if abs(canvas.contentScaleFactor - scale) > 0.01 {
-                canvas.contentScaleFactor = scale
+            let rasterScale = UIScreen.main.scale * min(maxZoom, max(1, zoomScale) * 2)
+            if abs(canvas.contentScaleFactor - rasterScale) > 0.01 {
+                canvas.contentScaleFactor = rasterScale
             }
+        }
+
+        private func zoomRect(for scale: CGFloat, center: CGPoint, in scrollView: UIScrollView) -> CGRect {
+            let size = CGSize(
+                width: scrollView.bounds.width / scale,
+                height: scrollView.bounds.height / scale
+            )
+            let origin = CGPoint(
+                x: center.x - size.width * 0.5,
+                y: center.y - size.height * 0.5
+            )
+            return CGRect(origin: origin, size: size)
         }
 
         private func resetPageSlide(animated: Bool) {

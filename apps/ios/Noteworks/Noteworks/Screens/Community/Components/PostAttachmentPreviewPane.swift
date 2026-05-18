@@ -98,7 +98,9 @@ struct PostAttachmentPreviewPane: View {
 
             if let active = items.indices.contains(selectedIndex) ? items[selectedIndex] : items.first {
                 primaryTile(for: active)
+                    .id(active.id)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .animation(.easeOut(duration: 0.18), value: active.id)
             } else {
                 Spacer(minLength: 0)
             }
@@ -151,16 +153,17 @@ struct PostAttachmentPreviewPane: View {
         } label: {
             RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .fill(Color.white.opacity(0.52))
-                .overlay(
+                .overlay {
                     primaryContent(for: item)
-                        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                )
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 24, style: .continuous)
                         .strokeBorder(Color.white.opacity(0.74), lineWidth: 1)
                 )
                 .shadow(color: Color(red: 73/255, green: 99/255, blue: 124/255).opacity(0.12), radius: 18, y: 8)
                 .frame(minHeight: 280)
+                .layoutPriority(-1)
                 .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         }
         .buttonStyle(.plain)
@@ -171,25 +174,9 @@ struct PostAttachmentPreviewPane: View {
     private func primaryContent(for item: PostPreviewItem) -> some View {
         switch item {
         case .image(let url):
-            AsyncImage(url: URL(string: url)) { phase in
-                switch phase {
-                case .success(let image):
-                    image.resizable().scaledToFill()
-                case .empty:
-                    placeholderBackground
-                        .overlay(ProgressView().tint(CommunityTheme.accent))
-                case .failure:
-                    placeholderBackground
-                        .overlay(
-                            Image(systemName: "photo")
-                                .font(.system(size: 24))
-                                .foregroundStyle(CommunityTheme.textMuted)
-                        )
-                @unknown default:
-                    placeholderBackground
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            RemotePostImage(urlString: url, contentMode: .fill)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
 
         case .attachment(let a):
             if a.hasPdf {
@@ -251,13 +238,7 @@ struct PostAttachmentPreviewPane: View {
         ZStack {
             switch item {
             case .image(let url):
-                AsyncImage(url: URL(string: url)) { phase in
-                    if case .success(let image) = phase {
-                        image.resizable().scaledToFill()
-                    } else {
-                        Color.black.opacity(0.05)
-                    }
-                }
+                RemotePostImage(urlString: url, contentMode: .fill)
 
             case .attachment(let a):
                 Color.white.opacity(0.64)

@@ -215,35 +215,22 @@ struct HighlighterDropdownPanel: View {
     @ObservedObject var viewModel: NoteEditorViewModel
 
     var body: some View {
-        ChromeDropdownPanel(width: 240) {
+        ChromeDropdownPanel(width: 304) {
             VStack(alignment: .leading, spacing: 10) {
-                DropdownSectionTitle(text: "Color")
-                PaletteSwatchRow(
+                DropdownSectionHeader(
+                    title: "Marker color",
+                    detail: viewModel.highlighterColorLabel,
+                    detailColor: viewModel.highlighterColor
+                )
+
+                InkColorPaletteRow(
                     swatches: NoteColorSwatch.highlighterPalette,
                     selectedId: viewModel.highlighterSwatchId,
-                    usingCustom: viewModel.highlighterUsesCustomColor
-                ) { swatch in
-                    viewModel.selectHighlighterSwatch(swatch.id)
-                }
-                .padding(.horizontal, 12)
-
-                HStack {
-                    ColorPicker(
-                        "",
-                        selection: Binding(
-                            get: { viewModel.highlighterCustomColor },
-                            set: { viewModel.setHighlighterCustomColor($0) }
-                        ),
-                        supportsOpacity: false
-                    )
-                    .labelsHidden()
-                    Text("Custom")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(viewModel.highlighterUsesCustomColor
-                                         ? NoteEditorTheme.accent
-                                         : NoteEditorTheme.textSecondary)
-                }
-                .padding(.horizontal, 12)
+                    usingCustom: viewModel.highlighterUsesCustomColor,
+                    customColor: viewModel.highlighterCustomColor,
+                    onSelect: { viewModel.selectHighlighterSwatch($0.id) },
+                    onCustomColor: { viewModel.setHighlighterCustomColor($0) }
+                )
             }
         }
     }
@@ -254,29 +241,63 @@ struct HighlighterDropdownPanel: View {
 struct EraserDropdownPanel: View {
     @ObservedObject var viewModel: NoteEditorViewModel
 
+    private var modeLabel: String {
+        viewModel.eraserMode == .object ? "Object" : "Regular"
+    }
+
     var body: some View {
-        ChromeDropdownPanel(width: 240) {
+        ChromeDropdownPanel(width: 300) {
             VStack(alignment: .leading, spacing: 10) {
-                DropdownSectionTitle(text: "Mode")
+                DropdownSectionHeader(
+                    title: "Eraser type",
+                    detail: modeLabel,
+                    detailColor: NoteEditorTheme.textPrimary
+                )
+
                 HStack(spacing: 8) {
-                    eraserModeButton(.regular, label: "Regular")
-                    eraserModeButton(.object, label: "Object")
+                    NoteOptionChip(
+                        label: "Regular eraser",
+                        isActive: viewModel.eraserMode == .regular,
+                        accentColor: NoteEditorTheme.textPrimary
+                    ) { viewModel.setEraserMode(.regular) }
+                    NoteOptionChip(
+                        label: "Object eraser",
+                        isActive: viewModel.eraserMode == .object,
+                        accentColor: NoteEditorTheme.textPrimary
+                    ) { viewModel.setEraserMode(.object) }
+                    Spacer(minLength: 0)
                 }
                 .padding(.horizontal, 12)
 
                 Divider().padding(.horizontal, 12)
 
-                DropdownSectionTitle(text: "Size")
-                HStack(spacing: 8) {
+                DropdownSectionHeader(
+                    title: "Size",
+                    detail: "\(Int(viewModel.eraserSize)) px",
+                    detailColor: NoteEditorTheme.textPrimary
+                )
+
+                VStack(spacing: 8) {
                     Slider(value: Binding(
                         get: { viewModel.eraserSize },
                         set: { viewModel.setEraserSize($0) }
                     ), in: 10...34)
-                    .tint(NoteEditorTheme.accent)
-                    Text("\(Int(viewModel.eraserSize))")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(NoteEditorTheme.textPrimary)
-                        .frame(width: 28, alignment: .trailing)
+                    .tint(NoteEditorTheme.textPrimary)
+
+                    HStack {
+                        Text("Small")
+                        Spacer()
+                        Text("Large")
+                    }
+                    .font(.system(size: 11, weight: .bold))
+                    .tracking(0.04 * 11)
+                    .textCase(.uppercase)
+                    .foregroundStyle(NoteEditorTheme.textSecondary.opacity(0.85))
+
+                    EraserSizePreview(
+                        size: viewModel.eraserSize,
+                        isObjectMode: viewModel.eraserMode == .object
+                    )
                 }
                 .padding(.horizontal, 12)
 
@@ -288,23 +309,26 @@ struct EraserDropdownPanel: View {
                     HStack(spacing: 8) {
                         Image(systemName: "trash")
                             .font(.system(size: 13, weight: .medium))
-                        Text(viewModel.clearPageArmed ? "Tap again to clear" : "Clear page")
+                        Text(viewModel.clearPageArmed ? "Tap again to clear page" : "Clear page")
                             .font(.system(size: 13, weight: .semibold))
                         Spacer()
                     }
-                    .foregroundStyle(NoteEditorTheme.danger)
+                    .foregroundStyle(viewModel.clearPageArmed ? NoteEditorTheme.danger : NoteEditorTheme.textPrimary)
                     .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
+                    .padding(.vertical, 10)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(
-                        RoundedRectangle(cornerRadius: 10)
+                        RoundedRectangle(cornerRadius: 14)
                             .fill(viewModel.clearPageArmed
-                                  ? NoteEditorTheme.danger.opacity(0.12)
-                                  : Color.white.opacity(0.001))
+                                  ? NoteEditorTheme.danger.opacity(0.10)
+                                  : Color.white.opacity(0.55))
                     )
                     .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .strokeBorder(NoteEditorTheme.danger.opacity(0.45), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: 14)
+                            .strokeBorder(viewModel.clearPageArmed
+                                          ? NoteEditorTheme.danger.opacity(0.55)
+                                          : Color.black.opacity(0.08),
+                                          lineWidth: 1)
                     )
                 }
                 .buttonStyle(.plain)
@@ -312,30 +336,160 @@ struct EraserDropdownPanel: View {
             }
         }
     }
+}
 
-    @ViewBuilder
-    private func eraserModeButton(_ mode: NoteEraserMode, label: String) -> some View {
-        let isActive = viewModel.eraserMode == mode
-        Button {
-            viewModel.setEraserMode(mode)
-        } label: {
-            Text(label)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(isActive ? NoteEditorTheme.accent : NoteEditorTheme.textSecondary)
+// MARK: - Shape panel
+
+struct ShapeDropdownPanel: View {
+    @ObservedObject var viewModel: NoteEditorViewModel
+
+    var body: some View {
+        ChromeDropdownPanel(width: 360) {
+            VStack(alignment: .leading, spacing: 10) {
+                DropdownSectionHeader(
+                    title: "Insert shape",
+                    detail: viewModel.shapeType.label,
+                    detailColor: viewModel.shapeColor
+                )
+
+                HStack(spacing: 8) {
+                    ForEach(NoteShapeType.allCases) { shape in
+                        NoteOptionChip(
+                            label: shape.label,
+                            symbol: shape.symbol,
+                            isActive: viewModel.shapeType == shape,
+                            accentColor: viewModel.shapeColor
+                        ) { viewModel.selectShapeType(shape) }
+                    }
+                    Spacer(minLength: 0)
+                }
                 .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .frame(maxWidth: .infinity)
-                .background(
-                    RoundedRectangle(cornerRadius: 9)
-                        .fill(isActive ? NoteEditorTheme.accent.opacity(0.14) : Color.white.opacity(0.5))
+
+                Divider().padding(.horizontal, 12)
+
+                DropdownSectionHeader(
+                    title: "Color",
+                    detail: viewModel.shapeColorLabel,
+                    detailColor: viewModel.shapeColor
                 )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 9)
-                        .strokeBorder(isActive ? NoteEditorTheme.accent.opacity(0.5)
-                                              : Color.black.opacity(0.06),
-                                      lineWidth: 1)
+
+                InkColorPaletteRow(
+                    swatches: NoteColorSwatch.penInkPalette,
+                    selectedId: viewModel.shapeSwatchId,
+                    usingCustom: viewModel.shapeUsesCustomColor,
+                    customColor: viewModel.shapeCustomColor,
+                    onSelect: { viewModel.selectShapeSwatch($0.id) },
+                    onCustomColor: { viewModel.setShapeCustomColor($0) }
                 )
+            }
         }
-        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Text panel
+
+struct TextDropdownPanel: View {
+    @ObservedObject var viewModel: NoteEditorViewModel
+
+    var body: some View {
+        ChromeDropdownPanel(width: 324) {
+            VStack(alignment: .leading, spacing: 10) {
+                DropdownSectionHeader(
+                    title: "Font",
+                    detail: viewModel.textFont.label,
+                    detailColor: viewModel.textColor
+                )
+
+                HStack(spacing: 8) {
+                    ForEach(NoteTextFont.allCases) { font in
+                        NoteOptionChip(
+                            label: font.label,
+                            customLabelFont: font.displayFont(size: 12, weight: .semibold),
+                            isActive: viewModel.textFont == font,
+                            accentColor: viewModel.textColor
+                        ) { viewModel.selectTextFont(font) }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 12)
+
+                Divider().padding(.horizontal, 12)
+
+                DropdownSectionHeader(
+                    title: "Size",
+                    detail: "\(Int(viewModel.textSize)) pt",
+                    detailColor: viewModel.textColor
+                )
+
+                VStack(spacing: 8) {
+                    Slider(value: Binding(
+                        get: { viewModel.textSize },
+                        set: { viewModel.setTextSize($0) }
+                    ), in: 14...44)
+                    .tint(viewModel.textColor)
+
+                    HStack {
+                        Text("Small")
+                        Spacer()
+                        Text("Large")
+                    }
+                    .font(.system(size: 11, weight: .bold))
+                    .tracking(0.04 * 11)
+                    .textCase(.uppercase)
+                    .foregroundStyle(NoteEditorTheme.textSecondary.opacity(0.85))
+                }
+                .padding(.horizontal, 12)
+
+                Divider().padding(.horizontal, 12)
+
+                DropdownSectionHeader(
+                    title: "Color",
+                    detail: viewModel.textColorLabel,
+                    detailColor: viewModel.textColor
+                )
+
+                InkColorPaletteRow(
+                    swatches: NoteColorSwatch.penInkPalette,
+                    selectedId: viewModel.textSwatchId,
+                    usingCustom: viewModel.textUsesCustomColor,
+                    customColor: viewModel.textCustomColor,
+                    onSelect: { viewModel.selectTextSwatch($0.id) },
+                    onCustomColor: { viewModel.setTextCustomColor($0) }
+                )
+
+                Divider().padding(.horizontal, 12)
+
+                Button {
+                    viewModel.triggerTextInsert()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("Insert text")
+                            .font(.system(size: 13, weight: .semibold))
+                        Spacer()
+                        Text("Compose")
+                            .font(.system(size: 11, weight: .bold))
+                            .tracking(0.06 * 11)
+                            .textCase(.uppercase)
+                            .foregroundStyle(viewModel.textColor.opacity(0.85))
+                    }
+                    .foregroundStyle(NoteEditorTheme.textPrimary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 14)
+                            .fill(Color.white.opacity(0.55))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14)
+                            .strokeBorder(viewModel.textColor.opacity(0.35), lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 12)
+            }
+        }
     }
 }

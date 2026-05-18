@@ -35,40 +35,43 @@ struct PostKindPill: View {
 
 struct PostMediaCarousel: View {
     let media: [PostMedia]
+    var onImageTap: ((String) -> Void)? = nil
+
+    private var images: [PostMedia] {
+        media.filter(\.isImage)
+    }
 
     var body: some View {
-        if !media.isEmpty {
+        if !images.isEmpty {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
-                    ForEach(media) { item in
-                        if let url = URL(string: item.url) {
-                            AsyncImage(url: url) { phase in
-                                switch phase {
-                                case .success(let image):
-                                    image.resizable().scaledToFill()
-                                case .empty:
-                                    Color.black.opacity(0.04)
-                                        .overlay(ProgressView().scaleEffect(0.7))
-                                default:
-                                    Color.black.opacity(0.04)
-                                        .overlay(
-                                            Image(systemName: "photo")
-                                                .font(.system(size: 16))
-                                                .foregroundStyle(CommunityTheme.textMuted)
-                                        )
-                                }
-                            }
-                            .frame(width: 160, height: 160)
-                            .clipShape(RoundedRectangle(cornerRadius: 14))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 14)
-                                    .strokeBorder(Color.white.opacity(0.5), lineWidth: 1)
-                            )
-                        }
+                    ForEach(images) { item in
+                        mediaTile(for: item)
                     }
                 }
                 .padding(.vertical, 6)
             }
+            .padding(.top, 12)
+        }
+    }
+
+    @ViewBuilder
+    private func mediaTile(for item: PostMedia) -> some View {
+        let content = RemotePostImage(urlString: item.url, contentMode: .fill)
+        .frame(width: 160, height: 160)
+        .clipped()
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.5), lineWidth: 1)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+        if let onImageTap {
+            Button { onImageTap(item.url) } label: { content }
+                .buttonStyle(.plain)
+        } else {
+            content
         }
     }
 }

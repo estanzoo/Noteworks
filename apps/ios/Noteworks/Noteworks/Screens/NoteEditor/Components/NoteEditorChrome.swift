@@ -226,6 +226,8 @@ struct NoteOptionChip: View {
                 }
                 Text(label)
                     .font(customLabelFont ?? .system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
             }
             .foregroundStyle(isActive ? accentColor : NoteEditorTheme.textSecondary)
             .padding(.horizontal, 12)
@@ -242,6 +244,7 @@ struct NoteOptionChip: View {
             )
         }
         .buttonStyle(.plain)
+        .fixedSize(horizontal: true, vertical: false)
     }
 }
 

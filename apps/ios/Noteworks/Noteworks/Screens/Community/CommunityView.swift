@@ -447,6 +447,16 @@ struct CommunityView: View {
             )
             .transition(.opacity)
             .zIndex(120)
+            .onAppear {
+                withAnimation(.easeInOut(duration: 0.22)) {
+                    appState.isImmersiveEditing = true
+                }
+            }
+            .onDisappear {
+                withAnimation(.easeInOut(duration: 0.22)) {
+                    appState.isImmersiveEditing = false
+                }
+            }
         }
     }
 }

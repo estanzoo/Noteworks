@@ -1,6 +1,7 @@
 import { requireAuth } from '../_shared/auth.ts'
 import { corsResponse, json, errorResponse } from '../_shared/cors.ts'
 import { displayName, nullIfBlank } from '../_shared/author.ts'
+import { resolvePostMediaUrls } from '../_shared/post-media-urls.ts'
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return corsResponse()
@@ -78,10 +79,12 @@ Deno.serve(async (req) => {
     .select('kind, storage_path')
     .eq('post_id', postId)
 
-  const media = (mediaRows ?? []).map(row => {
-    const { data: pub } = supabase.storage.from('post-media').getPublicUrl(row.storage_path as string)
-    return { kind: row.kind as string, url: pub.publicUrl }
-  })
+  const media = await resolvePostMediaUrls(
+    (mediaRows ?? []).map(row => ({
+      kind: row.kind as string,
+      storage_path: row.storage_path as string,
+    })),
+  )
 
   // Author lookup via the `user_profiles` view — bypasses the
   // per-user RLS on `public.users` so we always get the real name +

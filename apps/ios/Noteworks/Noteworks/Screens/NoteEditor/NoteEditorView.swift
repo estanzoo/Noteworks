@@ -59,31 +59,16 @@ struct NoteEditorView: View {
     /// pinning layout to this max (top-aligned) keeps the chrome and title
     /// under the status bar while the keyboard covers the bottom.
     @State private var editorStableMaxHeight: CGFloat = 0
-    /// Largest canvas-area height seen this session — keeps `pageSize(...)`
-    /// stable when the canvas `GeometryReader` gets a shorter proposal.
-    @State private var canvasStableMaxHeight: CGFloat = 0
-
     // MARK: - Overlay editor state
 
     /// Currently selected text/image overlay on the active page.
     @State private var selectedOverlayId: String? = nil
-    /// Drives the text editor sheet. Holds either an existing overlay
-    /// (edit mode) or `nil` for fresh insert.
-    @State private var textEditorTarget: TextEditorTarget? = nil
+    /// Currently inline-editing text overlay (the one with focus + keyboard).
+    @State private var editingOverlayId: String? = nil
     @State private var showPhotoPicker = false
     @State private var photoSelection: PhotosPickerItem? = nil
 
     var noteId: String?
-
-    // MARK: - Helper types
-
-    /// Identifier-bearing wrapper so SwiftUI can drive `.sheet(item:)`
-    /// against both the "fresh insert" (nil overlay) and "edit existing"
-    /// (existing overlay) cases.
-    struct TextEditorTarget: Identifiable {
-        let id: String
-        let overlay: NotePageOverlay?
-    }
 
     var body: some View {
         GeometryReader { outerGeo in
@@ -235,7 +220,6 @@ struct NoteEditorView: View {
             // then load the freshly-active one.
             viewModel.switchActiveNote(newId)
             openPanel = nil
-            canvasStableMaxHeight = 0
             editorStableMaxHeight = 0
         }
         .onChange(of: viewModel.drawing) { _, _ in
@@ -260,33 +244,6 @@ struct NoteEditorView: View {
             .environmentObject(store)
             .presentationDetents([.medium, .large])
         }
-        .sheet(item: $textEditorTarget) { target in
-            TextOverlayEditorSheet(
-                existing: target.overlay,
-                onSave: { text, fontSize, hex in
-                    if let existing = target.overlay {
-                        viewModel.updateTextOverlay(
-                            store: store,
-                            overlay: existing,
-                            newText: text,
-                            newFontSize: fontSize,
-                            newColorHex: hex
-                        )
-                    } else if let newId = viewModel.insertTextOverlay(
-                        store: store,
-                        text: text,
-                        fontSize: fontSize,
-                        colorHex: hex
-                    ) {
-                        selectedOverlayId = newId
-                    }
-                    textEditorTarget = nil
-                },
-                onCancel: {
-                    textEditorTarget = nil
-                }
-            )
-        }
         .photosPicker(
             isPresented: $showPhotoPicker,
             selection: $photoSelection,
@@ -298,9 +255,20 @@ struct NoteEditorView: View {
             Task { await handlePhotoPicked(newItem) }
         }
         .onChange(of: viewModel.pendingTextInsertNonce) { _, _ in
-            // Fresh-insert path. Editing existing overlays is driven from
-            // the overlay layer's `onEditText` callback instead.
-            textEditorTarget = TextEditorTarget(id: UUID().uuidString, overlay: nil)
+            // Drop a new empty text box on the canvas, pre-styled to the
+            // panel's current font/size/color, and immediately put it
+            // into inline edit mode so the keyboard appears and the user
+            // can type without a separate sheet.
+            if let newId = viewModel.insertTextOverlay(
+                store: store,
+                text: "",
+                fontSize: viewModel.textSize,
+                colorHex: viewModel.textColor.toHexString()
+            ) {
+                selectedOverlayId = newId
+                editingOverlayId = newId
+                openPanel = nil
+            }
         }
         .onChange(of: viewModel.pendingImagePickNonce) { _, _ in
             photoSelection = nil
@@ -311,9 +279,7 @@ struct NoteEditorView: View {
             // resolve to anything on the new page and would just disable
             // PencilKit interaction for no reason.
             selectedOverlayId = nil
-        }
-        .onChange(of: viewModel.currentPageRotation) { _, _ in
-            canvasStableMaxHeight = 0
+            editingOverlayId = nil
         }
     }
 
@@ -501,7 +467,9 @@ struct NoteEditorView: View {
                         .modifier(DropdownAnchorModifier(
                             anchor: toolAnchors[panel],
                             rootFrame: rootFrame,
-                            panelWidth: dropdownWidth(for: panel)
+                            panelWidth: dropdownWidth(for: panel),
+                            alignTrailing: panel == .more || panel == .background || panel == .rotate,
+                            trailingInset: 16
                         ))
                         .transition(.scale(scale: 0.96, anchor: .top).combined(with: .opacity))
                 }
@@ -536,6 +504,10 @@ struct NoteEditorView: View {
             HighlighterDropdownPanel(viewModel: viewModel)
         case .eraser:
             EraserDropdownPanel(viewModel: viewModel)
+        case .shape:
+            ShapeDropdownPanel(viewModel: viewModel)
+        case .text:
+            TextDropdownPanel(viewModel: viewModel)
         case .bookmark:
             EmptyView()
         case .share:
@@ -564,9 +536,14 @@ struct NoteEditorView: View {
     private func dropdownWidth(for panel: NoteEditorPanel) -> CGFloat {
         switch panel {
         case .ai:                        return 308
-        case .more, .background, .rotate: return 220
+        case .more:                    return 240
+        case .background:              return 232
+        case .rotate:                  return 200
         case .pen:                       return 308
-        case .highlighter, .eraser:      return 248
+        case .highlighter:               return 304
+        case .eraser:                    return 300
+        case .shape:                     return 360
+        case .text:                      return 324
         case .bookmark:                   return 0
         case .share:                      return 272
         }
@@ -770,25 +747,21 @@ struct NoteEditorView: View {
 
     // MARK: - Canvas area
 
+    private static let pageHorizontalInset: CGFloat = 16
+    /// Reserved space above and below the page when fitting at zoom 1.
+    private static let pageVerticalInset: CGFloat = 32
+
     private var canvasArea: some View {
         GeometryReader { geometry in
             let rotation = viewModel.currentPageRotation
-            // Use the max height we've seen so keyboard-driven shrink in
-            // the layout proposal doesn't rescale the page. Width
-            // follows live geometry (split view); height stays pinned.
-            let stableHeight = max(geometry.size.height, canvasStableMaxHeight)
-            let basisSize = CGSize(width: geometry.size.width, height: stableHeight)
-            // Logical page size — what the page "is". At zoom 1 the
-            // whole page fits inside `basisSize` so the user sees
-            // the entire page on first render. Pinching in via the
-            // outer `ZoomablePageScrollView` scales the page beyond
-            // the viewport and two-finger pan navigates the detail —
-            // exactly the GoodNotes flow.
+            let basisSize = geometry.size
+            // Whole page visible at zoom 1; pinch in to zoom and pan around.
             let logicalPageSize = pageSize(in: basisSize, rotation: rotation)
+            let scrollContentSize = rotatedPageBounds(for: logicalPageSize, rotation: rotation)
             ZStack {
                 ZoomablePageScrollView(
-                    contentSize: logicalPageSize,
-                    maxScale: 3.0,
+                    contentSize: scrollContentSize,
+                    maxScale: 8.0,
                     // A "next" swipe from the last page _creates_ a new
                     // one — we let the gesture host know so it can apply
                     // resistance + a haptic cue instead of letting the
@@ -820,12 +793,6 @@ struct NoteEditorView: View {
             .onTapGesture {
                 if openPanel != nil { openPanel = nil }
             }
-            .onAppear {
-                canvasStableMaxHeight = max(canvasStableMaxHeight, geometry.size.height)
-            }
-            .onChange(of: geometry.size.height) { _, newH in
-                canvasStableMaxHeight = max(canvasStableMaxHeight, newH)
-            }
         }
     }
 
@@ -836,6 +803,7 @@ struct NoteEditorView: View {
     /// (no need for per-layer `scaleEffect` math).
     @ViewBuilder
     private func pageCard(logicalPageSize: CGSize, rotation: Int) -> some View {
+        let displayBounds = rotatedPageBounds(for: logicalPageSize, rotation: rotation)
         ZStack {
             Color.white
             NotePageBackgroundView(
@@ -861,14 +829,12 @@ struct NoteEditorView: View {
                     pageSize: logicalPageSize,
                     noteId: noteId,
                     selectedId: $selectedOverlayId,
+                    editingId: $editingOverlayId,
                     onUpdate: { updated in
                         store.updateOverlay(updated, in: noteId)
                     },
                     onDelete: { overlay in
                         store.removeOverlay(id: overlay.id, from: noteId)
-                    },
-                    onEditText: { overlay in
-                        textEditorTarget = TextEditorTarget(id: overlay.id, overlay: overlay)
                     },
                     imageDataProvider: { filename in
                         store.loadOverlayImageData(for: noteId, filename: filename)
@@ -887,43 +853,39 @@ struct NoteEditorView: View {
         )
         .shadow(color: .black.opacity(0.06), radius: 14, y: 6)
         .rotationEffect(.degrees(Double(rotation)))
+        // Expand the layout box to the axis-aligned bounds of the
+        // rotated card so the scroll host clips/centering match what
+        // the user sees (whole page rotates, not just ink reflow).
+        .frame(width: displayBounds.width, height: displayBounds.height)
     }
 
-    /// Logical page size — the page is portrait (1 : 1.4) and fits
-    /// ENTIRELY inside the visible viewport at zoom 1. Zooming in via
-    /// `PKCanvasView`'s native pinch scales the content beyond the
-    /// viewport, and two-finger pan moves around the zoomed detail —
-    /// same flow as GoodNotes. The starting view at zoom 1 always
-    /// shows the whole page, which is what the user explicitly asked
-    /// for ("when it zoom in, it should still start like what it is
-    /// before").
-    ///
-    /// We fit by height so the page fills the entire vertical canvas
-    /// area; the resulting width is then derived from the aspect
-    /// ratio and may leave horizontal margin on landscape iPad
-    /// (unavoidable: a portrait page can't fill a landscape screen
-    /// without stretching or scrolling, and stretching changes the
-    /// aspect).
-    private func pageSize(in available: CGSize, rotation: Int) -> CGSize {
+    /// Axis-aligned bounding box of the page card after rotation.
+    private func rotatedPageBounds(for logicalSize: CGSize, rotation: Int) -> CGSize {
         let isSideways = rotation == 90 || rotation == 270
-        let pageAspect = max(0.2, min(5.0, viewModel.currentPageAspectHeightOverWidth))
-        let usableW = max(1, available.width)
-        let usableH = max(1, available.height)
         if isSideways {
-            // Rotated → after the parent's rotationEffect the page
-            // presents landscape on screen. Fit by visible height
-            // so the rotated bounding box doesn't spill horizontally.
-            let maxW = min(usableW, usableH * pageAspect)
-            let height = maxW / pageAspect
-            return CGSize(width: height * pageAspect, height: height)
-        } else {
-            // Portrait. Fit-to-height so the whole page is visible at
-            // zoom 1, then clamp by width in case the canvas is very
-            // tall and narrow (e.g. iPhone portrait) — that case
-            // shrinks the page so its width still fits the screen.
-            let maxH = min(usableH, usableW * pageAspect)
-            return CGSize(width: maxH / pageAspect, height: maxH)
+            return CGSize(width: logicalSize.height, height: logicalSize.width)
         }
+        return logicalSize
+    }
+
+    /// Logical page size — fits entirely inside the viewport at zoom 1
+    /// (with small horizontal and vertical margins). Zooming in enables
+    /// pan/scroll around the enlarged page.
+    private func pageSize(in available: CGSize, rotation: Int) -> CGSize {
+        let pageAspect = max(0.2, min(5.0, viewModel.currentPageAspectHeightOverWidth))
+        let usableW = max(1, available.width - Self.pageHorizontalInset * 2)
+        let usableH = max(1, available.height - Self.pageVerticalInset * 2)
+        let isSideways = rotation == 90 || rotation == 270
+
+        // Fit the whole page inside the viewport minus margins so there is
+        // visible space above and below the page card at the default zoom.
+        let maxLogicalH: CGFloat
+        if isSideways {
+            maxLogicalH = min(usableW, usableH * pageAspect)
+        } else {
+            maxLogicalH = min(usableH, usableW * pageAspect)
+        }
+        return CGSize(width: maxLogicalH / pageAspect, height: maxLogicalH)
     }
 
     private func currentPageBackgroundImageData() -> Data? {
@@ -1001,10 +963,10 @@ private struct NewPageFlashIndicator: View {
 /// Positions a dropdown directly underneath its trigger button, using
 /// the button frame published via `ToolButtonAnchorKey`.
 ///
-/// Horizontal: centered on the button's midX, then clamped 8 pts in
-/// from either side of the root frame so a panel anchored to a button
-/// near the trailing edge (e.g. the ellipsis or AI pill) doesn't spill
-/// off screen.
+/// Horizontal: centered on the button's midX by default, or trailing-
+/// aligned when `alignTrailing` is set (ellipsis menu). Clamped
+/// `trailingInset` pts from the screen edge so right-anchored panels
+/// leave a visible margin.
 ///
 /// Vertical: anchored to the button's `maxY` plus a small 6-pt gap so
 /// the panel reads as "dropped down from" the button rather than
@@ -1015,12 +977,22 @@ private struct DropdownAnchorModifier: ViewModifier {
     let anchor: CGRect?
     let rootFrame: CGRect
     let panelWidth: CGFloat
+    /// When `true`, align the panel's trailing edge to the trigger's
+    /// trailing edge (for header buttons on the right, e.g. ellipsis).
+    var alignTrailing: Bool = false
+    /// Extra inset from the screen's trailing edge (defaults to 8).
+    var trailingInset: CGFloat = 8
 
     func body(content: Content) -> some View {
         let anchorFrame = anchor ?? CGRect(x: rootFrame.midX, y: rootFrame.minY + 60, width: 0, height: 0)
         let minLeading: CGFloat = 8
-        let maxLeading = max(minLeading, rootFrame.width - panelWidth - 8)
-        let preferredLeading = anchorFrame.midX - rootFrame.minX - panelWidth / 2
+        let maxLeading = max(minLeading, rootFrame.width - panelWidth - trailingInset)
+        let preferredLeading: CGFloat
+        if alignTrailing {
+            preferredLeading = anchorFrame.maxX - rootFrame.minX - panelWidth
+        } else {
+            preferredLeading = anchorFrame.midX - rootFrame.minX - panelWidth / 2
+        }
         let leading = min(max(preferredLeading, minLeading), maxLeading)
         let top = anchorFrame.maxY - rootFrame.minY + 6
         return content

@@ -7,7 +7,7 @@ import SwiftUI
 
 // MARK: - Notification Model
 
-struct HomeNotification: Identifiable, Equatable {
+struct HomeNotification: Identifiable, Equatable, Codable {
     let id: String
     let type: NotificationType
     let text: String
@@ -17,7 +17,7 @@ struct HomeNotification: Identifiable, Equatable {
     let createdAt: Date
     var unread: Bool
 
-    enum NotificationType: String, Equatable {
+    enum NotificationType: String, Equatable, Codable {
         case share, comment, update, system, post, like, mention
 
         var icon: String {
@@ -46,38 +46,20 @@ struct HomeNotification: Identifiable, Equatable {
     }
 }
 
-// MARK: - Sample Data
+// MARK: - Welcome notification
 
 extension HomeNotification {
-    /// Seeded onto every brand-new session — gives the dropdown content
-    /// before the user has any real activity (matches the JSX mock at
-    /// noteworks-library.jsx L109–L114). The "share" / "comment" rows
-    /// are illustrative placeholders; once real share/comment events
-    /// start flowing they'll show up in front of these.
-    static func seed() -> [HomeNotification] {
-        let now = Date()
-        return [
-            .init(type: .share,
-                  text: "Amy shared Cell Biology notes with you",
-                  createdAt: now.addingTimeInterval(-120),
-                  unread: true),
-            .init(type: .comment,
-                  text: "Sam commented on your Organic Chem note",
-                  createdAt: now.addingTimeInterval(-900),
-                  unread: true),
-            .init(type: .update,
-                  text: "Your Lab Report was enhanced by AI",
-                  createdAt: now.addingTimeInterval(-3_600),
-                  unread: false),
-            .init(type: .share,
-                  text: "Sam shared Grammar Rules with you",
-                  createdAt: now.addingTimeInterval(-10_800),
-                  unread: false),
-            .init(type: .system,
-                  text: "Welcome to NoteWorks Beta!",
-                  createdAt: now.addingTimeInterval(-86_400),
-                  unread: false),
-        ]
+    /// Stable id so the welcome row survives persistence and inbox trimming.
+    static let welcomeNotificationId = "system-welcome-beta"
+
+    static func welcomeNotification(unread: Bool = true) -> HomeNotification {
+        .init(
+            id: welcomeNotificationId,
+            type: .system,
+            text: "Welcome to NoteWorks Beta!",
+            createdAt: Date(),
+            unread: unread
+        )
     }
 }
 

@@ -352,8 +352,8 @@ final class NoteEditorViewModel: ObservableObject {
     @Published var shapeUsesCustomColor: Bool = false
 
     // Text overlay defaults — picked from the Text tool dropdown and
-    // used by `TextOverlayEditorSheet` when the user composes a new
-    // overlay.
+    // applied to fresh text overlays inserted onto the canvas (the user
+    // edits the actual string inline on the page, no popup sheet).
     @Published var textFont: NoteTextFont = .sf
     /// Default font size (14…44 pt) the editor sheet starts with.
     @Published var textSize: CGFloat = 20

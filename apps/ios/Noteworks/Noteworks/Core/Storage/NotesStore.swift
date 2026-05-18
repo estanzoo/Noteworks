@@ -60,18 +60,22 @@ struct NotePageSetting: Codable, Equatable, Hashable {
     }
 }
 
-/// Background pattern rendered behind the canvas. Matches the JSX
-/// `backgroundOptions` array (L2562–L2566) — Blank / Dots / Single column.
+/// Background pattern rendered behind the canvas.
 enum NotePageBackground: String, Codable, CaseIterable, Hashable {
     case blank
     case dots
+    /// Horizontal ruled lines. Raw value kept for saved notes compatibility.
     case singleColumn = "single-column"
+    case grid
+    case cornell
 
     var label: String {
         switch self {
         case .blank: return "Blank"
         case .dots: return "Dots"
-        case .singleColumn: return "Single column"
+        case .singleColumn: return "Ruled"
+        case .grid: return "Grid"
+        case .cornell: return "Cornell"
         }
     }
 }

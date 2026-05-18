@@ -138,7 +138,12 @@ struct CommunityPostDetailPopup: View {
             let fetched = try await detail
             let page = try await commentPage
 
-            post = fetched
+            var merged = fetched
+            // Keep client-known media if the server row hasn't synced yet.
+            if merged.media.isEmpty, !post.media.isEmpty {
+                merged.media = post.media
+            }
+            post = merged
             comments = page.comments
             onPostUpdated(fetched)
         } catch {
@@ -530,7 +535,9 @@ struct CommunityPostDetailPopup: View {
                 // On regular width the left preview pane already shows
                 // post images; only render the inline carousel on iPhone.
                 if isCompact {
-                    PostMediaCarousel(media: post.media)
+                    PostMediaCarousel(media: post.media) { url in
+                        imagePreviewURL = url
+                    }
                 }
             }
 
@@ -716,30 +723,8 @@ private struct ImageLightbox: View {
                 .ignoresSafeArea()
                 .onTapGesture { onDismiss() }
 
-            if let url = URL(string: urlString) {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFit()
-                            .padding(24)
-                    case .empty:
-                        ProgressView().tint(.white)
-                    case .failure:
-                        VStack(spacing: 10) {
-                            Image(systemName: "photo")
-                                .font(.system(size: 36))
-                                .foregroundStyle(.white.opacity(0.85))
-                            Text("Couldn't load image")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(.white)
-                        }
-                    @unknown default:
-                        EmptyView()
-                    }
-                }
-            }
+            RemotePostImage(urlString: urlString, contentMode: .fit)
+                .padding(24)
 
             VStack {
                 HStack {

@@ -141,19 +141,21 @@ Deno.serve(async (req) => {
   const validated = validate(raw)
   if (validated instanceof Response) return validated
 
+  // Column names match Profile → Feedback UI labels (see migration
+  // 20260518200000_feedback_friendly_column_names.sql).
   const { data: inserted, error: insertErr } = await supabase
     .from('feedback')
     .insert({
       user_id: user.id,
-      feedback_type: validated.feedback_type,
-      area: validated.area,
-      area_other: validated.area_other,
-      priority: validated.priority,
-      title: validated.title,
-      body: validated.body,
+      'Type': validated.feedback_type,
+      'Where did it happen?': validated.area,
+      'Where exactly?': validated.area_other,
+      'Impact': validated.priority,
+      'Short Summary': validated.title,
+      'What happened?': validated.body,
       follow_up_enabled: validated.follow_up_enabled,
       contact_email: validated.contact_email,
-      media_paths: validated.media_paths,
+      'Photos': validated.media_paths,
       app_version: validated.app_version,
       device_info: validated.device_info,
     })

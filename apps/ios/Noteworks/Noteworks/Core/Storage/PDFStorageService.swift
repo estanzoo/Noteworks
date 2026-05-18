@@ -210,66 +210,13 @@ final class PDFStorageService {
         return CGSize(width: pdfPageWidthPoints, height: pdfPageWidthPoints * aspect)
     }
 
-    /// Mirrors `NotePageBackgroundView` (dots / single column / blank).
+    /// Mirrors `NotePageBackgroundView` templates.
     private static func drawBackground(
         _ background: NotePageBackground,
         in rect: CGRect,
         context cg: CGContext
     ) {
-        switch background {
-        case .blank:
-            break
-        case .dots:
-            drawDotGrid(in: rect, context: cg)
-        case .singleColumn:
-            drawSingleColumn(in: rect, context: cg)
-        }
-    }
-
-    private static func drawDotGrid(in rect: CGRect, context cg: CGContext) {
-        let spacing: CGFloat = 28
-        let radius: CGFloat = 1
-        cg.saveGState()
-        cg.setFillColor(UIColor.black.withAlphaComponent(0.18).cgColor)
-        var y: CGFloat = spacing
-        while y < rect.height {
-            var x: CGFloat = spacing
-            while x < rect.width {
-                let dot = CGRect(x: x - radius, y: y - radius, width: radius * 2, height: radius * 2)
-                cg.addEllipse(in: dot)
-                cg.fillPath()
-                x += spacing
-            }
-            y += spacing
-        }
-        cg.restoreGState()
-    }
-
-    private static func drawSingleColumn(in rect: CGRect, context cg: CGContext) {
-        let centerX = rect.width / 2
-        let columnWidth = min(rect.width * 0.62, 720)
-        let leftEdge = centerX - columnWidth / 2
-        let rightEdge = centerX + columnWidth / 2
-        let top: CGFloat = 24
-        let bottom = rect.height - 24
-
-        cg.saveGState()
-        cg.setStrokeColor(UIColor.black.withAlphaComponent(0.10).cgColor)
-        cg.setLineWidth(1)
-        cg.setLineDash(phase: 0, lengths: [6, 6])
-        cg.move(to: CGPoint(x: centerX, y: top))
-        cg.addLine(to: CGPoint(x: centerX, y: bottom))
-        cg.strokePath()
-
-        cg.setLineDash(phase: 0, lengths: [])
-        cg.setStrokeColor(UIColor.black.withAlphaComponent(0.06).cgColor)
-        cg.move(to: CGPoint(x: leftEdge, y: top))
-        cg.addLine(to: CGPoint(x: leftEdge, y: bottom))
-        cg.strokePath()
-        cg.move(to: CGPoint(x: rightEdge, y: top))
-        cg.addLine(to: CGPoint(x: rightEdge, y: bottom))
-        cg.strokePath()
-        cg.restoreGState()
+        NotePageBackgroundDrawing.draw(background, in: rect, context: cg)
     }
 
     @MainActor

@@ -66,7 +66,7 @@ struct BackgroundDropdown: View {
     var dismiss: () -> Void
 
     var body: some View {
-        ChromeDropdownPanel(width: 220) {
+        ChromeDropdownPanel(width: 232) {
             VStack(spacing: 0) {
                 DropdownSectionTitle(text: "Background")
                     .padding(.bottom, 4)
@@ -94,7 +94,9 @@ struct BackgroundDropdown: View {
         switch option {
         case .blank: return "rectangle"
         case .dots: return "circle.grid.3x3"
-        case .singleColumn: return "rectangle.split.3x1"
+        case .singleColumn: return "line.3.horizontal"
+        case .grid: return "grid"
+        case .cornell: return "rectangle.split.2x1"
         }
     }
 }

@@ -139,7 +139,7 @@ final class AppState: ObservableObject {
             currentUser = AuthenticatedUser(id: restored.userId, email: restored.email)
             isAuthenticated = true
             notesStore.activate(userId: restored.userId)
-            notifications.resetForNewSession()
+            notifications.activate(userId: restored.userId)
 
             do {
                 let fetched = try await authService.getUserProfile(accessToken: restored.accessToken)
@@ -178,7 +178,7 @@ final class AppState: ObservableObject {
         // signed-in user below.
         isGuestMode = false
         notesStore.activate(userId: result.userId)
-        notifications.resetForNewSession()
+        notifications.activate(userId: result.userId, freshSession: true)
     }
 
     /// Re-fetches `profile`. Called after onboarding submit and whenever
@@ -198,7 +198,7 @@ final class AppState: ObservableObject {
     func signOut() async {
         try? await authService.signOut()
         notesStore.deactivate()
-        notifications.clear()
+        notifications.deactivate()
         clearSessionState()
     }
 
@@ -230,7 +230,7 @@ final class AppState: ObservableObject {
             notesStore.replaceBubbleNames(["Untitled Bubble"])
         }
 
-        notifications.resetForNewSession()
+        notifications.activate(userId: "guest", freshSession: true)
     }
 
     /// Exposed to `APIClient`'s 401 retry hook. Returns the new access

@@ -1,10 +1,8 @@
--- Profile → Feedback section needs a real durable home. Mirrors the
--- shape submitted by `apps/ios/Noteworks/.../ProfileViewModel.swift`
--- (type, area, priority, summary, body, follow-up email, photo refs).
+-- Profile → Feedback section. UI labels are applied in migration
+-- 20260518200000_feedback_friendly_column_names.sql.
 --
--- Photos are NOT stored inline — the client uploads them to the
--- `feedback-media` bucket first and passes back the storage paths in
--- the `media_paths[]` array. That keeps the table cheap to query.
+-- Photos are NOT stored inline — the client uploads to `feedback-media`
+-- and stores storage paths in the `Photos` text[] column.
 
 CREATE TABLE IF NOT EXISTS public.feedback (
   id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -47,8 +45,15 @@ CREATE TRIGGER trg_feedback_updated_at
 
 ALTER TABLE public.feedback ENABLE ROW LEVEL SECURITY;
 
--- Users can read what they submitted. Insert goes through the edge
--- function (service role), so we don't grant INSERT to authenticated.
+-- `submit-feedback` calls Supabase with the user's bearer token (see
+-- `functions/_shared/auth.ts`), so the INSERT runs as the authenticated
+-- user under RLS. Same pattern as `public.posts`: grant SELECT/INSERT
+-- on rows the user owns, leave UPDATE/DELETE for the support team to
+-- run through the service role.
 CREATE POLICY "Users read their own feedback"
   ON public.feedback FOR SELECT
   USING (auth.uid() = user_id);
+
+CREATE POLICY "Users insert their own feedback"
+  ON public.feedback FOR INSERT
+  WITH CHECK (auth.uid() = user_id);

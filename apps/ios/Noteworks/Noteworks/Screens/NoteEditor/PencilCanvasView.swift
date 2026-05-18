@@ -50,8 +50,7 @@ struct PencilCanvasView: UIViewRepresentable {
     func makeUIView(context: Context) -> PKCanvasView {
         let canvasView = PKCanvasView()
         canvasView.drawingPolicy = drawingPolicy
-        // Transparent so the background pattern (dots / single-column /
-        // blank) drawn behind the canvas is visible.
+        // Transparent so the page template drawn behind the canvas shows through.
         canvasView.backgroundColor = .clear
         canvasView.isOpaque = false
         canvasView.drawing = drawing

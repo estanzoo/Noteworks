@@ -91,12 +91,17 @@ private struct PendingMediaItem: Identifiable, Equatable {
     enum Status: Equatable {
         case pending
         case uploading
-        case uploaded(storagePath: String)
+        case uploaded(storagePath: String, publicURL: String)
         case failed(String)
     }
 
     var uploadedPath: String? {
-        if case .uploaded(let p) = status { return p }
+        if case .uploaded(let path, _) = status { return path }
+        return nil
+    }
+
+    var publicURL: String? {
+        if case .uploaded(_, let url) = status { return url }
         return nil
     }
 }
@@ -171,6 +176,8 @@ struct PostEditorPopup: View {
     @State private var bodyError: String?
     @State private var isPublishing: Bool = false
     @State private var isPreparingInitialAttachments = false
+    /// Which attachment is shown in the large left-hand preview tile.
+    @State private var previewSelectedIndex: Int = 0
     @FocusState private var titleFocused: Bool
 
     init(
@@ -390,6 +397,7 @@ struct PostEditorPopup: View {
                 previewPane
                     .frame(minWidth: 300, idealWidth: 360, maxWidth: 420)
                     .frame(maxHeight: .infinity)
+                    .clipped()
                 Rectangle()
                     .fill(Color(red: 219/255, green: 227/255, blue: 235/255).opacity(0.74))
                     .frame(width: 1)
@@ -409,9 +417,14 @@ struct PostEditorPopup: View {
                 bodyField
                 attachButtonsRow
                 notePickerInline
-                attachedLibraryNotesPreview
-                mediaPreviews
-                documentPreviews
+                // On regular width the left preview pane already shows
+                // attachments — inline rows here would duplicate and bleed
+                // over the form (scaledToFill images ignore the divider).
+                if !showsPreviewPane {
+                    attachedLibraryNotesPreview
+                    mediaPreviews
+                    documentPreviews
+                }
                 courseSection
                 tagsSection
                 postToSection
@@ -447,7 +460,8 @@ struct PostEditorPopup: View {
     @ViewBuilder
     private var previewPane: some View {
         let items = previewItems
-        let primary = items.first
+        let safeIndex = items.isEmpty ? 0 : min(previewSelectedIndex, items.count - 1)
+        let primary = items.indices.contains(safeIndex) ? items[safeIndex] : items.first
         let captionTitle: String = {
             let t = trimmedTitle
             if !t.isEmpty { return t }
@@ -482,16 +496,27 @@ struct PostEditorPopup: View {
 
             if let primary {
                 primaryPreviewTile(for: primary)
+                    .id(primary.id)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .animation(.easeOut(duration: 0.18), value: primary.id)
             } else {
                 Spacer(minLength: 0)
             }
 
             VStack(alignment: .leading, spacing: 10) {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(Array(items.prefix(8).enumerated()), id: \.element.id) { index, item in
-                            thumbnailTile(for: item, isActive: index == 0)
+                if items.count > 1 {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(Array(items.prefix(8).enumerated()), id: \.element.id) { index, item in
+                                Button {
+                                    withAnimation(.easeOut(duration: 0.18)) {
+                                        previewSelectedIndex = index
+                                    }
+                                } label: {
+                                    thumbnailTile(for: item, isActive: index == safeIndex)
+                                }
+                                .buttonStyle(.plain)
+                            }
                         }
                     }
                 }
@@ -512,6 +537,11 @@ struct PostEditorPopup: View {
                 endPoint: .bottomTrailing
             )
         )
+        .onChange(of: previewItems.map(\.id)) { _, ids in
+            if previewSelectedIndex >= ids.count {
+                previewSelectedIndex = max(0, ids.count - 1)
+            }
+        }
     }
 
     // MARK: - Preview tiles
@@ -520,16 +550,17 @@ struct PostEditorPopup: View {
     private func primaryPreviewTile(for item: EditorPreviewItem) -> some View {
         RoundedRectangle(cornerRadius: 24, style: .continuous)
             .fill(Color.white.opacity(0.52))
-            .overlay(
+            .overlay {
                 primaryPreviewContent(for: item)
-                    .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-            )
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
                     .strokeBorder(Color.white.opacity(0.74), lineWidth: 1)
             )
             .shadow(color: Color(red: 73/255, green: 99/255, blue: 124/255).opacity(0.12), radius: 18, y: 8)
             .frame(minHeight: 240)
+            .layoutPriority(-1)
     }
 
     @ViewBuilder
@@ -541,6 +572,7 @@ struct PostEditorPopup: View {
                     .resizable()
                     .scaledToFill()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
             } else {
                 LinearGradient(
                     colors: [editorAccent.opacity(0.18), Color.white.opacity(0.6)],
@@ -668,6 +700,7 @@ struct PostEditorPopup: View {
             }
         }
         .frame(width: 54, height: 54)
+        .clipped()
         .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 15, style: .continuous)
@@ -677,6 +710,7 @@ struct PostEditorPopup: View {
             color: isActive ? editorAccent.opacity(0.18) : .clear,
             radius: 8, y: 4
         )
+        .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
     }
 
     // MARK: - Header
@@ -1358,7 +1392,7 @@ struct PostEditorPopup: View {
 
         do {
             let uploadedNoteIds = try await uploadAttachments()
-            let uploadedMediaPaths = try await uploadMedia()
+            let mediaUpload = try await uploadMedia()
             let request = CreatePostRequest(
                 title: trimmedTitle,
                 body: trimmedBody,
@@ -1366,10 +1400,13 @@ struct PostEditorPopup: View {
                 courseId: initialCourseId ?? attachments.first(where: { $0.courseId != nil })?.courseId,
                 postKind: postKind,
                 attachmentNoteIds: uploadedNoteIds.isEmpty ? nil : uploadedNoteIds,
-                mediaPaths: uploadedMediaPaths.isEmpty ? nil : uploadedMediaPaths,
+                mediaPaths: mediaUpload.paths.isEmpty ? nil : mediaUpload.paths,
                 hashtags: resolvedHashtags.isEmpty ? nil : resolvedHashtags
             )
-            let created = try await submit(request)
+            var created = try await submit(request)
+            if created.media.isEmpty, !mediaUpload.items.isEmpty {
+                created.media = mediaUpload.items
+            }
             onPublished(created)
             dismiss()
         } catch let error as CommunityError {
@@ -1420,12 +1457,18 @@ struct PostEditorPopup: View {
         return ids
     }
 
-    private func uploadMedia() async throws -> [String] {
+    private struct MediaUploadResult {
         var paths: [String] = []
+        var items: [PostMedia] = []
+    }
+
+    private func uploadMedia() async throws -> MediaUploadResult {
+        var result = MediaUploadResult()
         for index in mediaItems.indices {
             let item = mediaItems[index]
-            if let already = item.uploadedPath {
-                paths.append(already)
+            if let path = item.uploadedPath, let url = item.publicURL {
+                result.paths.append(path)
+                result.items.append(PostMedia(kind: "image", url: url))
                 continue
             }
             mediaItems[index].status = .uploading
@@ -1434,15 +1477,19 @@ struct PostEditorPopup: View {
                     imageData: item.data,
                     accessToken: accessToken
                 )
-                mediaItems[index].status = .uploaded(storagePath: resp.storagePath)
-                paths.append(resp.storagePath)
+                mediaItems[index].status = .uploaded(
+                    storagePath: resp.storagePath,
+                    publicURL: resp.url
+                )
+                result.paths.append(resp.storagePath)
+                result.items.append(PostMedia(kind: "image", url: resp.url))
             } catch {
                 let msg = (error as? LocalizedError)?.errorDescription ?? "Image upload failed"
                 mediaItems[index].status = .failed(msg)
                 throw error
             }
         }
-        return paths
+        return result
     }
 }
 
