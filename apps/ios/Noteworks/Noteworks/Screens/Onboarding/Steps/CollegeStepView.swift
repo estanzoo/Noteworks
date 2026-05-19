@@ -134,6 +134,9 @@ struct CollegeStepView: View {
                 data.selectedSchoolId = nil
                 data.yearOfStudySelection = nil
                 data.yearOfStudyOtherDetail = ""
+                data.school = ""
+                data.major = ""
+                data.undeclared = false
             }
         }
         .onChange(of: data.yearOfStudySelection) { _, newValue in

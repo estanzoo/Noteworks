@@ -128,8 +128,17 @@ final class LocalNotesPersistence {
         let root = userRoot(for: userId)
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 
-        migrateDeviceWideLegacyIfNeeded(into: userId)
+        // Guest mode always starts from the Welcome "Skip, set up later"
+        // initializer — never inherit a signed-out user's legacy library.
+        if userId != NotesStore.guestUserId {
+            migrateDeviceWideLegacyIfNeeded(into: userId)
+        }
         return loadStore()
+    }
+
+    /// Whether this user already has a persisted `notes-store.json` on disk.
+    func hasStore(for userId: String) -> Bool {
+        FileManager.default.fileExists(atPath: storeURL(for: userId).path)
     }
 
     /// Drops the active user binding. After this call every public method

@@ -13,7 +13,6 @@ struct VerifyEmailStepView: View {
     let onBack: () -> Void
     let onResend: () -> Void
     @State private var visible = false
-    @FocusState private var focusedIndex: Int?
     /// See `SignUpStepView.attemptedNext` — flipped on the first invalid
     /// Next tap so the page-level error appears and stays live.
     @State private var attemptedNext = false
@@ -29,63 +28,35 @@ struct VerifyEmailStepView: View {
                     VStack(alignment: .leading, spacing: 0) {
                         OnboardingHeader(title: "Verify your Email", onBack: onBack)
 
-                        OnboardingRow(disabled: false, onNext: handleNext) {
-                            VStack(alignment: .leading, spacing: 0) {
-                                Text("We've sent a verification code to ")
-                                    .foregroundStyle(OnboardingTheme.textSecondary)
-                                +
-                                Text(data.email.isEmpty ? "your email" : data.email)
-                                    .foregroundStyle(OnboardingTheme.accent)
-                                    .fontWeight(.semibold)
-                            }
-                            .font(.system(size: 15))
-                            .lineSpacing(4)
-                            .padding(.bottom, 28)
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text("We've sent a verification code to ")
+                                .foregroundStyle(OnboardingTheme.textSecondary)
+                            +
+                            Text(data.email.isEmpty ? "your email" : data.email)
+                                .foregroundStyle(OnboardingTheme.accent)
+                                .fontWeight(.semibold)
+                        }
+                        .font(.system(size: 15))
+                        .lineSpacing(4)
+                        .padding(.bottom, 28)
 
-                            HStack(spacing: 8) {
-                                ForEach(0..<6, id: \.self) { i in
-                                    TextField("", text: $data.verificationCode[i])
-                                        .textInputAutocapitalization(.never)
-                                        .autocorrectionDisabled()
-                                        .multilineTextAlignment(.center)
-                                        .font(.system(size: 24, weight: .semibold))
-                                        .foregroundStyle(OnboardingTheme.textPrimary)
-                                        .frame(width: 48, height: 68)
-                                        .background(OnboardingTheme.glassBg)
-                                        .clipShape(RoundedRectangle(cornerRadius: 16))
-                                        .overlay {
-                                            RoundedRectangle(cornerRadius: 16)
-                                                .strokeBorder(
-                                                    !data.verificationCode[i].isEmpty
-                                                        ? OnboardingTheme.accent.opacity(0.6)
-                                                        : OnboardingTheme.glassBorder,
-                                                    lineWidth: 1.5
-                                                )
-                                        }
-                                        .focused($focusedIndex, equals: i)
-                                        .onChange(of: data.verificationCode[i]) { oldVal, newVal in
-                                            if newVal.count > 1 {
-                                                data.verificationCode[i] = String(newVal.suffix(1))
-                                            }
-                                            if !data.verificationCode[i].isEmpty && i < 5 {
-                                                focusedIndex = i + 1
-                                            } else if data.verificationCode[i].isEmpty && !oldVal.isEmpty && i > 0 {
-                                                focusedIndex = i - 1
-                                            }
-                                        }
-                                }
-                            }
+                        OnboardingOTPInput(digits: $data.verificationCode)
                             .padding(.bottom, 12)
 
-                            OnboardingError(
-                                show: attemptedNext && data.verifyCodeError != nil,
-                                text: data.verifyCodeError ?? ""
-                            )
+                        OnboardingError(
+                            show: attemptedNext && data.verifyCodeError != nil,
+                            text: data.verifyCodeError ?? ""
+                        )
 
-                            Button("Resend code", action: onResend)
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(OnboardingTheme.accent)
-                                .buttonStyle(.plain)
+                        Button("Resend code", action: onResend)
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(OnboardingTheme.accent)
+                            .buttonStyle(.plain)
+                            .padding(.bottom, 20)
+
+                        HStack {
+                            Spacer()
+                            ArrowButton(disabled: false, action: handleNext)
                         }
                     }
                 }
@@ -97,7 +68,6 @@ struct VerifyEmailStepView: View {
         .offset(y: visible ? 0 : 16)
         .onAppear {
             withAnimation(.easeOut(duration: 0.5)) { visible = true }
-            focusedIndex = 0
         }
     }
 

@@ -141,12 +141,13 @@ struct MainTabView: View {
 struct FloatingTabBar: View {
     @Binding var selectedTab: AppTab?
 
-    // Bar background layers matching Figma color-dodge blend
-    private let barLayerDark   = Color(white: 0.20)
-    private let barLayerWhite  = Color(white: 1.00).opacity(0.5)
-    private let barLayerLight  = Color(white: 0.97)
+    // Shared namespace for the matchedGeometryEffect that drives the
+    // selected-pill slide between tabs. Without this each tab renders a
+    // separate highlight that cross-fades in place — no slide.
+    @Namespace private var pillNamespace
 
-    // Selected highlight: hsba(0, 0%, 93%, 1), Plus Darker blend
+    // Selected highlight: hsba(0, 0%, 93%, 1), Plus Darker blend on the
+    // legacy bar; on iOS 26 it's a tinted Liquid Glass capsule.
     private let highlightColor = Color(white: 0.93)
 
     var body: some View {
@@ -155,27 +156,55 @@ struct FloatingTabBar: View {
             // clamped so it never gets too wide on large iPads or too narrow on small ones.
             let barWidth = min(max(geo.size.width * 0.38, 280), 360)
 
-            HStack(spacing: 0) {
-                ForEach(AppTab.allCases, id: \.self) { tab in
-                    TabItemButton(tab: tab, selectedTab: $selectedTab, highlightColor: highlightColor)
-                        .frame(maxWidth: .infinity)
-                }
-            }
-            .frame(width: barWidth, height: 62)
-            // Layered bar background (Figma color-dodge)
-            .background {
-                ZStack {
-                    barLayerDark
-                    barLayerWhite.blendMode(.colorDodge)
-                    barLayerLight.blendMode(.colorDodge)
-                }
-            }
-            .clipShape(Capsule())
-            .shadow(color: .black.opacity(0.10), radius: 12, x: 0, y: 4)
-            // Center horizontally, pin to bottom with safe-area padding
-            .position(x: geo.size.width / 2, y: geo.size.height - 20 - 31) // 31 = half bar height
+            tabRow
+                .frame(width: barWidth, height: 62)
+                .modifier(FloatingTabBarBackground())
+                // Center horizontally, pin to bottom with safe-area padding
+                .position(x: geo.size.width / 2, y: geo.size.height - 20 - 31) // 31 = half bar height
         }
         .frame(height: 62 + 20 + 34) // bar + bottom gap + safe area estimate
+    }
+
+    private var tabRow: some View {
+        HStack(spacing: 0) {
+            ForEach(AppTab.allCases, id: \.self) { tab in
+                TabItemButton(
+                    tab: tab,
+                    selectedTab: $selectedTab,
+                    highlightColor: highlightColor,
+                    pillNamespace: pillNamespace
+                )
+                .frame(maxWidth: .infinity)
+            }
+        }
+    }
+}
+
+/// Renders the bar's translucent backdrop. On iOS 26+ this uses Apple's
+/// real Liquid Glass material (`.glassEffect(_:in:)`), which gives the
+/// bar live refraction over the Home/CourseSpace content underneath plus
+/// the press-morph response. On earlier OSes we fall back to the layered
+/// color-dodge background that's been shipping since the first cut.
+private struct FloatingTabBarBackground: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content
+                // Liquid Glass handles its own clipping/shape; no extra
+                // .clipShape needed. `.interactive()` enables the
+                // press/morph response when a tab is tapped.
+                .glassEffect(.regular.interactive(), in: .capsule)
+        } else {
+            content
+                .background {
+                    ZStack {
+                        Color(white: 0.20)
+                        Color(white: 1.00).opacity(0.5).blendMode(.colorDodge)
+                        Color(white: 0.97).blendMode(.colorDodge)
+                    }
+                }
+                .clipShape(Capsule())
+                .shadow(color: .black.opacity(0.10), radius: 12, x: 0, y: 4)
+        }
     }
 }
 
@@ -185,40 +214,36 @@ struct TabItemButton: View {
     let tab: AppTab
     @Binding var selectedTab: AppTab?
     let highlightColor: Color
+    let pillNamespace: Namespace.ID
 
     private var isSelected: Bool { selectedTab == tab }
 
+    /// Stable matchedGeometryEffect id so the same pill view follows the
+    /// selection from tab to tab (instead of fading in/out at fixed slots).
+    private static let pillID = "selectedTabPill"
+
     var body: some View {
         Button {
-            // Match `MainTabView`'s tab cross-fade (0.22s ease). A spring
-            // here was bleeding into the whole tab subtree and could make
-            // Home's bubble layout feel like it "drops" when switching back.
-            withAnimation(.easeInOut(duration: 0.22)) {
+            // Snappy spring so the highlight reads as "liquid" — slides
+            // and gently overshoots into the next slot, matching the
+            // stock iOS 26 tab bar feel. Wrapping selection in
+            // `withAnimation` is what actually drives
+            // `matchedGeometryEffect` to interpolate position/size.
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
                 selectedTab = tab
             }
         } label: {
             ZStack {
-                // Always rendered — opacity controls visibility to avoid layout shifts
-                RoundedRectangle(cornerRadius: 100)
-                    .fill(highlightColor.blendMode(.plusDarker))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 100)
-                            .strokeBorder(
-                                LinearGradient(
-                                    colors: [
-                                        .white.opacity(0.9),
-                                        .white.opacity(0.4),
-                                        .white.opacity(0.0)
-                                    ],
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                ),
-                                lineWidth: 1
-                            )
-                    }
-                    .shadow(color: .black.opacity(0.08), radius: 4, x: 0, y: 2)
-                    .frame(width: 102, height: 54)
-                    .opacity(isSelected ? 1 : 0)
+                if isSelected {
+                    selectedHighlight
+                        .matchedGeometryEffect(
+                            id: Self.pillID,
+                            in: pillNamespace,
+                            properties: .frame,
+                            isSource: true
+                        )
+                        .frame(width: 102, height: 54)
+                }
 
                 VStack(spacing: 4) {
                     Image(tab.icon)
@@ -232,13 +257,61 @@ struct TabItemButton: View {
                         .tracking(-0.1)
                         .lineLimit(1)
                 }
-                .foregroundStyle(isSelected ? Color.primary : Color.secondary.opacity(0.5))
+                .foregroundStyle(unselectedAwareLabelColor)
+                // Label color cross-fades; do NOT animate it from the
+                // pill spring, otherwise the icon flashes mid-slide.
+                .animation(.easeInOut(duration: 0.18), value: isSelected)
             }
             .frame(height: 54)
             .contentShape(Rectangle())
-            .animation(nil, value: isSelected)
         }
         .buttonStyle(.plain)
+    }
+
+    /// Selected-tab pill. iOS 26 uses a tinted Liquid Glass capsule that
+    /// merges with the bar's backdrop; older OSes keep the original
+    /// `plusDarker` blend + white rim treatment.
+    @ViewBuilder
+    private var selectedHighlight: some View {
+        if #available(iOS 26.0, *) {
+            Capsule()
+                .fill(Color.clear)
+                .glassEffect(
+                    .regular.tint(highlightColor.opacity(0.55)).interactive(),
+                    in: .capsule
+                )
+        } else {
+            RoundedRectangle(cornerRadius: 100)
+                .fill(highlightColor.blendMode(.plusDarker))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 100)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [
+                                    .white.opacity(0.9),
+                                    .white.opacity(0.4),
+                                    .white.opacity(0.0)
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ),
+                            lineWidth: 1
+                        )
+                }
+                .shadow(color: .black.opacity(0.08), radius: 4, x: 0, y: 2)
+        }
+    }
+
+    /// Liquid Glass renders icons over a translucent backdrop, so the
+    /// legacy `secondary.opacity(0.5)` unselected color was washing out
+    /// against light Home content. Bump opacity on iOS 26 only — keeping
+    /// the legacy look bit-for-bit identical on the dodge-blend bar.
+    private var unselectedAwareLabelColor: Color {
+        if isSelected { return .primary }
+        if #available(iOS 26.0, *) {
+            return Color.primary.opacity(0.7)
+        }
+        return Color.secondary.opacity(0.5)
     }
 }
 

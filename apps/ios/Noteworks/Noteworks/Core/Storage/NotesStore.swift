@@ -487,6 +487,12 @@ final class NotesStore: ObservableObject {
 
     nonisolated static let reservedBubbleNames: Set<String> = ["unnamed", "uncategorized"]
 
+    /// Sentinel user id for Welcome → "Skip, set up later" browsing.
+    nonisolated static let guestUserId = "guest"
+
+    /// Fresh guest Home always opens with this single centred bubble.
+    nonisolated static let initialGuestBubbleName = "Untitled Bubble"
+
     // MARK: - Dependencies
 
     private let persistence: LocalNotesPersistence
@@ -605,6 +611,30 @@ final class NotesStore: ObservableObject {
 
     private func saveDebounced() {
         persistence.scheduleSave(snapshot)
+    }
+
+    private func saveImmediately() {
+        persistence.saveImmediately(snapshot)
+    }
+
+    /// Whether `userId` already has a persisted local library on disk.
+    func hasPersistedSnapshot(forUserId userId: String) -> Bool {
+        persistence.hasStore(for: userId)
+    }
+
+    /// Seeds the guest Home screen: one centred "Untitled Bubble", no notes.
+    /// Used the first time someone taps Welcome → "Skip, set up later".
+    func applyInitialGuestHome() {
+        notes = []
+        libraryFilter = nil
+        clearOpenNotes()
+        let bubble = NoteBubble(
+            name: Self.initialGuestBubbleName,
+            courseCode: Self.initialGuestBubbleName
+        )
+        bubbles = [bubble]
+        bubbleNames = [Self.initialGuestBubbleName]
+        saveImmediately()
     }
 
     private func saveNow() {

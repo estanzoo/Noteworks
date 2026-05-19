@@ -125,7 +125,7 @@ struct OnboardingFlow: View {
                     CollegeStepView(
                         data: data,
                         schoolSearch: schoolSearch,
-                        onNext: { step = .major },
+                        onNext: { step = data.notAStudent ? .interests : .major },
                         onBack: {
                             step = data.isOAuthUser ? .welcome : .verifyEmail
                         }
@@ -133,7 +133,11 @@ struct OnboardingFlow: View {
                 case .major:
                     MajorStepView(data: data, onNext: { step = .interests }, onBack: { step = .college })
                 case .interests:
-                    InterestsStepView(data: data, onNext: { handleSubmitOnboarding() }, onBack: { step = .major })
+                    InterestsStepView(
+                        data: data,
+                        onNext: { handleSubmitOnboarding() },
+                        onBack: { step = data.notAStudent ? .college : .major }
+                    )
                 case .setupCourses:
                     // Final initialization step. Confirms the courses
                     // the user just submitted and seeds Home's bubble
@@ -432,7 +436,7 @@ struct OnboardingFlow: View {
                 }()
 
                 let trimmedMajor = data.major.trimmingCharacters(in: .whitespacesAndNewlines)
-                let resolvedMajor: String? = data.undeclared || trimmedMajor.isEmpty
+                let resolvedMajor: String? = data.notAStudent || data.undeclared || trimmedMajor.isEmpty
                     ? nil
                     : trimmedMajor
 

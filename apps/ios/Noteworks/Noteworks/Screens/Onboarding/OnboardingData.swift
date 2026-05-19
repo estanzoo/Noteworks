@@ -227,7 +227,8 @@ class OnboardingData: ObservableObject {
     }
 
     var isMajorValid: Bool {
-        majorFacultyError == nil && majorNameError == nil
+        if notAStudent { return true }
+        return majorFacultyError == nil && majorNameError == nil
     }
 
     // Step 5 — Interests

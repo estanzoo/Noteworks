@@ -218,19 +218,18 @@ final class AppState: ObservableObject {
         profile = nil
         isAuthenticated = false
         resumeOnboardingAtCollege = false
-        notesStore.activate(userId: "guest")
 
-        // Seed a single "Untitled Bubble" on the very first guest
-        // session so Home matches the design spec
-        // (NoteWorks_UI 2/noteworks-library.jsx L2048: "Your Home will
-        // start with only one Untitled Bubble"). On subsequent guest
-        // sessions the persisted snapshot already contains whatever the
-        // user added, so we leave it alone.
-        if notesStore.bubbleNames.isEmpty {
-            notesStore.replaceBubbleNames(["Untitled Bubble"])
+        let guestId = NotesStore.guestUserId
+        let isFirstGuestVisit = !notesStore.hasPersistedSnapshot(forUserId: guestId)
+        notesStore.activate(userId: guestId)
+
+        // First-time skip → one centred Untitled Bubble (JSX L2048). If a
+        // returning guest somehow has an empty snapshot, heal it the same way.
+        if isFirstGuestVisit || notesStore.bubbleNames.isEmpty {
+            notesStore.applyInitialGuestHome()
         }
 
-        notifications.activate(userId: "guest", freshSession: true)
+        notifications.activate(userId: guestId, freshSession: true)
     }
 
     /// Exposed to `APIClient`'s 401 retry hook. Returns the new access
