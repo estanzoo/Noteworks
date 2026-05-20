@@ -44,6 +44,28 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         scrollView.alwaysBounceVertical = false
         scrollView.alwaysBounceHorizontal = false
 
+        // Critical for finger-drag on overlays (image / text / shape).
+        // Without these, `UIScrollView` swallows the touch before the
+        // SwiftUI `DragGesture` on the overlay can recognize:
+        //   - `delaysContentTouches = true` (default) makes the scroll
+        //     view sit on the touch for ~150ms before delivering it down,
+        //     long enough for its pan recognizer to be the first to see
+        //     the user's movement.
+        //   - `canCancelContentTouches = true` (default) lets the scroll
+        //     view yank the touch back from a subview that has already
+        //     started tracking it, so even a winning SwiftUI drag gets
+        //     cancelled mid-gesture once the scroll view's pan kicks in.
+        // The previous workaround was to flip `blocksPageGestures` to
+        // true whenever an overlay was selected — but that meant the
+        // very first finger drag on an unselected image always lost to
+        // the scroll view, exactly the bug we just hit. Disabling both
+        // hands every touch directly to whichever child claims it
+        // first; empty-canvas pan/scroll still works because the canvas
+        // doesn't claim those touches (its drawing recognizer is
+        // pencil-only), so the scroll view's pan gets them by default.
+        scrollView.delaysContentTouches = false
+        scrollView.canCancelContentTouches = false
+
         scrollView.panGestureRecognizer.minimumNumberOfTouches = 1
         scrollView.panGestureRecognizer.maximumNumberOfTouches = 2
         scrollView.panGestureRecognizer.allowedTouchTypes = [

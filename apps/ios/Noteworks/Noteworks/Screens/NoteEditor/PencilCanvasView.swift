@@ -26,25 +26,40 @@ final class FingerPassThroughPKCanvasView: PKCanvasView {
     var passesFingerTouchesThrough = false
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        if passesFingerTouchesThrough, !acceptsTouch(on: event) {
-            return false
-        }
+        if shouldPassThrough(event: event) { return false }
         return super.point(inside: point, with: event)
     }
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        if passesFingerTouchesThrough, !acceptsTouch(on: event) {
-            return nil
-        }
+        if shouldPassThrough(event: event) { return nil }
         return super.hitTest(point, with: event)
     }
 
-    /// Pencil → canvas. Finger or nil event (first hit test) → overlays below.
-    private func acceptsTouch(on event: UIEvent?) -> Bool {
-        guard let event else { return false }
-        let touches = event.allTouches ?? []
-        if touches.isEmpty { return false }
-        return touches.contains { $0.type == .pencil }
+    /// Only return `true` when we are **certain** the event is finger-only,
+    /// so we can punch through to the overlay layer beneath. For any
+    /// ambiguous case — `nil` event (layout queries / `sizeThatFits` /
+    /// accessibility), empty `allTouches` (hover before tip-down, scroll
+    /// view recognizer probes), or any pencil touch present in the event
+    /// — fall back to `super` so PencilKit still gets the touch.
+    ///
+    /// The previous implementation returned `true` (i.e. "pass through")
+    /// for every event that didn't explicitly contain `.pencil`, which
+    /// silently swallowed the Pencil's `.began` event in cases where
+    /// UIKit dispatches a probe hitTest before the touch is attached to
+    /// the event's `allTouches` set. Result: ink never started, even on
+    /// a real iPad with a paired Pencil.
+    private func shouldPassThrough(event: UIEvent?) -> Bool {
+        guard passesFingerTouchesThrough else { return false }
+        guard let event,
+              let touches = event.allTouches,
+              !touches.isEmpty else {
+            return false
+        }
+        // If any active touch is from a Pencil, the canvas owns this
+        // event sequence — even if some companion touches are fingers
+        // (palm rest, etc.).
+        if touches.contains(where: { $0.type == .pencil }) { return false }
+        return true
     }
 
     func applyTouchRoutingPolicy() {

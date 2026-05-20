@@ -815,13 +815,18 @@ struct NoteEditorView: View {
             value: viewModel.showNewPageFlash
         )
 
-        if openPanel != nil {
-            pageStack
-                .contentShape(Rectangle())
-                .onTapGesture { openPanel = nil }
-        } else {
-            pageStack
-        }
+        // IMPORTANT: do not branch on `openPanel` here. Wrapping
+        // `pageStack` in a different view tree (e.g. adding
+        // `.contentShape` + `.onTapGesture`) when a panel opens gives
+        // SwiftUI two distinct structural identities; toggling between
+        // them tears down + rebuilds the `ZoomablePageScrollView`,
+        // which re-runs `makeUIView` and remounts the `PKCanvasView`
+        // for a frame — that's the canvas / stroke "flash" the user
+        // sees when tapping Share or any tool icon. Tap-outside-to-
+        // close is already handled by the full-bleed scrim in
+        // `dropdownsLayer`, so we can render the same `pageStack`
+        // unconditionally and keep the canvas stable.
+        pageStack
     }
 
     /// Bumps when persisted page/overlay data changes — not during live drag.

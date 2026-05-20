@@ -180,8 +180,19 @@ private struct NoteOverlayItem: View {
                     .clipShape(RoundedRectangle(cornerRadius: usesFullTransformChrome ? 4 : 8))
                     .overlay(selectionBorder)
                     .contentShape(Rectangle())
-                    .highPriorityGesture(TapGesture().onEnded { handleTap() })
+                    // Drag is the primary gesture for an overlay — the
+                    // user expects to grab an image with a finger and
+                    // move it without any pre-selection step. Putting
+                    // it before tap (and keeping tap *simultaneous*
+                    // rather than high-priority) means SwiftUI starts
+                    // recognising the drag from the very first touch
+                    // event at `minimumDistance: 2`, beating the outer
+                    // `UIScrollView.panGestureRecognizer` (~10pt) to
+                    // the punch. Tap still fires on touch-up with no
+                    // movement, which is all `handleTap()` needs to
+                    // select or open the inline text editor.
                     .gesture(moveGesture)
+                    .simultaneousGesture(TapGesture().onEnded { handleTap() })
                     .simultaneousGesture(pinchGesture)
 
                 if showsSelectionChrome {
