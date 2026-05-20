@@ -39,7 +39,6 @@ struct HomeView: View {
     // app launches.
     @State private var isEditingLayout = false
     @State private var draggingName: String? = nil
-    @State private var dragOffset: CGSize = .zero
     @State private var pendingDeleteName: String? = nil
 
     private var unreadCount: Int { appState.notifications.unreadCount }
@@ -296,7 +295,6 @@ struct HomeView: View {
                             withAnimation(.easeInOut(duration: 0.22)) {
                                 isEditingLayout = false
                                 draggingName = nil
-                                dragOffset = .zero
                             }
                         }
                         .zIndex(-1)
@@ -305,19 +303,12 @@ struct HomeView: View {
                 ForEach(Array(bubbles.enumerated()), id: \.element.id) { index, course in
                     HomeBubbleCell(
                         course: course,
-                        // Siblings = every other bubble's rendered
-                        // position. The cell uses these as obstacles
-                        // during drag so a manual move can never push
-                        // one bubble on top of another (matches the
-                        // layout's non-overlap guarantee).
-                        siblings: bubbles.filter { $0.id != course.id },
                         index: index,
                         geometry: geo.size,
                         isEditing: isEditingLayout,
                         hasManualOffset: store.bubble(named: course.name)?.manualOffsetX != nil,
                         isReservedName: Self.isReservedBubbleName(course.name),
                         draggingName: $draggingName,
-                        dragOffset: $dragOffset,
                         onTap: { handleBubbleTap(course.name) },
                         onRename: { handleRenameBubble(course.name) },
                         onMoveAll: { handleEnterEditMode() },
@@ -354,7 +345,6 @@ struct HomeView: View {
             withAnimation(.easeInOut(duration: 0.22)) {
                 isEditingLayout = false
                 draggingName = nil
-                dragOffset = .zero
             }
         } label: {
             Text("Done")
@@ -529,14 +519,12 @@ struct HomeView: View {
 // participate in #Preview without dragging extra dependencies in.
 private struct HomeBubbleCell: View {
     let course: CourseBubble
-    let siblings: [CourseBubble]
     let index: Int
     let geometry: CGSize
     let isEditing: Bool
     let hasManualOffset: Bool
     let isReservedName: Bool
     @Binding var draggingName: String?
-    @Binding var dragOffset: CGSize
 
     let onTap: () -> Void
     let onRename: () -> Void
@@ -551,9 +539,19 @@ private struct HomeBubbleCell: View {
     /// classic Home Screen jiggle.
     @State private var wigglePhase: Bool = false
 
+    // Drag state lives on the cell, not the parent. Updating the
+    // parent's `@State` on every drag delta caused HomeView.body to
+    // re-evaluate per frame, which re-ran the full HomeBubbleLayout
+    // pipeline (slot packing, shrink-to-fit, collision resolution) for
+    // every bubble on every finger move — that was the "strong
+    // resistance" the user reported. Keeping the per-frame delta local
+    // means only this one cell re-renders while the finger moves.
+    @State private var dragOffset: CGSize = .zero
+    @State private var isLocalDragging: Bool = false
+
     private static let wiggleAngle: Double = 1.4
 
-    private var isBeingDragged: Bool { draggingName == course.name }
+    private var isBeingDragged: Bool { isLocalDragging }
 
     /// While the bubble is being dragged we stop the wiggle so the
     /// finger isn't fighting a rotating target — feels much more
@@ -677,48 +675,50 @@ private struct HomeBubbleCell: View {
             .onChanged { value in
                 let baseX = geometry.width / 2 + course.offsetX * geometry.width
                 let baseY = geometry.height / 2 + course.offsetY * geometry.height
-                let requested = CGPoint(
-                    x: baseX + value.translation.width,
-                    y: baseY + value.translation.height
-                )
-                // Hard collision avoidance — the bubble can never enter
-                // another bubble's circle, no matter where the finger
-                // is. If the finger drags past a sibling, the bubble
-                // slides around its edge.
-                let resolved = HomeBubbleLayout.resolveDragPosition(
-                    requestedCenter: requested,
-                    radius: course.size / 2,
-                    siblings: siblings,
-                    in: geometry
-                )
-                let clamped = CGSize(
-                    width: resolved.x - baseX,
-                    height: resolved.y - baseY
-                )
+                let r = course.size / 2
+                // Clamp only to the container so the bubble never
+                // disappears off-screen. No per-frame collision check
+                // against siblings — that used to fight the finger
+                // whenever it brushed past another bubble. The layout
+                // pass that re-runs after `onCommitDrag` (and the
+                // whole-field `enforceNonOverlap` relaxation inside it)
+                // resolves any overlap on release with a spring.
+                let targetX = min(geometry.width - r, max(r, baseX + value.translation.width))
+                let targetY = min(geometry.height - r, max(r, baseY + value.translation.height))
 
-                // Wrap the state mutation in a no-animation transaction
-                // so the per-frame offset updates can't accidentally be
-                // animated by any outer `.animation(_:value:)` scope —
-                // belt-and-braces alongside `.animation(nil, value:)`
-                // on the modifier chain.
+                // Disable implicit animations on the per-frame offset
+                // mutation. Without this the outer `.animation(_,
+                // value: isBeingDragged)` spring can grab the drag
+                // updates on the first frame and interpolate them,
+                // which feels like a heavy rubber band.
                 var txn = Transaction()
                 txn.disablesAnimations = true
                 withTransaction(txn) {
-                    if draggingName != course.name {
-                        draggingName = course.name
+                    if !isLocalDragging {
+                        isLocalDragging = true
+                        // Tell the parent which bubble is on top so
+                        // its z-index lifts above siblings. This is
+                        // the only per-drag parent mutation; the
+                        // per-frame delta stays local.
+                        if draggingName != course.name {
+                            draggingName = course.name
+                        }
                     }
-                    dragOffset = clamped
+                    dragOffset = CGSize(width: targetX - baseX, height: targetY - baseY)
                 }
             }
             .onEnded { _ in
-                // dragOffset already holds the collision-resolved delta
-                // — just convert back to fractional and persist.
                 let finalOffsetX = Double(course.offsetX) + Double(dragOffset.width / max(geometry.width, 1))
                 let finalOffsetY = Double(course.offsetY) + Double(dragOffset.height / max(geometry.height, 1))
+                // Commit the new position to the store first, then
+                // clear local drag state inside the same withAnimation
+                // so the bubble smoothly transitions from its dragged
+                // `.offset` back to its newly-resolved `.position`.
                 withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
                     onCommitDrag(finalOffsetX, finalOffsetY)
-                    draggingName = nil
                     dragOffset = .zero
+                    isLocalDragging = false
+                    draggingName = nil
                 }
             }
     }

@@ -45,15 +45,6 @@ struct NoteOverlayLayer: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            // Empty-space tap to deselect. We use a near-clear rectangle
-            // (not Color.clear) so the gesture actually fires.
-            Color.white.opacity(0.001)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    if editingId != nil { editingId = nil }
-                    if selectedId != nil { selectedId = nil }
-                }
-
             ForEach(overlays) { overlay in
                 NoteOverlayItem(
                     overlay: overlay,
@@ -62,7 +53,6 @@ struct NoteOverlayLayer: View {
                     isEditing: overlay.id == editingId,
                     noteId: noteId,
                     imageDataProvider: imageDataProvider,
-                    onSelect: { selectedId = overlay.id },
                     onUpdate: onUpdate,
                     onDelete: {
                         if editingId == overlay.id { editingId = nil }
@@ -87,6 +77,7 @@ struct NoteOverlayLayer: View {
         }
         .frame(width: pageSize.width, height: pageSize.height, alignment: .topLeading)
         .clipped()
+        .allowsHitTesting(selectedId != nil || editingId != nil)
     }
 }
 
@@ -99,7 +90,6 @@ private struct NoteOverlayItem: View {
     let isEditing: Bool
     let noteId: String
     var imageDataProvider: (String) -> Data?
-    var onSelect: () -> Void
     var onUpdate: (NotePageOverlay) -> Void
     var onDelete: () -> Void
     var onDuplicate: (NotePageOverlay) -> Void
@@ -116,25 +106,19 @@ private struct NoteOverlayItem: View {
     @State private var draftText: String = ""
     @FocusState private var textFieldFocused: Bool
 
-    /// Live drag/resize offsets — `@State` persists until commit so the
+    /// Live resize offsets — `@State` persists until commit so the
     /// sticker does not snap back when the gesture ends.
-    @State private var dragOffset: CGSize = .zero
     @State private var resizeTranslation: CGSize = .zero
     @State private var pinchScale: CGFloat = 1.0
-    @State private var rotationDelta: CGFloat = 0
-    @State private var rotationTouchStartAngle: CGFloat?
-    @State private var rotationAtGestureStart: CGFloat = 0
-    /// Shows handles while dragging before `selectedId` commits at end.
-    @State private var isDragActive = false
 
     private var isImage: Bool { overlay.kind == .image }
     private var isShape: Bool { overlay.kind == .shape }
-    /// Image + shape share GoodNotes-style handles (corners, edges, rotate).
+    /// Image + shape share GoodNotes-style corner handles.
     private var usesFullTransformChrome: Bool { isImage || isShape }
     private var resolvedShapeType: NoteShapeType {
         NoteShapeOverlayDrawing.resolvedType(overlay.shapeType)
     }
-    private var showsSelectionChrome: Bool { isSelected || isDragActive }
+    private var showsSelectionChrome: Bool { isSelected }
     private static let imageAccent = Color(red: 0.22, green: 0.48, blue: 0.98)
 
     private var basePoint: CGPoint {
@@ -162,8 +146,8 @@ private struct NoteOverlayItem: View {
             height: (resized.size.height - resized.size.height * pinchScale) / 2
         )
         return CGPoint(
-            x: resized.origin.x + dragOffset.width + pinchOriginShift.width,
-            y: resized.origin.y + dragOffset.height + pinchOriginShift.height
+            x: resized.origin.x + pinchOriginShift.width,
+            y: resized.origin.y + pinchOriginShift.height
         )
     }
 
@@ -173,41 +157,44 @@ private struct NoteOverlayItem: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            ZStack {
-                content
-                    .frame(width: liveSize.width, height: liveSize.height)
-                    .background(itemBackground)
-                    .clipShape(RoundedRectangle(cornerRadius: usesFullTransformChrome ? 4 : 8))
-                    .overlay(selectionBorder)
-                    .contentShape(Rectangle())
-                    // Drag is the primary gesture for an overlay — the
-                    // user expects to grab an image with a finger and
-                    // move it without any pre-selection step. Putting
-                    // it before tap (and keeping tap *simultaneous*
-                    // rather than high-priority) means SwiftUI starts
-                    // recognising the drag from the very first touch
-                    // event at `minimumDistance: 2`, beating the outer
-                    // `UIScrollView.panGestureRecognizer` (~10pt) to
-                    // the punch. Tap still fires on touch-up with no
-                    // movement, which is all `handleTap()` needs to
-                    // select or open the inline text editor.
-                    .gesture(moveGesture)
-                    .simultaneousGesture(TapGesture().onEnded { handleTap() })
-                    .simultaneousGesture(pinchGesture)
+            pageVisual
 
-                if showsSelectionChrome {
-                    fourCornerHandles
-                    if usesFullTransformChrome {
-                        imageEdgeHandles
-                        rotationHandle
-                    }
-                }
+            if showsSelectionChrome {
+                selectionInteraction
             }
-            .frame(width: liveSize.width, height: liveSize.height)
-            .rotationEffect(.degrees(usesFullTransformChrome ? overlay.rotationDegrees + rotationDelta : 0))
-            .offset(x: liveOrigin.x, y: liveOrigin.y)
+        }
+        .animation(.easeInOut(duration: 0.12), value: isSelected)
+        .transaction { transaction in
+            if resizeTranslation != .zero || pinchScale != 1.0 {
+                transaction.animation = nil
+            }
+        }
+    }
 
-            if showsSelectionChrome, usesFullTransformChrome {
+    /// Image / text / shape drawing — never hit-testable so page pinch
+    /// works on top of stickers. Text inline edit opts back in below.
+    private var pageVisual: some View {
+        ZStack {
+            content
+                .frame(width: liveSize.width, height: liveSize.height)
+                .background(itemBackground)
+                .clipShape(RoundedRectangle(cornerRadius: usesFullTransformChrome ? 4 : 8))
+                .overlay(selectionBorder)
+                .allowsHitTesting(isEditing && overlay.kind == .text)
+        }
+        .frame(width: liveSize.width, height: liveSize.height)
+        .rotationEffect(.degrees(usesFullTransformChrome ? overlay.rotationDegrees : 0))
+        .offset(x: liveOrigin.x, y: liveOrigin.y)
+        .allowsHitTesting(isEditing && overlay.kind == .text)
+    }
+
+    /// Corner handles + floating toolbars — small targets only; the
+    /// image body between handles stays transparent to pinch.
+    private var selectionInteraction: some View {
+        ZStack(alignment: .topLeading) {
+            fourCornerHandles
+
+            if usesFullTransformChrome {
                 ImageOverlayAdjustToolbar(
                     onCrop: isImage ? onCropImage : {},
                     onLasso: onSelectLasso,
@@ -215,10 +202,10 @@ private struct NoteOverlayItem: View {
                     onDuplicate: { onDuplicate(overlay) },
                     onDelete: onDelete
                 )
-                .offset(x: liveOrigin.x + max(0, (liveSize.width - 280) / 2), y: liveOrigin.y - 52)
+                .offset(x: max(0, (liveSize.width - 280) / 2), y: -52)
             }
 
-            if showsSelectionChrome, overlay.kind == .text {
+            if overlay.kind == .text {
                 SimpleTextOverlayToolbar(
                     fontSize: overlay.fontSize ?? 18,
                     onDecrease: { adjustFontSize(by: -2) },
@@ -226,24 +213,11 @@ private struct NoteOverlayItem: View {
                     onEdit: onStartEditing,
                     onDelete: onDelete
                 )
-                .offset(x: liveOrigin.x + max(0, (liveSize.width - 200) / 2), y: liveOrigin.y - 46)
+                .offset(x: max(0, (liveSize.width - 200) / 2), y: -46)
             }
         }
-        .animation(.easeInOut(duration: 0.12), value: isSelected)
-        .transaction { transaction in
-            if dragOffset != .zero || resizeTranslation != .zero || pinchScale != 1.0 || rotationDelta != 0 {
-                transaction.animation = nil
-            }
-        }
-    }
-
-    private func handleTap() {
-        guard !isEditing else { return }
-        if !isSelected {
-            onSelect()
-        } else if overlay.kind == .text {
-            onStartEditing()
-        }
+        .rotationEffect(.degrees(usesFullTransformChrome ? overlay.rotationDegrees : 0))
+        .offset(x: liveOrigin.x, y: liveOrigin.y)
     }
 
     // MARK: Handle geometry
@@ -366,54 +340,31 @@ private struct NoteOverlayItem: View {
 
     /// Four blue corner handles — shared by text and image overlays.
     private var fourCornerHandles: some View {
-        ForEach(OverlayCorner.allCases, id: \.self) { corner in
-            resizeHandle
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: corner.alignment)
-                .offset(corner.offset)
-                .gesture(resizeGesture(for: corner))
+        ZStack(alignment: .topLeading) {
+            ForEach(OverlayCorner.allCases, id: \.self) { corner in
+                resizeHandle
+                    .offset(handleOffset(for: corner))
+                    .gesture(resizeGesture(for: corner))
+            }
         }
     }
 
-    private var imageEdgeHandles: some View {
-        Group {
-            edgeHandle(.top)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .offset(y: -11)
-                .gesture(resizeGesture(for: .top))
-            edgeHandle(.bottom)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                .offset(y: 11)
-                .gesture(resizeGesture(for: .bottom))
-            edgeHandle(.leading)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                .offset(x: -11)
-                .gesture(resizeGesture(for: .leading))
-            edgeHandle(.trailing)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
-                .offset(x: 11)
-                .gesture(resizeGesture(for: .trailing))
+    private func handleOffset(for corner: OverlayCorner) -> CGSize {
+        let pad: CGFloat = 11
+        let handleSize: CGFloat = 36
+        switch corner {
+        case .topLeading:
+            return CGSize(width: -pad, height: -pad)
+        case .topTrailing:
+            return CGSize(width: max(0, liveSize.width - handleSize + pad), height: -pad)
+        case .bottomLeading:
+            return CGSize(width: -pad, height: max(0, liveSize.height - handleSize + pad))
+        case .bottomTrailing:
+            return CGSize(
+                width: max(0, liveSize.width - handleSize + pad),
+                height: max(0, liveSize.height - handleSize + pad)
+            )
         }
-    }
-
-    private var rotationHandle: some View {
-        VStack(spacing: 4) {
-            Capsule()
-                .fill(Self.imageAccent.opacity(0.85))
-                .frame(width: 1.5, height: 22)
-            Circle()
-                .fill(Color.white)
-                .overlay(Circle().strokeBorder(Self.imageAccent, lineWidth: 2))
-                .overlay {
-                    Image(systemName: "arrow.triangle.2.circlepath")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Self.imageAccent)
-                }
-                .frame(width: 26, height: 26)
-                .shadow(color: .black.opacity(0.12), radius: 2, y: 1)
-                .gesture(rotationGesture)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-        .offset(y: 38)
     }
 
     private var resizeHandle: some View {
@@ -424,104 +375,13 @@ private struct NoteOverlayItem: View {
             .contentShape(Rectangle())
     }
 
-    private func edgeHandle(_ edge: OverlayEdge) -> some View {
-        Circle()
-            .fill(Self.imageAccent)
-            .frame(width: 9, height: 9)
-            .frame(width: 36, height: 36)
-            .contentShape(Rectangle())
-    }
-
     // MARK: Gestures
 
-    private var moveGesture: some Gesture {
-        DragGesture(minimumDistance: 2)
-            .onChanged { value in
-                isDragActive = true
-                dragOffset = value.translation
-            }
-            .onEnded { value in
-                let w = liveSize.width
-                let h = liveSize.height
-                let dropped = CGPoint(
-                    x: max(0, min(pageSize.width - w, basePoint.x + value.translation.width)),
-                    y: max(0, min(pageSize.height - h, basePoint.y + value.translation.height))
-                )
-                var updated = overlay
-                updated.normX = dropped.x / pageSize.width
-                updated.normY = dropped.y / pageSize.height
-                dragOffset = .zero
-                isDragActive = false
-                onUpdate(updated)
-                if !isSelected { onSelect() }
-            }
-    }
+    // Body drag / pinch / rotate are intentionally not exposed on images.
+    // Page pinch is owned by the outer `UIScrollView`; resize is via the
+    // four corner handles only once the overlay is selected.
 
-    /// Two-finger pinch on the overlay body. Anchors at the visual center
-    /// so the image grows/shrinks under the user's fingers naturally.
-    /// Aspect ratio is preserved for images; text overlays scale uniformly
-    /// too (so the font-size box scales — actual font size stays the same
-    /// since we resize the frame only).
-    private var pinchGesture: some Gesture {
-        MagnificationGesture()
-            .onChanged { scale in
-                pinchScale = max(0.3, min(4, scale))
-            }
-            .onEnded { scale in
-                let clamped = max(0.3, min(4, scale))
-                var newW = baseSize.width * clamped
-                var newH = baseSize.height * clamped
-                if baseSize.width > 0, baseSize.height > 0 {
-                    let aspect = baseSize.width / baseSize.height
-                    newH = newW / aspect
-                }
-                let dx = (baseSize.width - newW) / 2
-                let dy = (baseSize.height - newH) / 2
-                let originX = max(0, min(pageSize.width - newW, basePoint.x + dx))
-                let originY = max(0, min(pageSize.height - newH, basePoint.y + dy))
-                newW = max(40, min(newW, pageSize.width - originX))
-                newH = max(40, min(newH, pageSize.height - originY))
-
-                var updated = overlay
-                updated.normX = originX / pageSize.width
-                updated.normY = originY / pageSize.height
-                updated.normW = newW / pageSize.width
-                updated.normH = newH / pageSize.height
-                pinchScale = 1.0
-                onUpdate(updated)
-            }
-    }
-
-    private var rotationGesture: some Gesture {
-        DragGesture(minimumDistance: 0)
-            .onChanged { value in
-                let center = CGPoint(
-                    x: liveOrigin.x + liveSize.width / 2,
-                    y: liveOrigin.y + liveSize.height / 2
-                )
-                let touch = CGPoint(
-                    x: center.x + value.translation.width,
-                    y: center.y + value.translation.height + liveSize.height / 2 + 34
-                )
-                let degrees = atan2(touch.y - center.y, touch.x - center.x) * 180 / .pi + 90
-                if rotationTouchStartAngle == nil {
-                    rotationTouchStartAngle = degrees
-                    rotationAtGestureStart = overlay.rotationDegrees
-                }
-                if let start = rotationTouchStartAngle {
-                    rotationDelta = degrees - start
-                }
-            }
-            .onEnded { _ in
-                var updated = overlay
-                updated.rotationDegrees = rotationAtGestureStart + rotationDelta
-                rotationDelta = 0
-                rotationTouchStartAngle = nil
-                onUpdate(updated)
-            }
-    }
-
-    /// Drag from a corner or edge handle — resizes anchored at the opposite side.
+    /// Drag from a corner handle — resizes anchored at the opposite side.
     /// Images preserve aspect ratio; text overlays free-scale.
     private func resizeGesture(for corner: OverlayCorner) -> some Gesture {
         DragGesture(minimumDistance: 0)

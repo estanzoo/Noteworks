@@ -59,6 +59,17 @@ struct NoteEditorView: View {
     /// pinning layout to this max (top-aligned) keeps the chrome and title
     /// under the status bar while the keyboard covers the bottom.
     @State private var editorStableMaxHeight: CGFloat = 0
+    /// Ticks once after a note has loaded and the navigation push has had
+    /// a runloop turn to settle its frames. The value is folded into the
+    /// inner `canvasArea` `.id` so the page-card `GeometryReader` is
+    /// re-emitted against the *settled* layout proposal, fixing the
+    /// intermittent "page renders tiny / squeezed when opening a note
+    /// from the library" race (the first geometry sample sometimes
+    /// arrives mid-animation with a smaller height). The rebuild is
+    /// invisible (it happens before the first paint stabilises) and
+    /// does not touch the outer editor chrome / gesture wiring, so
+    /// pinch-zoom on the scroll view is unaffected.
+    @State private var canvasLayoutSettleNonce: Int = 0
     // MARK: - Overlay editor state
 
     /// Currently selected text/image overlay on the active page.
@@ -67,6 +78,13 @@ struct NoteEditorView: View {
     @State private var editingOverlayId: String? = nil
     @State private var showPhotoPicker = false
     @State private var photoSelection: PhotosPickerItem? = nil
+
+    /// True while an image / text / shape overlay is selected or being
+    /// inline-edited. Drives page-swipe suppression and the tap-outside
+    /// deselect layer that returns the canvas to its normal mode.
+    private var hasOverlaySelection: Bool {
+        selectedOverlayId != nil || editingOverlayId != nil
+    }
 
     var noteId: String?
 
@@ -211,6 +229,13 @@ struct NoteEditorView: View {
             withAnimation(.easeInOut(duration: 0.22)) {
                 appState.isImmersiveEditing = true
             }
+            // After the navigation push + initial `attach` settle, bump
+            // the canvas layout nonce so the inner page-card
+            // `GeometryReader` re-emits against the final frame. Fixes
+            // the "page renders tiny / squeezed on first open" race.
+            DispatchQueue.main.async {
+                canvasLayoutSettleNonce &+= 1
+            }
         }
         .onDisappear {
             withAnimation(.easeInOut(duration: 0.22)) {
@@ -225,6 +250,11 @@ struct NoteEditorView: View {
             editorStableMaxHeight = 0
             selectedOverlayId = nil
             editingOverlayId = nil
+            // Re-fit the page card against the (possibly different)
+            // aspect ratio of the freshly-active note.
+            DispatchQueue.main.async {
+                canvasLayoutSettleNonce &+= 1
+            }
         }
         .onChange(of: viewModel.drawing) { _, _ in
             viewModel.handleDrawingChange()
@@ -757,6 +787,48 @@ struct NoteEditorView: View {
 
     // MARK: - Canvas area
 
+    /// Clears overlay selection / inline edit so the canvas returns to
+    /// the same interaction mode as on first open (page pinch-zoom live,
+    /// no selection chrome, page-swipe enabled).
+    private func deselectOverlays() {
+        guard hasOverlaySelection else { return }
+        editingOverlayId = nil
+        selectedOverlayId = nil
+    }
+
+    /// Single-finger tap on the page (handled by the outer scroll view so
+    /// overlay bodies stay non-interactive and pinch always works).
+    private func handlePageFingerTap(at point: CGPoint?, pageSize: CGSize) {
+        guard let point else {
+            deselectOverlays()
+            return
+        }
+
+        let overlays = viewModel.currentPageOverlays(store: store)
+        for overlay in overlays.reversed() {
+            let rect = CGRect(
+                x: overlay.normX * pageSize.width,
+                y: overlay.normY * pageSize.height,
+                width: overlay.normW * pageSize.width,
+                height: overlay.normH * pageSize.height
+            )
+            guard rect.contains(point) else { continue }
+
+            if selectedOverlayId == overlay.id {
+                if overlay.kind == .image {
+                    deselectOverlays()
+                } else if overlay.kind == .text {
+                    editingOverlayId = overlay.id
+                }
+            } else {
+                selectedOverlayId = overlay.id
+                editingOverlayId = nil
+            }
+            return
+        }
+        deselectOverlays()
+    }
+
     private static let pageHorizontalInset: CGFloat = 16
     /// Reserved space above and below the page when fitting at zoom 1.
     private static let pageVerticalInset: CGFloat = 32
@@ -790,10 +862,13 @@ struct NoteEditorView: View {
                 maxScale: 8.0,
                 nextSwipeCreatesPage: viewModel.currentPage >= viewModel.totalPages,
                 atFirstPage: viewModel.currentPage <= 1,
-                blocksPageGestures: selectedOverlayId != nil,
+                blocksPageGestures: hasOverlaySelection,
                 contentStamp: pageContentStamp,
                 onSwipeNext: { viewModel.goToNextPage() },
-                onSwipePrevious: { viewModel.goToPreviousPage() }
+                onSwipePrevious: { viewModel.goToPreviousPage() },
+                onPageFingerTap: { point in
+                    handlePageFingerTap(at: point, pageSize: logicalPageSize)
+                }
             ) {
                 pageCard(logicalPageSize: logicalPageSize, rotation: rotation)
             }
@@ -835,12 +910,17 @@ struct NoteEditorView: View {
         stamp = stamp &* 31 &+ (viewModel.noteId?.hashValue ?? 0)
         stamp = stamp &* 31 &+ viewModel.currentPage
         stamp = stamp &* 31 &+ viewModel.currentPageRotation
-        stamp = stamp &* 31 &+ (viewModel.activeTool.canDraw ? 1 : 0)
         stamp = stamp &* 31 &+ viewModel.currentPageBackground.hashValue
         stamp = stamp &* 31 &+ overlayStoreStamp
-        stamp = stamp &* 31 &+ (selectedOverlayId?.hashValue ?? 0)
-        stamp = stamp &* 31 &+ (editingOverlayId?.hashValue ?? 0)
-        stamp = stamp &* 31 &+ (viewModel.activeTool.rawValue.hashValue)
+        // Folded in so a bump of `canvasLayoutSettleNonce` propagates as
+        // a body dependency — that forces the inner `GeometryReader`
+        // inside `canvasArea` to re-emit with the settled proposal,
+        // which fixes the "page renders tiny / squeezed on first open"
+        // race. The stamp going up also lets the scroll view's
+        // `updateUIView` refresh its hosted SwiftUI tree against the
+        // new content size with no UIView recreation involved (the
+        // pinch / zoom recognizers stay alive).
+        stamp = stamp &* 31 &+ canvasLayoutSettleNonce
         return stamp
     }
 
@@ -865,10 +945,12 @@ struct NoteEditorView: View {
         pageCardChrome(logicalPageSize: logicalPageSize, rotation: rotation) {
             ZStack {
                 Color.white
+                    .allowsHitTesting(false)
                 NotePageBackgroundView(
                     background: viewModel.currentPageBackground,
                     imageData: currentPageBackgroundImageData()
                 )
+                .allowsHitTesting(false)
                 if let noteId = viewModel.noteId {
                     NoteOverlayLayer(
                         overlays: viewModel.currentPageOverlays(store: store),
@@ -905,8 +987,16 @@ struct NoteEditorView: View {
                     drawing: $viewModel.drawing,
                     tool: viewModel.pkTool,
                     drawingPolicy: .pencilOnly,
-                    isDrawingEnabled: viewModel.activeTool.canDraw,
-                    passesFingerTouchesThrough: viewModel.activeTool.passesFingerToOverlays,
+                    // Keep the canvas in the responder chain for every tool
+                    // so finger routing stays consistent — disabling it for
+                    // image / text / shape made pinch intermittently stop
+                    // working when those tools were active. Fingers are routed
+                    // to overlays via `passesFingerTouchesThrough`; Pencil
+                    // ink is gated by `canDraw` through the drawing policy.
+                    isDrawingEnabled: true,
+                    allowsPencilDrawing: viewModel.activeTool.canDraw,
+                    passesFingerTouchesThrough: viewModel.activeTool != .eraser
+                        && viewModel.activeTool != .lasso,
                     onCanvasReady: { canvas in
                         self.liveCanvas = canvas
                         refreshCanvasUndoState()
@@ -932,6 +1022,7 @@ struct NoteEditorView: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 16)
                     .strokeBorder(NoteEditorTheme.chromeBorder, lineWidth: 1)
+                    .allowsHitTesting(false)
             )
             .shadow(color: .black.opacity(0.06), radius: 14, y: 6)
             .rotationEffect(.degrees(Double(rotation)))

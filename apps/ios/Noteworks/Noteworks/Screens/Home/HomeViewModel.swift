@@ -181,62 +181,48 @@ enum HomeBubbleLayout {
         let centered = verticallyCenter(slotPlaced, in: containerSize)
 
         // Manual override: if the user has dragged a bubble in edit
-        // mode, honour that saved fractional offset instead of the slot
-        // position. Every manual placement is run through
-        // `resolveCollision` against the bubbles already placed, so a
-        // saved offset that now overlaps a sibling (e.g. another bubble
-        // grew, the container resized, two manuals were dropped near
-        // each other) gets pushed to the nearest non-overlapping spot
-        // instead of stacking. The output is guaranteed overlap-free.
-        let pad = packingPadding(for: containerSize)
-        // Mutable map keyed by name so collision resolution can update
-        // a bubble's position in place and the next manual sees the new
-        // location as an obstacle.
+        // mode, honour the saved fractional offset *exactly* — no
+        // collision adjustment, no padding push. This mirrors the iOS
+        // Home Screen drag-and-drop feel: the icon stays at the spot
+        // you let go of, never animates from "where you dropped" to
+        // "where the layout would prefer".
+        //
+        // The non-overlap relaxation below still runs, but manually
+        // placed bubbles are treated as immovable obstacles so the
+        // *slot-placed* bubbles are the ones that yield. From the
+        // user's perspective: whatever I drag stays put.
         var positionByName: [String: Placed] = [:]
+        var pinned: Set<String> = []
         for p in centered { positionByName[p.name] = p }
 
-        // Stable iteration order — alphabetical — so two manuals that
-        // both want the same spot resolve to the same final layout on
-        // every render.
-        let manualOrder = centered
-            .filter {
-                guard let b = store.bubble(named: $0.name) else { return false }
-                return b.manualOffsetX != nil && b.manualOffsetY != nil
-            }
-            .sorted { $0.name.lowercased() < $1.name.lowercased() }
-
-        for p in manualOrder {
+        for p in centered {
             guard let bubble = store.bubble(named: p.name),
                   let mx = bubble.manualOffsetX,
                   let my = bubble.manualOffsetY
             else { continue }
             let r = p.size / 2
-            let requested = CGPoint(
-                x: containerSize.width / 2 + CGFloat(mx) * containerSize.width,
-                y: containerSize.height / 2 + CGFloat(my) * containerSize.height
-            )
-            let obstacles = positionByName.values
-                .filter { $0.name != p.name }
-                .map { Obstacle(center: CGPoint(x: $0.x, y: $0.y), radius: $0.size / 2) }
-            let resolved = resolveCollision(
-                requested: requested,
-                radius: r,
-                obstacles: obstacles,
-                padding: pad,
-                bounds: containerSize
-            )
+            // Clamp only to the container bounds (no padding) so the
+            // bubble lands exactly where the finger left it; the drag
+            // gesture already clamps to `r`-from-edge so this is just a
+            // safety net for stored offsets from older container sizes.
+            let minX = r, maxX = max(r, containerSize.width - r)
+            let minY = r, maxY = max(r, containerSize.height - r)
+            let x = min(maxX, max(minX, containerSize.width / 2 + CGFloat(mx) * containerSize.width))
+            let y = min(maxY, max(minY, containerSize.height / 2 + CGFloat(my) * containerSize.height))
             positionByName[p.name] = Placed(
-                name: p.name, count: p.count, size: p.size, x: resolved.x, y: resolved.y
+                name: p.name, count: p.count, size: p.size, x: x, y: y
             )
+            pinned.insert(p.name)
         }
 
-        // Final safety net: even with the shrink-to-fit pass and the
-        // per-bubble manual resolution, pathological inputs (6 bubbles
-        // all at max count on a narrow split-view canvas) can still
-        // leave a sub-pixel overlap. Run one full relaxation pass over
-        // every placed bubble so the rendered field is ALWAYS overlap-
-        // free, no matter what.
-        positionByName = enforceNonOverlap(positionByName, in: containerSize)
+        // Relaxation pass: only the un-pinned (slot-placed) bubbles
+        // move out of the way; manually placed bubbles are fixed
+        // obstacles. Without `pinned`, this pass would slide a
+        // just-dropped bubble off the finger's landing spot when its
+        // requested position happens to overlap a slot bubble — that
+        // post-drop drift was the "animation to a new position" the
+        // user was seeing.
+        positionByName = enforceNonOverlap(positionByName, in: containerSize, pinned: pinned)
 
         // Re-emit in `centered` order so the entrance stagger stays
         // tied to the sorted-by-count order from earlier.
@@ -305,7 +291,8 @@ enum HomeBubbleLayout {
     /// fall back to its bottom scale.
     private static func enforceNonOverlap(
         _ placed: [String: Placed],
-        in container: CGSize
+        in container: CGSize,
+        pinned: Set<String> = []
     ) -> [String: Placed] {
         guard placed.count > 1 else { return placed }
         var result = placed
@@ -317,6 +304,9 @@ enum HomeBubbleLayout {
         for _ in 0..<maxIterations {
             var moved = false
             for name in names {
+                // Manually-placed bubbles stay exactly where the user
+                // dropped them; only auto-placed bubbles yield.
+                if pinned.contains(name) { continue }
                 guard let p = result[name] else { continue }
                 let obstacles = result.values
                     .filter { $0.name != name }

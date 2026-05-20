@@ -25,6 +25,11 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
     var contentStamp: Int = 0
     var onSwipeNext: (() -> Void)? = nil
     var onSwipePrevious: (() -> Void)? = nil
+    /// Fired on a single-finger tap. `nil` means the grey margin outside
+    /// the page card; a point means page-content coordinates (top-left of
+    /// the hosted page). Used for overlay select / deselect without
+    /// putting tap targets on the image body (which would steal pinch).
+    var onPageFingerTap: ((CGPoint?) -> Void)? = nil
     @ViewBuilder var content: () -> Content
 
     func makeUIView(context: Context) -> UIScrollView {
@@ -65,9 +70,15 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         // pencil-only), so the scroll view's pan gets them by default.
         scrollView.delaysContentTouches = false
         scrollView.canCancelContentTouches = false
+        scrollView.isMultipleTouchEnabled = true
+        scrollView.isScrollEnabled = true
+        scrollView.pinchGestureRecognizer?.isEnabled = true
 
+        // Pinch-to-zoom needs two fingers exclusively — if the built-in
+        // pan recognizer also accepts 2 touches it wins the gesture
+        // race and page zoom silently stops working.
         scrollView.panGestureRecognizer.minimumNumberOfTouches = 1
-        scrollView.panGestureRecognizer.maximumNumberOfTouches = 2
+        scrollView.panGestureRecognizer.maximumNumberOfTouches = 1
         scrollView.panGestureRecognizer.allowedTouchTypes = [
             NSNumber(value: UITouch.TouchType.direct.rawValue)
         ]
@@ -92,13 +103,32 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         doubleTap.delegate = context.coordinator
         scrollView.addGestureRecognizer(doubleTap)
 
+        let canvasTap = UITapGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleCanvasFingerTap(_:))
+        )
+        canvasTap.numberOfTapsRequired = 1
+        canvasTap.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        canvasTap.cancelsTouchesInView = false
+        canvasTap.delegate = context.coordinator
+        scrollView.addGestureRecognizer(canvasTap)
+        canvasTap.require(toFail: doubleTap)
+
         let host = UIHostingController(rootView: content())
         host.view.backgroundColor = .clear
-        host.view.frame = CGRect(origin: .zero, size: contentSize)
-        scrollView.addSubview(host.view)
+        host.view.isMultipleTouchEnabled = true
+
+        let contentRoot = PinchPassthroughContentView(frame: CGRect(origin: .zero, size: contentSize))
+        contentRoot.isMultipleTouchEnabled = true
+        contentRoot.hostingView = host.view
+        contentRoot.addSubview(host.view)
+        host.view.frame = contentRoot.bounds
+        host.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        scrollView.addSubview(contentRoot)
         scrollView.contentSize = contentSize
 
         context.coordinator.host = host
+        context.coordinator.contentRoot = contentRoot
         context.coordinator.contentStamp = contentStamp
         context.coordinator.maxZoom = maxScale
         context.coordinator.doubleTapZoomScale = doubleTapZoomScale
@@ -108,7 +138,9 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         context.coordinator.nextSwipeCreatesPage = nextSwipeCreatesPage
         context.coordinator.atFirstPage = atFirstPage
         context.coordinator.pagePanGesture = pagePan
+        context.coordinator.canvasTapGesture = canvasTap
         context.coordinator.blocksPageGestures = blocksPageGestures
+        context.coordinator.onPageFingerTap = onPageFingerTap
 
         DispatchQueue.main.async {
             context.coordinator.configureInitialDisplayIfNeeded(scrollView)
@@ -124,7 +156,15 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         context.coordinator.nextSwipeCreatesPage = nextSwipeCreatesPage
         context.coordinator.atFirstPage = atFirstPage
         context.coordinator.blocksPageGestures = blocksPageGestures
-        scrollView.isScrollEnabled = !blocksPageGestures
+        context.coordinator.onPageFingerTap = onPageFingerTap
+        context.coordinator.canvasTapGesture?.isEnabled = onPageFingerTap != nil
+        // IMPORTANT: never set `scrollView.isScrollEnabled = false` based
+        // on `blocksPageGestures`. That flag also disables the scroll
+        // view's built-in pinch / double-tap zoom recognizers, which is
+        // the "can't zoom in after importing an image" bug. We suppress
+        // only the horizontal page-swipe gesture (handled surgically in
+        // `gestureRecognizerShouldBegin(_:)`) so the user can still
+        // pinch-zoom freely with an overlay selected.
 
         if context.coordinator.contentStamp != contentStamp {
             context.coordinator.host?.rootView = content()
@@ -134,7 +174,9 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         if context.coordinator.contentSize != contentSize {
             scrollView.zoomScale = 1.0
             context.coordinator.resetInitialFillZoom()
-            context.coordinator.host?.view.frame = CGRect(origin: .zero, size: contentSize)
+            context.coordinator.contentRoot?.frame = CGRect(origin: .zero, size: contentSize)
+            context.coordinator.contentRoot?.hostingView = context.coordinator.host?.view
+            context.coordinator.host?.view.frame = context.coordinator.contentRoot?.bounds ?? CGRect(origin: .zero, size: contentSize)
             scrollView.contentSize = contentSize
             context.coordinator.contentSize = contentSize
             context.coordinator.host?.rootView = content()
@@ -152,6 +194,7 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
 
     final class Coordinator: NSObject, UIScrollViewDelegate, UIGestureRecognizerDelegate {
         var host: UIHostingController<Content>?
+        weak var contentRoot: PinchPassthroughContentView?
         var contentSize: CGSize = .zero
         var contentStamp: Int = 0
         var maxZoom: CGFloat = 8.0
@@ -162,7 +205,9 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         var nextSwipeCreatesPage: Bool = false
         var atFirstPage: Bool = false
         var blocksPageGestures: Bool = false
+        var onPageFingerTap: ((CGPoint?) -> Void)?
         weak var pagePanGesture: UIPanGestureRecognizer?
+        weak var canvasTapGesture: UITapGestureRecognizer?
         private var isSlidingPage = false
         private var didFireBoundaryHaptic = false
         private var didConfigureInitialDisplay = false
@@ -172,7 +217,7 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         private let minLayoutHeight: CGFloat = 150
 
         func viewForZooming(in scrollView: UIScrollView) -> UIView? {
-            host?.view
+            contentRoot ?? host?.view
         }
 
         func scrollViewDidZoom(_ scrollView: UIScrollView) {
@@ -204,6 +249,23 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
             recenter(scrollView)
         }
 
+        @objc func handleCanvasFingerTap(_ gesture: UITapGestureRecognizer) {
+            guard gesture.state == .ended,
+                  let onPageFingerTap,
+                  let scrollView = gesture.view as? UIScrollView,
+                  let hostView = host?.view else { return }
+
+            let location = gesture.location(in: scrollView)
+            let contentView = contentRoot ?? hostView
+            let pageFrame = contentView.convert(contentView.bounds, to: scrollView)
+            if !pageFrame.contains(location) {
+                onPageFingerTap(nil)
+                return
+            }
+            let local = scrollView.convert(location, to: contentView)
+            onPageFingerTap(local)
+        }
+
         @objc func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
             guard let scrollView = gesture.view as? UIScrollView else { return }
             let location = gesture.location(in: scrollView)
@@ -222,7 +284,7 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
 
         @objc func handlePagePan(_ sender: UIPanGestureRecognizer) {
             guard let scrollView = sender.view as? UIScrollView,
-                  let pageView = host?.view,
+                  let pageView = contentRoot ?? host?.view,
                   scrollView.zoomScale <= 1.08 else {
                 resetPageSlide(animated: true)
                 return
@@ -320,16 +382,22 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         }
 
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            if blocksPageGestures { return false }
-
-            guard gestureRecognizer === pagePanGesture,
-                  let pan = gestureRecognizer as? UIPanGestureRecognizer,
-                  let scrollView = pan.view as? UIScrollView else {
-                return true
+            // Only the horizontal page-swipe pan is suppressed while an
+            // overlay is selected. Double-tap zoom (the other recognizer
+            // delegated to this Coordinator) stays live; the scroll
+            // view's built-in pinch is unaffected because it isn't
+            // delegated through here.
+            if gestureRecognizer === pagePanGesture {
+                if blocksPageGestures { return false }
+                guard let pan = gestureRecognizer as? UIPanGestureRecognizer,
+                      let scrollView = pan.view as? UIScrollView else {
+                    return true
+                }
+                guard scrollView.zoomScale <= 1.08 else { return false }
+                let velocity = pan.velocity(in: scrollView)
+                return abs(velocity.x) > abs(velocity.y) * 1.35
             }
-            guard scrollView.zoomScale <= 1.08 else { return false }
-            let velocity = pan.velocity(in: scrollView)
-            return abs(velocity.x) > abs(velocity.y) * 1.35
+            return true
         }
 
         func updateZoomLimits(_ scrollView: UIScrollView) {
@@ -382,7 +450,7 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         }
 
         func recenter(_ scrollView: UIScrollView) {
-            guard let view = host?.view else { return }
+            guard let view = contentRoot ?? host?.view else { return }
             let zoomedWidth = view.frame.width
             let zoomedHeight = view.frame.height
             let minVerticalMargin: CGFloat = 24
@@ -428,7 +496,7 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         }
 
         private func resetPageSlide(animated: Bool) {
-            guard let pageView = host?.view else { return }
+            guard let pageView = contentRoot ?? host?.view else { return }
             let changes = { pageView.transform = .identity }
             if animated {
                 UIView.animate(withDuration: 0.18, delay: 0, options: [.curveEaseOut], animations: changes)
@@ -445,5 +513,45 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
             }
             return nil
         }
+    }
+}
+
+/// Host wrapper for the SwiftUI page card. Yields finger / multi-touch
+/// sequences to the outer `UIScrollView` so pinch-to-zoom is never
+/// swallowed by the `UIHostingController` subtree, and passes through
+/// taps on visually empty regions of the page card.
+final class PinchPassthroughContentView: UIView {
+    /// The `UIHostingController` root — when every SwiftUI child is
+    /// non-interactive (normal canvas mode), UIKit still returns this
+    /// view from `hitTest`, which prevents the scroll view's pinch
+    /// recognizer from tracking both fingers. We yield to the scroll
+    /// view instead.
+    weak var hostingView: UIView?
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        if hit === self { return nil }
+
+        // When every SwiftUI child is non-interactive, UIKit returns the
+        // hosting root. Yield finger touches to the scroll view for pinch,
+        // but still route Apple Pencil to the canvas beneath.
+        if hit === hostingView, let hostingView {
+            if let canvas = findCanvas(in: hostingView) {
+                let local = convert(point, to: canvas)
+                if let canvasHit = canvas.hitTest(local, with: event) {
+                    return canvasHit
+                }
+            }
+            return nil
+        }
+        return hit
+    }
+
+    private func findCanvas(in view: UIView) -> FingerPassThroughPKCanvasView? {
+        if let canvas = view as? FingerPassThroughPKCanvasView { return canvas }
+        for sub in view.subviews {
+            if let canvas = findCanvas(in: sub) { return canvas }
+        }
+        return nil
     }
 }

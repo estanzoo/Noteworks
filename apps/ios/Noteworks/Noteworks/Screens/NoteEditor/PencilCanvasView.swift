@@ -50,15 +50,19 @@ final class FingerPassThroughPKCanvasView: PKCanvasView {
     /// a real iPad with a paired Pencil.
     private func shouldPassThrough(event: UIEvent?) -> Bool {
         guard passesFingerTouchesThrough else { return false }
-        guard let event,
-              let touches = event.allTouches,
-              !touches.isEmpty else {
-            return false
-        }
-        // If any active touch is from a Pencil, the canvas owns this
-        // event sequence — even if some companion touches are fingers
-        // (palm rest, etc.).
+
+        let touches = event?.allTouches ?? []
+        // Always yield multi-finger sequences to the outer scroll view.
+        if touches.count >= 2 { return true }
+
+        // Ambiguous probe (nil event, hover, scroll-view sniff) — keep
+        // the canvas in the hit-test chain so PencilKit receives `.began`.
+        if touches.isEmpty { return false }
+
         if touches.contains(where: { $0.type == .pencil }) { return false }
+
+        let drawingState = drawingGestureRecognizer.state
+        if drawingState == .began || drawingState == .changed { return false }
         return true
     }
 
@@ -68,11 +72,24 @@ final class FingerPassThroughPKCanvasView: PKCanvasView {
             NSNumber(value: UITouch.TouchType.direct.rawValue),
             NSNumber(value: UITouch.TouchType.pencil.rawValue)
         ]
+
+        isMultipleTouchEnabled = true
+
         if passesFingerTouchesThrough {
             drawingGestureRecognizer.allowedTouchTypes = [pencil]
         } else {
             drawingGestureRecognizer.allowedTouchTypes = fingerAndPencil
         }
+
+        // PKCanvasView inherits UIScrollView's pan/pinch recognizers.
+        // The outer ZoomablePageScrollView owns page zoom.
+        pinchGestureRecognizer?.isEnabled = false
+        panGestureRecognizer.isEnabled = false
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        applyTouchRoutingPolicy()
     }
 }
 
@@ -94,6 +111,11 @@ struct PencilCanvasView: UIViewRepresentable {
     /// to the overlay layer below (text / image / shape tools).
     var isDrawingEnabled: Bool = true
 
+    /// When `false`, Apple Pencil strokes are suppressed while the view
+    /// stays in the hit-test chain so finger pass-through / page zoom keep
+    /// working (image / text / shape tools).
+    var allowsPencilDrawing: Bool = true
+
     /// Finger taps reach overlays under the canvas; Pencil still draws here.
     var passesFingerTouchesThrough: Bool = false
 
@@ -112,13 +134,13 @@ struct PencilCanvasView: UIViewRepresentable {
         canvasView.drawingPolicy = drawingPolicy
         canvasView.backgroundColor = .clear
         canvasView.isOpaque = false
+        canvasView.isMultipleTouchEnabled = true
         canvasView.drawing = drawing
         canvasView.tool = tool
         canvasView.delegate = context.coordinator
         canvasView.isUserInteractionEnabled = isDrawingEnabled
+        canvasView.drawingGestureRecognizer.isEnabled = allowsPencilDrawing
 
-        canvasView.pinchGestureRecognizer?.isEnabled = false
-        canvasView.panGestureRecognizer.isEnabled = false
         canvasView.minimumZoomScale = 1
         canvasView.maximumZoomScale = 1
         canvasView.bouncesZoom = false
@@ -143,6 +165,9 @@ struct PencilCanvasView: UIViewRepresentable {
         }
         if canvasView.isUserInteractionEnabled != isDrawingEnabled {
             canvasView.isUserInteractionEnabled = isDrawingEnabled
+        }
+        if canvasView.drawingGestureRecognizer.isEnabled != allowsPencilDrawing {
+            canvasView.drawingGestureRecognizer.isEnabled = allowsPencilDrawing
         }
         canvasView.tool = tool
 
