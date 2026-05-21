@@ -481,6 +481,7 @@ final class NoteEditorViewModel: ObservableObject {
     var noteId: String?
 
     private weak var store: NotesStore?
+    private var creditsStore: CreditsStore?
     private var hasLoaded = false
     /// First drawing assignment after `attach` is the persisted one — we
     /// don't want to re-write what we just read.
@@ -604,10 +605,34 @@ final class NoteEditorViewModel: ObservableObject {
     /// canvas. Use `switchActiveNote(_:)` to flip to a different note
     /// inside the same editor session (e.g. tab switch); that path
     /// flushes any pending save first.
-    func attach(store: NotesStore, noteId: String?) {
+    func attach(store: NotesStore, noteId: String?, creditsStore: CreditsStore? = nil) {
         self.store = store
+        if let creditsStore {
+            self.creditsStore = creditsStore
+        }
         if hasLoaded && self.noteId == noteId { return }
         loadNote(noteId)
+    }
+
+    var creditBalance: Int {
+        creditsStore?.balance ?? 0
+    }
+
+    func estimatedGapDetectionCredits(currentNote: Note?) -> Int {
+        let ownNote = gapSelectedOwnNoteId.flatMap { id in store?.note(id: id) }
+            ?? currentNote
+            ?? noteId.flatMap { store?.note(id: $0) }
+        let pages = ownNote?.pageSettings.count ?? totalPages
+        return CreditPricing.gapDetection(
+            yourNotePages: pages,
+            peerNoteCount: selectedGapSourceIds.count,
+            classMaterialCount: gapClassMaterialNames.count
+        )
+    }
+
+    var estimatedSmartOrganizationCredits: Int {
+        let pages = noteId.flatMap { store?.note(id: $0) }?.pageSettings.count ?? totalPages
+        return CreditPricing.smartOrganization(pageCount: pages)
     }
 
     /// Switch the editor to a different open tab. Flushes any pending
@@ -643,7 +668,11 @@ final class NoteEditorViewModel: ObservableObject {
         }
 
         noteTitle = note.title
-        subject = note.subject
+        let resolved = NotesStore.resolvedBubbleSubject(note.subject)
+        subject = resolved
+        if note.subject?.caseInsensitiveCompare(resolved) != .orderedSame {
+            store.updateNote(id: note.id, subject: .set(resolved))
+        }
         bookmarked = note.bookmarked
         totalPages = max(1, note.pageSettings.count)
         currentPage = max(1, min(note.currentPage, totalPages))
@@ -695,15 +724,13 @@ final class NoteEditorViewModel: ObservableObject {
         store.updateNote(id: id, title: newTitle)
     }
 
-    /// Move the note between bubbles (or to the Unnamed bucket when nil).
+    /// Move the note between bubbles. Nil / legacy orphan names file into
+    /// `Untitled Bubble`.
     func setSubject(_ newSubject: String?) {
-        subject = newSubject
+        let resolved = NotesStore.resolvedBubbleSubject(newSubject)
+        subject = resolved
         guard hasLoaded, let id = noteId, let store else { return }
-        if let newSubject {
-            store.updateNote(id: id, subject: .set(newSubject))
-        } else {
-            store.updateNote(id: id, subject: .clear)
-        }
+        store.updateNote(id: id, subject: .set(resolved))
     }
 
     // MARK: - Page navigation
@@ -1289,6 +1316,28 @@ final class NoteEditorViewModel: ObservableObject {
             return
         }
 
+        let cost = estimatedGapDetectionCredits(currentNote: sourceNote)
+        guard let creditsStore else {
+            gapDetectionError = "Credits are not available right now."
+            flashStatus("Credits unavailable")
+            return
+        }
+        guard creditsStore.canAfford(cost) else {
+            gapDetectionError = creditsStore.insufficientCreditsMessage
+            flashStatus("Not enough credits")
+            return
+        }
+        guard creditsStore.spend(
+            cost,
+            feature: .gapDetection,
+            label: "Gap Detection",
+            detail: displayTitle(sourceNote)
+        ) else {
+            gapDetectionError = creditsStore.insufficientCreditsMessage
+            flashStatus("Not enough credits")
+            return
+        }
+
         aiEnhancementNotice = ""
         gapDetectionError = nil
         gapDetectionResponse = nil
@@ -1334,6 +1383,33 @@ final class NoteEditorViewModel: ObservableObject {
             aiEnhancementNotice = Self.aiBusyMessage
             aiEnhancementPanel = .taskStatus
             flashStatus("Gap Detection is already running")
+            return
+        }
+        guard let store else {
+            aiEnhancementNotice = "The note store is not ready yet."
+            flashStatus("Smart Organization unavailable")
+            return
+        }
+        let cost = estimatedSmartOrganizationCredits
+        guard let creditsStore else {
+            aiEnhancementNotice = "Credits are not available right now."
+            flashStatus("Credits unavailable")
+            return
+        }
+        guard creditsStore.canAfford(cost) else {
+            aiEnhancementNotice = creditsStore.insufficientCreditsMessage
+            flashStatus("Not enough credits")
+            return
+        }
+        let noteTitle = noteId.flatMap { store.note(id: $0) }.map(displayTitle) ?? "Current note"
+        guard creditsStore.spend(
+            cost,
+            feature: .smartOrganization,
+            label: "Smart Organization",
+            detail: noteTitle
+        ) else {
+            aiEnhancementNotice = creditsStore.insufficientCreditsMessage
+            flashStatus("Not enough credits")
             return
         }
         aiEnhancementPanel = .smartOrganization

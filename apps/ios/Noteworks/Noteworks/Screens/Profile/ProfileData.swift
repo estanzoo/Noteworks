@@ -113,7 +113,7 @@ extension Profile {
             renewsOn: ""
         ),
         credits: Credits(
-            balance: 0,
+            balance: 120,
             history: [],
             usage: []
         ),

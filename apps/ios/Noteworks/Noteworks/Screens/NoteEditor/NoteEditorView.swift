@@ -159,6 +159,7 @@ struct NoteEditorView: View {
                 if viewModel.showGapDetectionPopup {
                     GapDetectionPopup(
                         viewModel: viewModel,
+                        creditsStore: appState.creditsStore,
                         currentNote: currentEditorNote,
                         notes: store.notes,
                         accessToken: appState.accessToken ?? "",
@@ -245,7 +246,7 @@ struct NoteEditorView: View {
             if let initialId = noteId {
                 store.openNoteInEditor(initialId)
             }
-            viewModel.attach(store: store, noteId: store.activeOpenNoteId ?? noteId)
+            viewModel.attach(store: store, noteId: store.activeOpenNoteId ?? noteId, creditsStore: appState.creditsStore)
             selectedOverlayId = nil
             editingOverlayId = nil
             // Tell MainTabView to retract its floating Home/Library/
@@ -562,7 +563,7 @@ struct NoteEditorView: View {
     private func dropdownView(for panel: NoteEditorPanel) -> some View {
         switch panel {
         case .ai:
-            AIEnhancementsDropdown(viewModel: viewModel) {
+            AIEnhancementsDropdown(viewModel: viewModel, creditsStore: appState.creditsStore) {
                 openPanel = nil
                 viewModel.closeAIEnhancements()
             }
@@ -737,8 +738,8 @@ struct NoteEditorView: View {
     /// below the title) lets the header row collapse to a single
     /// icon-button-tall band, which is the single biggest contributor to
     /// chrome vertical space. The pill always shows something so the
-    /// chrome doesn't look unbalanced — falls back to "Unnamed" when no
-    /// subject and no tag are set.
+    /// chrome doesn't look unbalanced — falls back to Untitled Bubble when
+    /// no subject is set.
     private var titleBlock: some View {
         HStack(spacing: 8) {
             Spacer(minLength: 0)
@@ -777,8 +778,7 @@ struct NoteEditorView: View {
     }
 
     private func subjectPillLabel() -> String {
-        if let subject = viewModel.subject, !subject.isEmpty { return subject }
-        return "Unnamed"
+        NotesStore.resolvedBubbleSubject(viewModel.subject)
     }
 
     // MARK: - Tool strip row (chrome bottom half)

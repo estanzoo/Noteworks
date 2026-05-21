@@ -7,7 +7,8 @@
 //  L6904–L7030 exactly: a bubble is just a string name, and a note carries a
 //  single `subject: String?` that links it to one bubble. Renaming a bubble
 //  bulk-rewrites those subjects; deleting one drops affected notes into the
-//  Unnamed bucket.
+//  Unnamed bucket — orphan notes file into `initialGuestBubbleName`
+//  ("Untitled Bubble") instead.
 //
 //  This is local-first: the snapshot is persisted to
 //  `Documents/notes-store.json` (debounced) and per-note PKDrawing bytes live
@@ -311,8 +312,8 @@ struct Note: Codable, Identifiable, Equatable, Hashable {
     let id: String
     var title: String
     /// The bubble the note belongs to. Single string, optional — JSX
-    /// `note.subject` semantics (L23–L31). `nil` means the note sits in the
-    /// "Unnamed" bucket.
+    /// `note.subject` semantics (L23–L31). Empty / legacy reserved names
+    /// are treated as `Untitled Bubble` at save time.
     var subject: String?
     /// Backend course linkage. New notes inherit these from their bubble.
     var courseId: String?
@@ -411,21 +412,15 @@ extension Note {
     /// Short label shown in the upper-right pill of library note cards
     /// (and any other place we need a one-glance "where does this note
     /// live" cue). Every note belongs to a bubble, so when one is set we
-    /// surface its name — that's the source of truth for the note. Only
-    /// notes in the **Unnamed** bucket fall back to the explicit `tag`
-    /// (e.g. "Draft", "Public"), so a fresh draft on the launchpad still
-    /// reads as a draft until the user files it into a bubble.
+    /// surface its name — that's the source of truth for the note. Notes
+    /// without a subject are shown as `Untitled Bubble`.
     var displayBadge: String? {
         if let trimmedSubject = subject?.trimmingCharacters(in: .whitespacesAndNewlines),
            !trimmedSubject.isEmpty,
-           !NotesStore.isReservedName(trimmedSubject) {
+           !NotesStore.isLegacyOrphanSubject(trimmedSubject) {
             return trimmedSubject
         }
-        if let trimmedTag = tag?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !trimmedTag.isEmpty {
-            return trimmedTag
-        }
-        return nil
+        return NotesStore.initialGuestBubbleName
     }
 }
 
@@ -485,12 +480,14 @@ final class NotesStore: ObservableObject {
 
     // MARK: - Reserved names (match JSX L7002–L7004)
 
+    /// Legacy virtual bucket labels — blocked as user-created bubble names
+    /// and remapped to `initialGuestBubbleName` on load.
     nonisolated static let reservedBubbleNames: Set<String> = ["unnamed", "uncategorized"]
 
     /// Sentinel user id for Welcome → "Skip, set up later" browsing.
     nonisolated static let guestUserId = "guest"
 
-    /// Fresh guest Home always opens with this single centred bubble.
+    /// Default Home bubble. Every note without an explicit subject lands here.
     nonisolated static let initialGuestBubbleName = "Untitled Bubble"
 
     // MARK: - Dependencies
@@ -527,6 +524,8 @@ final class NotesStore: ObservableObject {
                 : snapshot.bubbles
             notes = snapshot.notes
             syncBubbleNamesFromBubbles()
+            reconcileOrphanNotes()
+            ensureDefaultBubbleExists()
         }
         activeUserId = userId
         isReady = true
@@ -724,20 +723,27 @@ final class NotesStore: ObservableObject {
         bubbles = result.map { name in
             bubble(named: name) ?? NoteBubble(name: name, courseCode: name)
         }
+        if bubbles.isEmpty {
+            bubbles = [
+                NoteBubble(name: Self.initialGuestBubbleName, courseCode: Self.initialGuestBubbleName)
+            ]
+        }
         syncBubbleNamesFromBubbles()
+        reconcileOrphanNotes()
         saveDebounced()
     }
 
-    /// Removes a bubble and sets matching notes' `subject` to nil so they
-    /// fall into the Unnamed bucket (mirrors JSX `deleteBubble` L7026–L7030).
+    /// Removes a bubble and moves matching notes into `Untitled Bubble`.
     func deleteBubble(name: String) {
+        guard name.caseInsensitiveCompare(Self.initialGuestBubbleName) != .orderedSame else { return }
+        ensureUntitledBubbleListed()
+        let fallback = Self.initialGuestBubbleName
         bubbles.removeAll { $0.name.caseInsensitiveCompare(name) == .orderedSame }
         syncBubbleNamesFromBubbles()
         for idx in notes.indices {
             if notes[idx].subject?.caseInsensitiveCompare(name) == .orderedSame {
-                notes[idx].subject = nil
-                notes[idx].courseId = nil
-                notes[idx].courseCode = nil
+                notes[idx].subject = fallback
+                notes[idx].courseCode = notes[idx].courseCode ?? fallback
                 notes[idx].updatedAt = Date()
             }
         }
@@ -779,14 +785,16 @@ final class NotesStore: ObservableObject {
     /// navigate straight into the editor.
     @discardableResult
     func createDraftNote(subject: String? = nil, title: String? = nil) -> Note {
+        ensureUntitledBubbleListed()
         let now = Date()
-        let linkedBubble = bubble(named: subject)
+        let resolvedSubject = Self.resolvedBubbleSubject(subject)
+        let linkedBubble = bubble(named: resolvedSubject)
         let note = Note(
             id: UUID().uuidString,
             title: title ?? "Untitled Note",
-            subject: subject,
+            subject: resolvedSubject,
             courseId: linkedBubble?.courseId,
-            courseCode: linkedBubble?.courseCode ?? subject,
+            courseCode: linkedBubble?.courseCode ?? resolvedSubject,
             tag: "Draft",
             sharedBy: nil,
             pageCount: 1,
@@ -817,14 +825,21 @@ final class NotesStore: ObservableObject {
         switch subject {
         case .keep: break
         case .clear:
-            notes[idx].subject = nil
-            notes[idx].courseId = nil
-            notes[idx].courseCode = nil
-        case .set(let value):
-            notes[idx].subject = value
-            if let linkedBubble = bubble(named: value) {
+            ensureUntitledBubbleListed()
+            let fallback = Self.initialGuestBubbleName
+            notes[idx].subject = fallback
+            if let linkedBubble = bubble(named: fallback) {
                 notes[idx].courseId = linkedBubble.courseId
-                notes[idx].courseCode = linkedBubble.courseCode ?? value
+                notes[idx].courseCode = linkedBubble.courseCode ?? fallback
+            } else {
+                notes[idx].courseCode = fallback
+            }
+        case .set(let value):
+            let resolved = Self.resolvedBubbleSubject(value)
+            notes[idx].subject = resolved
+            if let linkedBubble = bubble(named: resolved) {
+                notes[idx].courseId = linkedBubble.courseId
+                notes[idx].courseCode = linkedBubble.courseCode ?? resolved
             }
         }
         switch tag {
@@ -1206,24 +1221,86 @@ final class NotesStore: ObservableObject {
 
     // MARK: - Lookups for the UI
 
-    /// Live note count for a bubble. The "Unnamed"/"Uncategorized" name is
-    /// treated specially — it counts notes with `subject == nil`.
+    /// Live note count for a bubble. Orphan notes (nil / legacy reserved
+    /// names) roll up into `Untitled Bubble`.
     func noteCount(for bubbleName: String) -> Int {
-        if NotesStore.isReservedName(bubbleName) {
-            return notes.filter { ($0.subject ?? "").isEmpty }.count
+        if bubbleName.caseInsensitiveCompare(Self.initialGuestBubbleName) == .orderedSame {
+            return notes.filter { note in
+                Self.resolvedBubbleSubject(note.subject) == Self.initialGuestBubbleName
+            }.count
         }
         return notes.filter {
             $0.subject?.caseInsensitiveCompare(bubbleName) == .orderedSame
         }.count
     }
 
-    /// Whether any note currently has no subject — drives the auto-Unnamed
-    /// bubble on Home (mirrors JSX `Unnamed` rollup at L1426–L1435).
-    var hasUnnamedNotes: Bool {
-        notes.contains(where: { ($0.subject ?? "").isEmpty })
+    // MARK: - Helpers
+
+    /// Ensures the default `Untitled Bubble` exists when the store has no
+    /// bubbles at all (guest home / brand-new account).
+    func seedDefaultBubbleIfEmpty() {
+        guard bubbles.isEmpty else { return }
+        bubbles = [
+            NoteBubble(name: Self.initialGuestBubbleName, courseCode: Self.initialGuestBubbleName)
+        ]
+        syncBubbleNamesFromBubbles()
     }
 
-    // MARK: - Helpers
+    /// Adds `Untitled Bubble` to the bubble list when notes need a home for
+    /// orphan / default filing. Does not inject it onto course-only Home
+    /// screens until a note actually lands there.
+    func ensureUntitledBubbleListed() {
+        if bubbles.isEmpty {
+            seedDefaultBubbleIfEmpty()
+            return
+        }
+        if !bubbles.contains(where: {
+            $0.name.caseInsensitiveCompare(Self.initialGuestBubbleName) == .orderedSame
+        }) {
+            bubbles.append(
+                NoteBubble(name: Self.initialGuestBubbleName, courseCode: Self.initialGuestBubbleName)
+            )
+            syncBubbleNamesFromBubbles()
+        }
+    }
+
+    /// Rewrites legacy orphan subjects to `Untitled Bubble` after load.
+    private func reconcileOrphanNotes() {
+        let fallback = Self.initialGuestBubbleName
+        var changed = false
+        var needsUntitledBubble = false
+        for idx in notes.indices {
+            let resolved = Self.resolvedBubbleSubject(notes[idx].subject)
+            if resolved.caseInsensitiveCompare(fallback) == .orderedSame {
+                needsUntitledBubble = true
+            }
+            if notes[idx].subject?.caseInsensitiveCompare(resolved) != .orderedSame {
+                notes[idx].subject = resolved
+                notes[idx].courseCode = notes[idx].courseCode ?? fallback
+                notes[idx].updatedAt = Date()
+                changed = true
+            }
+        }
+        if needsUntitledBubble {
+            ensureUntitledBubbleListed()
+        } else {
+            seedDefaultBubbleIfEmpty()
+        }
+        if changed { saveDebounced() }
+    }
+
+    /// Maps nil, empty, or legacy virtual bucket names to the default bubble.
+    nonisolated static func resolvedBubbleSubject(_ subject: String?) -> String {
+        let trimmed = normalizeBubbleName(subject ?? "")
+        if trimmed.isEmpty || isLegacyOrphanSubject(trimmed) {
+            return initialGuestBubbleName
+        }
+        return trimmed
+    }
+
+    nonisolated static func isLegacyOrphanSubject(_ subject: String) -> Bool {
+        isReservedName(subject)
+    }
 
     private func bubbleNameTaken(_ name: String, excluding current: String? = nil) -> Bool {
         bubbleNames.contains { existing in
@@ -1338,7 +1415,7 @@ extension NotesStore {
             seedNote(title: "Lab Report", subject: "Chemistry", tag: "Course", sharedBy: nil, pageCount: 9, createdAt: date(daysAgo: 9)),
             seedNote(title: "Cell Biology", subject: "Biology", tag: nil, sharedBy: "Amy", pageCount: 16, createdAt: date(daysAgo: 1)),
             seedNote(title: "Organic Chem", subject: "Chemistry", tag: "Public", sharedBy: "Sam", pageCount: 34, createdAt: now),
-            seedNote(title: "Grammer Rules", subject: nil, tag: "Course", sharedBy: "Sam", pageCount: 11, createdAt: date(daysAgo: 13)),
+            seedNote(title: "Grammer Rules", subject: NotesStore.initialGuestBubbleName, tag: "Course", sharedBy: "Sam", pageCount: 11, createdAt: date(daysAgo: 13)),
             seedNote(title: "Perspective Drawing", subject: "Art", tag: nil, sharedBy: nil, pageCount: 6, createdAt: date(daysAgo: 15)),
             seedNote(title: "Physics Lab 3", subject: "Physics", tag: nil, sharedBy: nil, pageCount: 4, createdAt: date(daysAgo: 18)),
             seedNote(title: "Calc II Notes", subject: "Mathematics", tag: "Course", sharedBy: nil, pageCount: 12, createdAt: date(daysAgo: 21)),

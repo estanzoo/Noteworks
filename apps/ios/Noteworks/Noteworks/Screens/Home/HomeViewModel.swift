@@ -118,10 +118,6 @@ enum HomeBubbleLayout {
     @MainActor
     static func bubbles(from store: NotesStore, in containerSize: CGSize) -> [CourseBubble] {
         var names = store.bubbleNames
-        if store.hasUnnamedNotes,
-           !names.contains(where: { $0.caseInsensitiveCompare("Unnamed") == .orderedSame }) {
-            names.append("Unnamed")
-        }
 
         struct Raw { let name: String; let count: Int }
         let raws = names.map { Raw(name: $0, count: store.noteCount(for: $0)) }

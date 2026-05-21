@@ -56,6 +56,7 @@ struct ProfileSecondaryButton: View {
                 .padding(.horizontal, compact ? 12 : 14)
                 .padding(.vertical, compact ? 0 : 11)
                 .frame(minHeight: compact ? 34 : 46)
+                .frame(maxWidth: compact ? nil : .infinity)
                 .background(
                     RoundedRectangle(cornerRadius: compact ? 12 : 15, style: .continuous)
                         .fill(Color.white.opacity(0.42))
@@ -66,6 +67,7 @@ struct ProfileSecondaryButton: View {
                 )
         }
         .buttonStyle(PillPressStyle())
+        .frame(maxWidth: compact ? nil : .infinity)
     }
 }
 

@@ -16,7 +16,7 @@ struct CreditsSection: View {
             ProfileSectionHeader(
                 eyebrow: "Credits",
                 title: "Balance, history, and usage",
-                copy: "This behaves like a deeper settings pane instead of living expanded on the main profile page."
+                copy: ""
             )
 
             ViewThatFits(in: .horizontal) {

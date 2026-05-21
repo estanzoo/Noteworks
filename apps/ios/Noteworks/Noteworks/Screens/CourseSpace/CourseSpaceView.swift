@@ -45,11 +45,16 @@ struct CourseSpaceView: View {
     private var filteredNotes: [Note] {
         let base: [Note]
         if let subject = filterSubject {
-            if NotesStore.isReservedName(subject) {
-                base = store.notes.filter { ($0.subject ?? "").isEmpty }
+            let normalized = NotesStore.isLegacyOrphanSubject(subject)
+                ? NotesStore.initialGuestBubbleName
+                : subject
+            if normalized.caseInsensitiveCompare(NotesStore.initialGuestBubbleName) == .orderedSame {
+                base = store.notes.filter {
+                    NotesStore.resolvedBubbleSubject($0.subject) == NotesStore.initialGuestBubbleName
+                }
             } else {
                 base = store.notes.filter {
-                    $0.subject?.caseInsensitiveCompare(subject) == .orderedSame
+                    $0.subject?.caseInsensitiveCompare(normalized) == .orderedSame
                 }
             }
         } else {
@@ -394,8 +399,13 @@ struct CourseSpaceView: View {
             // + New card always available so an empty bubble can grow notes.
             LibraryNewCard(
                 subjectForDraft: {
-                    guard let subject = filterSubject else { return nil }
-                    return NotesStore.isReservedName(subject) ? nil : subject
+                    guard let subject = filterSubject else {
+                        return NotesStore.initialGuestBubbleName
+                    }
+                    if NotesStore.isLegacyOrphanSubject(subject) {
+                        return NotesStore.initialGuestBubbleName
+                    }
+                    return subject
                 }(),
                 onNavigateToNewNote: { id in
                     newNoteId = id
@@ -653,12 +663,8 @@ private struct LibraryNoteCard: View {
                             }
                     }
 
-                    // Corner pill: every note belongs to a bubble, so we
-                    // surface the bubble name here. Notes that live in
-                    // the Unnamed bucket (no subject) fall back to their
-                    // explicit tag — typically "Draft" for a fresh note —
-                    // so the launchpad still distinguishes brand-new
-                    // drafts from filed notes.
+                    // Corner pill: every note belongs to a bubble — orphan
+                    // notes roll up to Untitled Bubble.
                     if let badge = note.displayBadge {
                         Text(badge)
                             .font(.system(size: 12, weight: .semibold))

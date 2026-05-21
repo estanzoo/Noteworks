@@ -43,11 +43,13 @@ struct ProfileSectionHeader: View {
                 .tracking(-0.02 * 24)
                 .foregroundStyle(ProfileTheme.textPrimary)
 
-            Text(copy)
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(ProfileTheme.textSecondary)
-                .lineSpacing(4)
-                .fixedSize(horizontal: false, vertical: true)
+            if !copy.isEmpty {
+                Text(copy)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(ProfileTheme.textSecondary)
+                    .lineSpacing(4)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.bottom, 18)

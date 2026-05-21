@@ -107,6 +107,7 @@ struct AIEnhancementsPill: View {
 /// `smartConfirm` / `smartOrganization` sub-panels.
 struct AIEnhancementsDropdown: View {
     @ObservedObject var viewModel: NoteEditorViewModel
+    @ObservedObject var creditsStore: CreditsStore
     var dismiss: () -> Void
 
     var body: some View {
@@ -201,7 +202,11 @@ struct AIEnhancementsDropdown: View {
     // MARK: Smart Organization confirmation
 
     private var smartConfirmPanel: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let cost = viewModel.estimatedSmartOrganizationCredits
+        let balance = creditsStore.balance
+        let canConfirm = cost <= balance
+
+        return VStack(alignment: .leading, spacing: 12) {
             Text("Smart Organization")
                 .font(.system(size: 13, weight: .bold))
                 .foregroundStyle(NoteEditorTheme.textPrimary)
@@ -209,6 +214,22 @@ struct AIEnhancementsDropdown: View {
                 .font(.system(size: 12))
                 .foregroundStyle(NoteEditorTheme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Text("Estimated cost")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(NoteEditorTheme.textSecondary)
+                Spacer()
+                Text("\(cost) Credits")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(NoteEditorTheme.accent)
+            }
+
+            if !canConfirm {
+                Text("You only have \(balance) credits available right now.")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color(red: 0xC1/255, green: 0x60/255, blue: 0x60/255))
+            }
 
             HStack(spacing: 10) {
                 Button {
@@ -234,19 +255,22 @@ struct AIEnhancementsDropdown: View {
                 } label: {
                     Text("Confirm")
                         .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(canConfirm ? .white : NoteEditorTheme.textMuted)
                         .frame(maxWidth: .infinity, minHeight: 38)
                         .background(
                             RoundedRectangle(cornerRadius: 12)
                                 .fill(
-                                    LinearGradient(
-                                        colors: [NoteEditorTheme.accent, Color(red: 0x7C/255, green: 0xC4/255, blue: 0xE4/255)],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                    )
+                                    canConfirm
+                                        ? AnyShapeStyle(LinearGradient(
+                                            colors: [NoteEditorTheme.accent, Color(red: 0x7C/255, green: 0xC4/255, blue: 0xE4/255)],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        ))
+                                        : AnyShapeStyle(Color.black.opacity(0.06))
                                 )
                         )
                 }
+                .disabled(!canConfirm)
                 .buttonStyle(.plain)
             }
         }
@@ -457,6 +481,7 @@ private struct AIEnhancementProgressBar: View {
 
 struct GapDetectionPopup: View {
     @ObservedObject var viewModel: NoteEditorViewModel
+    @ObservedObject var creditsStore: CreditsStore
     let currentNote: Note?
     let notes: [Note]
     let accessToken: String
@@ -464,11 +489,15 @@ struct GapDetectionPopup: View {
 
     private var selectedSources: Int { viewModel.selectedGapSourceIds.count }
     private var materialCount: Int { viewModel.gapClassMaterialNames.count }
-    private var creditBalance: Int { 128 }
-    private var yourNotesPrice: Int { max(4, (selectedOwnNote?.pageSettings.count ?? currentNote?.pageSettings.count ?? 1) / 4 + 4) }
+    private var creditBalance: Int { creditsStore.balance }
+    private var estimatedCredits: Int { viewModel.estimatedGapDetectionCredits(currentNote: currentNote) }
+    private var yourNotesPrice: Int {
+        let pages = (viewModel.gapSelectedOwnNoteId.flatMap { id in notes.first { $0.id == id } }
+            ?? currentNote)?.pageSettings.count ?? 1
+        return max(4, pages / 4 + 4)
+    }
     private var otherNotesPrice: Int { selectedSources * 6 }
     private var classMaterialsPrice: Int { materialCount * 3 }
-    private var estimatedCredits: Int { yourNotesPrice + otherNotesPrice + classMaterialsPrice }
     private var canConfirm: Bool { estimatedCredits <= creditBalance }
 
     var body: some View {

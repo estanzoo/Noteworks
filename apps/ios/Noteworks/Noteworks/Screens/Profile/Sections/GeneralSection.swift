@@ -48,7 +48,7 @@ struct GeneralSection: View {
             ProfileSectionHeader(
                 eyebrow: "General",
                 title: "App-wide preferences and utilities",
-                copy: "Keep language, storage, referral, migration, and version tools together in one quieter settings group."
+                copy: ""
             )
 
             // Beta build: these sub-pages are not wired to real

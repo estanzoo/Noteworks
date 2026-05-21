@@ -122,7 +122,7 @@ struct HomeView: View {
                 }
             },
             message: { _ in
-                Text("Notes in this bubble will move to the Unnamed bucket.")
+                Text("Notes in this bubble will move to Untitled Bubble.")
             }
         )
         .onAppear {
@@ -158,7 +158,7 @@ struct HomeView: View {
     /// Mirrors `onCreateNote?.()` (JSX L1567) — creates a fresh draft note in
     /// the store and pushes the canvas onto the current navigation stack.
     private func handleAddNote() {
-        let note = store.createDraftNote(subject: nil)
+        let note = store.createDraftNote()
         newNoteRoute = NewNoteRoute(noteId: note.id)
     }
 
@@ -401,7 +401,7 @@ struct HomeView: View {
     }
 
     /// Bubbles whose names are managed by the system — they show up
-    /// when there are orphaned notes (`Unnamed`) or for a fresh empty
+    /// when there are orphaned notes or for a fresh empty
     /// account (`Untitled Bubble`). JSX L2276 hides the action menu
     /// on these, so we do the same.
     private static func isReservedBubbleName(_ name: String) -> Bool {

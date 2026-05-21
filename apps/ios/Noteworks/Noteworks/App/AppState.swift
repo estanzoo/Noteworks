@@ -65,6 +65,7 @@ final class AppState: ObservableObject {
     // MARK: - Dependencies
 
     let notesStore: NotesStore
+    let creditsStore: CreditsStore
     let authService: AuthServiceProtocol
     /// Shared bell-icon inbox. Lives at app level so every tab reads the
     /// same `items` array — previously each screen owned its own
@@ -84,10 +85,12 @@ final class AppState: ObservableObject {
 
     init(
         notesStore: NotesStore,
+        creditsStore: CreditsStore? = nil,
         authService: AuthServiceProtocol = SupabaseAuthService(),
         notifications: NotificationsStore? = nil
     ) {
         self.notesStore = notesStore
+        self.creditsStore = creditsStore ?? CreditsStore.shared
         self.authService = authService
         // `NotificationsStore` is `@MainActor`, so we can't use a
         // `NotificationsStore()` default on the parameter (the default
@@ -139,6 +142,7 @@ final class AppState: ObservableObject {
             currentUser = AuthenticatedUser(id: restored.userId, email: restored.email)
             isAuthenticated = true
             notesStore.activate(userId: restored.userId)
+            creditsStore.activate(userId: restored.userId)
             notifications.activate(userId: restored.userId)
 
             do {
@@ -178,6 +182,7 @@ final class AppState: ObservableObject {
         // signed-in user below.
         isGuestMode = false
         notesStore.activate(userId: result.userId)
+        creditsStore.activate(userId: result.userId)
         notifications.activate(userId: result.userId, freshSession: true)
     }
 
@@ -198,6 +203,7 @@ final class AppState: ObservableObject {
     func signOut() async {
         try? await authService.signOut()
         notesStore.deactivate()
+        creditsStore.deactivate()
         notifications.deactivate()
         clearSessionState()
     }
@@ -222,6 +228,7 @@ final class AppState: ObservableObject {
         let guestId = NotesStore.guestUserId
         let isFirstGuestVisit = !notesStore.hasPersistedSnapshot(forUserId: guestId)
         notesStore.activate(userId: guestId)
+        creditsStore.activate(userId: guestId)
 
         // First-time skip → one centred Untitled Bubble (JSX L2048). If a
         // returning guest somehow has an empty snapshot, heal it the same way.

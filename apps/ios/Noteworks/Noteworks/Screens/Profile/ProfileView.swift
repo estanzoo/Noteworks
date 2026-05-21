@@ -19,6 +19,7 @@ struct ProfileView: View {
     var previousTab: AppTab = .home
     @EnvironmentObject var appState: AppState
     @StateObject private var viewModel = ProfileViewModel()
+    @StateObject private var schoolSearch = SchoolSearchService()
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
@@ -67,14 +68,22 @@ struct ProfileView: View {
             viewModel.syncAboutDraftFromProfile()
         }
         .onAppear {
+            viewModel.applyCredits(from: appState.creditsStore)
             if let userProfile = appState.profile {
                 viewModel.hydrate(from: userProfile)
             }
+            schoolSearch.prefetchAll(accessToken: appState.accessToken)
         }
         .onChange(of: appState.profile) { _, newValue in
             if let newValue {
                 viewModel.hydrate(from: newValue)
             }
+        }
+        .onChange(of: appState.creditsStore.accountRevision) { _, _ in
+            viewModel.applyCredits(from: appState.creditsStore)
+        }
+        .onChange(of: appState.accessToken) { _, token in
+            schoolSearch.prefetchAll(accessToken: token)
         }
     }
 
@@ -268,7 +277,7 @@ struct ProfileView: View {
     private var detailPanel: some View {
         Group {
             switch viewModel.activeDetail {
-            case .about:        AboutYouSection(viewModel: viewModel)
+            case .about:        AboutYouSection(viewModel: viewModel, schoolSearch: schoolSearch)
             case .subscription: SubscriptionSection(viewModel: viewModel)
             case .credits:      CreditsSection(viewModel: viewModel)
             case .security:     SecuritySection(viewModel: viewModel)

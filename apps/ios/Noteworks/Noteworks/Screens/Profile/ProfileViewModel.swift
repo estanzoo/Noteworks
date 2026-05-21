@@ -210,7 +210,8 @@ final class ProfileViewModel: ObservableObject {
     /// `Profile` struct so the hero card, avatar, and About You section
     /// show real data instead of the JSX `PROFILE_INITIAL` placeholder.
     /// Subscription / credits / referral fields remain placeholder until a
-    /// future backend ships them.
+    /// future backend ships them — credits/tier sync from `CreditsStore`
+    /// via `applyCredits(from:)`.
     /// `bioFallbackIfMissing` is used only after an About-You save when the
     /// GET profile response still omits `bio` (older edge deploys or
     /// PostgREST omitting null keys) — without it `syncAboutDraftFromProfile`
@@ -244,6 +245,13 @@ final class ProfileViewModel: ObservableObject {
         syncAboutDraftFromProfile()
     }
 
+    /// Mirrors the live credit balance / tier from `CreditsStore` into the
+    /// profile UI (hero chip, Credits panel, Subscription row).
+    func applyCredits(from store: CreditsStore) {
+        profile.subscription = store.profileSubscription()
+        profile.credits = store.profileCredits()
+    }
+
     /// Converts the server-stored `year_of_graduation` into a "Year 1 / 2
     /// / 3 / 4" label the user actually picked during onboarding (we
     /// only persist the graduation year, so this back-derives study year
@@ -272,6 +280,7 @@ final class ProfileViewModel: ObservableObject {
     /// `submit-onboarding` as an upsert (per `docs/Frontend_Auth_and_Onboarding_Guide.md`)
     /// then refetches the profile via `AppState.refreshProfile()`.
     func saveAbout(using appState: AppState) async {
+        guard !aboutSchoolNeedsSelection else { return }
         let trimmedName = aboutDraft.name.trimmingCharacters(in: .whitespaces)
         let resolvedName = trimmedName.isEmpty ? profile.name : trimmedName
         let school = aboutDraft.school.trimmingCharacters(in: .whitespaces)
@@ -291,6 +300,7 @@ final class ProfileViewModel: ObservableObject {
             name: resolvedName,
             yearOfGraduation: yearOfGrad,
             schoolAffiliation: school.isEmpty ? (appState.profile?.schoolAffiliation ?? "") : school,
+            schoolId: aboutDraft.selectedSchoolId,
             schoolEmail: schoolEmail,
             courseCodes: courseCodes,
             interests: interests,
@@ -350,6 +360,14 @@ final class ProfileViewModel: ObservableObject {
     var linkedCount: Int { profile.security.linkedCount }
 
     var aboutHasChanges: Bool { aboutDraft.hasChanges(vs: profile) }
+
+    var aboutSchoolNeedsSelection: Bool {
+        aboutDraft.hasUnrecognisedSchool(vs: profile)
+    }
+
+    var canSaveAbout: Bool {
+        aboutHasChanges && !aboutSchoolNeedsSelection
+    }
 
     // MARK: - Profile edits
 
@@ -749,6 +767,7 @@ struct AboutDraft: Equatable {
     var name: String
     var bio: String
     var school: String
+    var selectedSchoolId: String?
     var major: String
     var grade: String
 
@@ -756,6 +775,7 @@ struct AboutDraft: Equatable {
         self.name   = profile.name
         self.bio    = profile.bio
         self.school = profile.school
+        self.selectedSchoolId = nil
         self.major  = profile.major
         self.grade  = profile.grade
     }
@@ -766,5 +786,16 @@ struct AboutDraft: Equatable {
             || school != profile.school
             || major  != profile.major
             || grade  != profile.grade
+    }
+
+    /// True when the user typed a school name but hasn't picked a row from
+    /// the autocomplete list (same rule as onboarding). Existing saved
+    /// schools are allowed until the user edits the field.
+    func hasUnrecognisedSchool(vs profile: Profile) -> Bool {
+        let trimmed = school.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return false }
+        let saved = profile.school.trimmingCharacters(in: .whitespaces)
+        if trimmed == saved && selectedSchoolId == nil { return false }
+        return selectedSchoolId == nil
     }
 }

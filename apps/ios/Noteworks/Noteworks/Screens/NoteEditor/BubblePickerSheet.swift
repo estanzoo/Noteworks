@@ -3,9 +3,8 @@
 //  Noteworks
 //
 //  Sheet shown when the user taps the subject pill in the canvas toolbar to
-//  move a note between bubbles. Lists every bubble plus an "Unnamed" entry
-//  (mirrors JSX `getNoteDisplayMeta` defaulting + LibraryFilter dropdown
-//  behavior). Selecting a row immediately commits via the closure.
+//  move a note between bubbles. Lists every bubble; legacy orphan notes
+//  appear under Untitled Bubble.
 //
 
 import SwiftUI
@@ -14,12 +13,16 @@ struct BubblePickerSheet: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var store: NotesStore
 
-    /// Currently selected subject (nil means "Unnamed").
+    /// Currently selected subject (nil / legacy names map to Untitled Bubble).
     let currentSubject: String?
-    /// Called with the new subject (nil for Unnamed) once the user picks.
-    let onSelect: (String?) -> Void
+    /// Called with the chosen bubble name once the user picks.
+    let onSelect: (String) -> Void
 
     @State private var showCreate = false
+
+    private var resolvedCurrentSubject: String {
+        NotesStore.resolvedBubbleSubject(currentSubject)
+    }
 
     private var bubbleOptions: [String] {
         store.bubbleNames.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
@@ -29,17 +32,14 @@ struct BubblePickerSheet: View {
         NavigationStack {
             List {
                 Section("Bubbles") {
-                    Button {
-                        commit(nil)
-                    } label: {
-                        row(label: "Unnamed", isSelected: currentSubject == nil)
-                    }
-
                     ForEach(bubbleOptions, id: \.self) { name in
                         Button {
                             commit(name)
                         } label: {
-                            row(label: name, isSelected: name.caseInsensitiveCompare(currentSubject ?? "") == .orderedSame)
+                            row(
+                                label: name,
+                                isSelected: name.caseInsensitiveCompare(resolvedCurrentSubject) == .orderedSame
+                            )
                         }
                     }
 
@@ -90,7 +90,7 @@ struct BubblePickerSheet: View {
         }
     }
 
-    private func commit(_ value: String?) {
+    private func commit(_ value: String) {
         onSelect(value)
         dismiss()
     }
