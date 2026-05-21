@@ -44,6 +44,18 @@ enum PasswordChangeStep {
     case request, reset
 }
 
+enum ProfileTextEditorField: String {
+    case name, bio, major
+
+    var label: String {
+        switch self {
+        case .name: return "Name"
+        case .bio: return "Bio"
+        case .major: return "Major"
+        }
+    }
+}
+
 enum MigrationStatus: String {
     case ready = "Ready"
     case queued = "Queued"
@@ -69,6 +81,12 @@ final class ProfileViewModel: ObservableObject {
     // About You draft state.
     @Published var aboutDraft: AboutDraft
     @Published var aboutSaved: Bool = false
+    @Published var profileTextEditor: ProfileTextEditorField?
+    @Published var profileTextEditorValue: String = ""
+    @Published var schoolEditorOpen: Bool = false
+    @Published var schoolQuery: String = ""
+    @Published var gradeEditorOpen: Bool = false
+    @Published var courseEditorOpen: Bool = false
 
     // Email change popup state.
     @Published var editingEmail: Bool = false
@@ -240,7 +258,7 @@ final class ProfileViewModel: ObservableObject {
         profile.school = userProfile.schoolAffiliation ?? ""
         profile.major = userProfile.major ?? ""
         if let year = userProfile.yearOfGraduation {
-            profile.grade = gradeLabel(for: year)
+            profile.grade = Self.gradeLabel(for: year, existing: profile.grade)
         }
         syncAboutDraftFromProfile()
     }
@@ -252,28 +270,43 @@ final class ProfileViewModel: ObservableObject {
         profile.credits = store.profileCredits()
     }
 
-    /// Converts the server-stored `year_of_graduation` into a "Year 1 / 2
-    /// / 3 / 4" label the user actually picked during onboarding (we
-    /// only persist the graduation year, so this back-derives study year
-    /// from `gradYear - currentYear`). Each school's program length
-    /// differs, so anything outside the standard 1–4 range gracefully
-    /// falls back to a friendly graduation-date string.
-    func gradeLabel(for graduationYear: Int) -> String {
-        // The onboarding "Not a student" path stores 2100 as a sentinel
-        // (see `OnboardingData.resolvedYearOfGraduation`).
-        if graduationYear >= 2100 { return "Not a student" }
+    /// Converts the server-stored `year_of_graduation` into a profile
+    /// grade label. Prefers the richer `PROFILE_GRADE_GROUPS` labels
+    /// when we can infer them from the graduation year.
+    static func gradeLabel(for graduationYear: Int, existing: String = "") -> String {
+        if graduationYear >= 2100 { return "Other" }
         let now = Calendar.current.component(.year, from: Date())
         let yearsAway = graduationYear - now
         switch yearsAway {
-        case 4: return "Year 1"
-        case 3: return "Year 2"
-        case 2: return "Year 3"
-        case 1: return "Year 4"
-        case 0: return "Final Year"
+        case 4: return "Freshman (Year 1)"
+        case 3: return "Sophomore (Year 2)"
+        case 2: return "Junior (Year 3)"
+        case 1: return "Senior (Year 4)"
+        case 0: return "Senior (Year 4)"
         default:
-            if yearsAway < 0 { return "Alumni · Class of \(graduationYear)" }
-            return "Year 1 · Graduates \(graduationYear)"
+            if yearsAway < 0 { return "Other" }
+            if !existing.isEmpty { return existing }
+            return "Freshman (Year 1)"
         }
+    }
+
+    /// Best-effort mapping from the About You grade picker back to the
+    /// integer `year_of_graduation` column the server understands.
+    static func yearOfGraduation(for grade: String, fallback: Int) -> Int {
+        if grade == "Other" { return 2100 }
+        let y = Calendar.current.component(.year, from: Date())
+        switch grade {
+        case "Freshman (Year 1)": return y + 4
+        case "Sophomore (Year 2)": return y + 3
+        case "Junior (Year 3)": return y + 2
+        case "Senior (Year 4)": return y + 1
+        case "Super Senior (Year 5+)": return y
+        default: return fallback
+        }
+    }
+
+    func gradeLabel(for graduationYear: Int) -> String {
+        Self.gradeLabel(for: graduationYear, existing: profile.grade)
     }
 
     /// Submitter for the "Save Changes" button in `AboutYouSection`. Reuses
@@ -287,7 +320,10 @@ final class ProfileViewModel: ObservableObject {
         let trimmedMajor = aboutDraft.major.trimmingCharacters(in: .whitespaces)
         let resolvedMajor: String? = trimmedMajor.isEmpty ? nil : trimmedMajor
         let trimmedBio = aboutDraft.bio.trimmingCharacters(in: .whitespacesAndNewlines)
-        let yearOfGrad = appState.profile?.yearOfGraduation ?? 2100
+        let yearOfGrad = Self.yearOfGraduation(
+            for: aboutDraft.grade,
+            fallback: appState.profile?.yearOfGraduation ?? 2100
+        )
         let schoolEmail = appState.profile?.schoolEmail ?? profile.email
         // Preserve whatever the server has for these arrays — the About-You
         // section doesn't edit them. Sending the existing values makes the
@@ -317,6 +353,7 @@ final class ProfileViewModel: ObservableObject {
             try await appState.authService.submitOnboarding(payload, accessToken: token)
             // Optimistic: hero + About You read `profile` before refresh returns.
             profile.bio = trimmedBio
+            profile.grade = aboutDraft.grade
             if let next = await appState.refreshProfile() {
                 hydrate(from: next, bioFallbackIfMissing: trimmedBio)
             } else {
@@ -390,6 +427,78 @@ final class ProfileViewModel: ObservableObject {
 
     func syncAboutDraftFromProfile() {
         aboutDraft = AboutDraft(from: profile)
+    }
+
+    // MARK: - About You editors
+
+    func openProfileTextEditor(_ field: ProfileTextEditorField) {
+        profileTextEditor = field
+        switch field {
+        case .name: profileTextEditorValue = aboutDraft.name
+        case .bio: profileTextEditorValue = aboutDraft.bio
+        case .major: profileTextEditorValue = aboutDraft.major
+        }
+    }
+
+    func closeProfileTextEditor() {
+        profileTextEditor = nil
+        profileTextEditorValue = ""
+    }
+
+    func saveProfileTextEditor() {
+        guard let field = profileTextEditor else { return }
+        aboutSaved = false
+        switch field {
+        case .name:
+            let trimmed = profileTextEditorValue.trimmingCharacters(in: .whitespaces)
+            aboutDraft.name = trimmed.isEmpty ? aboutDraft.name : profileTextEditorValue
+        case .bio:
+            aboutDraft.bio = profileTextEditorValue
+        case .major:
+            aboutDraft.major = profileTextEditorValue
+        }
+        closeProfileTextEditor()
+    }
+
+    func openSchoolEditor() {
+        schoolQuery = aboutDraft.school
+        gradeEditorOpen = false
+        schoolEditorOpen = true
+    }
+
+    func closeSchoolEditor() {
+        schoolEditorOpen = false
+    }
+
+    func selectSchool(_ school: SchoolResult) {
+        aboutSaved = false
+        aboutDraft.school = school.name
+        aboutDraft.selectedSchoolId = school.id
+        schoolQuery = school.name
+        schoolEditorOpen = false
+    }
+
+    func openGradeEditor() {
+        schoolEditorOpen = false
+        gradeEditorOpen = true
+    }
+
+    func closeGradeEditor() {
+        gradeEditorOpen = false
+    }
+
+    func selectGrade(_ grade: String) {
+        aboutSaved = false
+        aboutDraft.grade = grade
+        gradeEditorOpen = false
+    }
+
+    func openCourseEditor() {
+        courseEditorOpen = true
+    }
+
+    func closeCourseEditor() {
+        courseEditorOpen = false
     }
 
     // MARK: - Photo

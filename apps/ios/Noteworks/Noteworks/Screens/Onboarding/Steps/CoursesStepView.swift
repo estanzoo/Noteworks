@@ -10,15 +10,23 @@
 
 import SwiftUI
 
+enum CourseSetupPresentation {
+    case onboarding
+    case profileEdit
+}
+
 // MARK: - Step view
 
 struct CoursesStepView: View {
     @ObservedObject var data: OnboardingData
+    var presentation: CourseSetupPresentation = .onboarding
+    var initialBubbleLabels: [String] = []
     /// Called with the final list of bubble labels (already deduped /
     /// trimmed) once the user taps Continue.
     let onSave: ([String]) -> Void
     let onSkip: () -> Void
     let onBack: () -> Void
+    var onClose: (() -> Void)? = nil
 
     @State private var rows: [CourseDraft] = []
     @State private var displayMode: CourseDisplayMode = .code
@@ -30,6 +38,8 @@ struct CoursesStepView: View {
     @State private var showSkipConfirm = false
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    private var isProfileEdit: Bool { presentation == .profileEdit }
 
     // MARK: - Derived
 
@@ -94,14 +104,32 @@ struct CoursesStepView: View {
                 Spacer().frame(height: 80)
 
                 OnboardingProgress(current: 6, total: 6)
+                    .opacity(isProfileEdit ? 0 : 1)
+                    .frame(height: isProfileEdit ? 0 : nil)
+                    .clipped()
 
                 GlassCard {
                     VStack(alignment: .leading, spacing: 0) {
-                        HStack {
-                            OnboardingBackButton(action: onBack)
-                            Spacer()
+                        if isProfileEdit {
+                            HStack {
+                                Spacer()
+                                Button(action: { onClose?() }) {
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 14, weight: .bold))
+                                        .foregroundStyle(OnboardingTheme.textSecondary)
+                                        .frame(width: 38, height: 38)
+                                        .background(Circle().fill(Color.white.opacity(0.55)))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .padding(.bottom, 8)
+                        } else {
+                            HStack {
+                                OnboardingBackButton(action: onBack)
+                                Spacer()
+                            }
+                            .padding(.bottom, 8)
                         }
-                        .padding(.bottom, 8)
 
                         if showsSplitPreview {
                             HStack(alignment: .top, spacing: 20) {
@@ -176,7 +204,7 @@ struct CoursesStepView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("WELCOME TO NOTEWORKS")
+            Text(isProfileEdit ? "COURSE LIST" : "WELCOME TO NOTEWORKS")
                 .font(.system(size: 12, weight: .heavy))
                 .tracking(1.2)
                 .foregroundStyle(OnboardingTheme.accent)
@@ -260,25 +288,27 @@ struct CoursesStepView: View {
 
     private var bottomActions: some View {
         HStack(spacing: 12) {
-            Button(action: { showSkipConfirm = true }) {
-                Text("Skip for now")
-                    .font(.system(size: 14, weight: .heavy))
-                    .foregroundStyle(OnboardingTheme.textSecondary)
-                    .padding(.vertical, 12)
-                    .padding(.horizontal, 18)
-                    .background(Color.white.opacity(0.48))
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 16)
-                            .strokeBorder(OnboardingTheme.glassBorder, lineWidth: 1)
-                    }
+            if !isProfileEdit {
+                Button(action: { showSkipConfirm = true }) {
+                    Text("Skip for now")
+                        .font(.system(size: 14, weight: .heavy))
+                        .foregroundStyle(OnboardingTheme.textSecondary)
+                        .padding(.vertical, 12)
+                        .padding(.horizontal, 18)
+                        .background(Color.white.opacity(0.48))
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 16)
+                                .strokeBorder(OnboardingTheme.glassBorder, lineWidth: 1)
+                        }
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
 
             Spacer(minLength: 0)
 
             Button(action: handleContinue) {
-                Text("Continue")
+                Text(isProfileEdit ? "Save Course List" : "Continue")
                     .font(.system(size: 14, weight: .heavy))
                     .foregroundStyle(.white)
                     .padding(.vertical, 14)
@@ -392,6 +422,12 @@ struct CoursesStepView: View {
     /// the JSX fallback when there is nothing to pre-seed).
     private func primeRowsIfNeeded() {
         guard rows.isEmpty else { return }
+        if !initialBubbleLabels.isEmpty {
+            rows = initialBubbleLabels.map { label in
+                CourseDraft(code: "", name: label, noCode: true)
+            }
+            return
+        }
         rows = [CourseDraft.empty()]
     }
 

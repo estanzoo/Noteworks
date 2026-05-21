@@ -3,7 +3,7 @@
 //  Noteworks
 //
 //  Mirrors the "about" case in renderDetail() from
-//  others/noteworks-library(2).jsx L5996–L6022.
+//  others/NoteWorks_UI 4/noteworks-library.jsx L10678–L10771.
 //
 
 import SwiftUI
@@ -12,6 +12,7 @@ struct AboutYouSection: View {
     @ObservedObject var viewModel: ProfileViewModel
     @ObservedObject var schoolSearch: SchoolSearchService
     @EnvironmentObject var appState: AppState
+    @EnvironmentObject var notesStore: NotesStore
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -21,37 +22,68 @@ struct AboutYouSection: View {
                 copy: "Edit the identity that shows up across shared notes, community posts, and collaboration spaces. Changes update the profile card only after you save."
             )
 
-            ProfileField(
-                label: "Name",
-                value: Binding(
-                    get: { viewModel.aboutDraft.name },
-                    set: { viewModel.aboutDraft.name = $0; viewModel.aboutSaved = false }
-                ),
-                placeholder: "Your display name"
-            )
+            VStack(spacing: 10) {
+                ProfileAboutTextRow(
+                    label: "Name",
+                    value: viewModel.aboutDraft.name,
+                    multiline: false
+                ) {
+                    viewModel.openProfileTextEditor(.name)
+                }
 
-            ProfileField(
-                label: "Bio",
-                value: Binding(
-                    get: { viewModel.aboutDraft.bio },
-                    set: { viewModel.aboutDraft.bio = $0; viewModel.aboutSaved = false }
-                ),
-                placeholder: "Tell classmates what you're focused on this semester...",
-                multiline: true
-            )
+                ProfileAboutTextRow(
+                    label: "Bio",
+                    value: viewModel.aboutDraft.bio,
+                    multiline: true
+                ) {
+                    viewModel.openProfileTextEditor(.bio)
+                }
+            }
 
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .top, spacing: 12) {
-                    schoolField
-                    majorField
-                    gradeField
+                    ProfileAboutMetaRow(
+                        label: "School",
+                        value: viewModel.aboutDraft.school,
+                        onEdit: { viewModel.openSchoolEditor() }
+                    )
+                    ProfileAboutMetaRow(
+                        label: "Major",
+                        value: viewModel.aboutDraft.major,
+                        onEdit: { viewModel.openProfileTextEditor(.major) }
+                    )
+                    ProfileAboutMetaRow(
+                        label: "Grade",
+                        value: viewModel.aboutDraft.grade,
+                        onEdit: { viewModel.openGradeEditor() }
+                    )
                 }
-                VStack(alignment: .leading, spacing: 14) {
-                    schoolField
-                    majorField
-                    gradeField
+                VStack(spacing: 10) {
+                    ProfileAboutMetaRow(
+                        label: "School",
+                        value: viewModel.aboutDraft.school,
+                        onEdit: { viewModel.openSchoolEditor() }
+                    )
+                    ProfileAboutMetaRow(
+                        label: "Major",
+                        value: viewModel.aboutDraft.major,
+                        onEdit: { viewModel.openProfileTextEditor(.major) }
+                    )
+                    ProfileAboutMetaRow(
+                        label: "Grade",
+                        value: viewModel.aboutDraft.grade,
+                        onEdit: { viewModel.openGradeEditor() }
+                    )
                 }
             }
+
+            if viewModel.aboutSchoolNeedsSelection {
+                Text("Please pick a school from the list.")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(ProfileTheme.negative)
+            }
+
+            courseListRow
 
             HStack(alignment: .center, spacing: 16) {
                 Text(statusMessage)
@@ -70,73 +102,38 @@ struct AboutYouSection: View {
                 .frame(maxWidth: 180)
             }
         }
-        .onAppear {
-            if let token = appState.accessToken {
-                schoolSearch.prefetchAll(accessToken: token)
+    }
+
+    private var courseListRow: some View {
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Course List")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(ProfileTheme.textPrimary)
+
+                Text(courseListSummary)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(ProfileTheme.textSecondary)
+                    .lineSpacing(3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            ProfileSecondaryButton(title: "Edit Course List", compact: true) {
+                viewModel.openCourseEditor()
             }
         }
-        .onChange(of: appState.accessToken) { _, token in
-            schoolSearch.prefetchAll(accessToken: token)
+        .profileRowCard()
+    }
+
+    private var courseListSummary: String {
+        let labels = notesStore.bubbleNames.filter {
+            $0.caseInsensitiveCompare(NotesStore.initialGuestBubbleName) != .orderedSame
         }
-    }
-
-    private var schoolField: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            SchoolAutocompleteField(
-                schoolName: Binding(
-                    get: { viewModel.aboutDraft.school },
-                    set: {
-                        viewModel.aboutDraft.school = $0
-                        viewModel.aboutSaved = false
-                    }
-                ),
-                selectedSchoolId: Binding(
-                    get: { viewModel.aboutDraft.selectedSchoolId },
-                    set: {
-                        viewModel.aboutDraft.selectedSchoolId = $0
-                        viewModel.aboutSaved = false
-                    }
-                ),
-                disabled: false,
-                searchService: schoolSearch,
-                appearance: .profile,
-                label: "School",
-                placeholder: "Start typing your school name"
-            )
-
-            if viewModel.aboutSchoolNeedsSelection {
-                Text("Please pick a school from the list.")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(ProfileTheme.negative)
-            }
+        if labels.isEmpty {
+            return "No courses yet. Add courses to generate Home bubbles."
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var majorField: some View {
-        ProfileField(
-            label: "Major",
-            value: Binding(
-                get: { viewModel.aboutDraft.major },
-                set: { viewModel.aboutDraft.major = $0; viewModel.aboutSaved = false }
-            ),
-            placeholder: "Your major"
-        )
-    }
-
-    /// Grade is derived from onboarding (`year_of_graduation`); use the
-    /// same `ProfileField` chrome as School / Major so the column widths
-    /// and row heights line up in the horizontal `ViewThatFits` layout.
-    private var gradeField: some View {
-        ProfileField(
-            label: "Grade",
-            value: Binding(
-                get: { viewModel.profile.grade },
-                set: { _ in }
-            ),
-            placeholder: "Set during onboarding",
-            readOnly: true
-        )
+        return labels.joined(separator: " · ")
     }
 
     private var statusMessage: String {

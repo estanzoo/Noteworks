@@ -183,6 +183,50 @@ extension Profile {
 
 let LANGUAGE_OPTIONS: [String] = ["English", "简体中文", "日本語", "한국어"]
 
+// MARK: - Grade groups (Profile → About You)
+
+struct ProfileGradeGroup: Identifiable {
+    let id = UUID()
+    let label: String
+    let options: [String]
+}
+
+/// Mirrors `GRADE_GROUPS` from others/NoteWorks_UI 4/noteworks-library.jsx L209–L242.
+let PROFILE_GRADE_GROUPS: [ProfileGradeGroup] = [
+    ProfileGradeGroup(
+        label: "Undergraduate",
+        options: [
+            "Freshman (Year 1)",
+            "Sophomore (Year 2)",
+            "Junior (Year 3)",
+            "Senior (Year 4)",
+            "Super Senior (Year 5+)",
+        ]
+    ),
+    ProfileGradeGroup(
+        label: "Master Student",
+        options: [
+            "First-Year Master's Student",
+            "Second-Year Master's Student",
+        ]
+    ),
+    ProfileGradeGroup(
+        label: "PhD Student / Doctoral Student",
+        options: [
+            "First-Year PhD Student",
+            "Second-Year PhD Student",
+            "Third-Year PhD Student",
+            "Fourth-Year PhD Student",
+            "Fifth-Year PhD Student",
+            "Sixth-Year PhD Student or above",
+        ]
+    ),
+    ProfileGradeGroup(
+        label: "Other",
+        options: ["Other"]
+    ),
+]
+
 // MARK: - Helpers
 
 /// Mirrors `isAcademicEmail` from the JSX (L332–L341).

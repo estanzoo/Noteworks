@@ -57,6 +57,8 @@ struct ProfileView: View {
 
             FeedbackThanksPopup(viewModel: viewModel)
                 .animation(.easeOut(duration: 0.18), value: viewModel.feedbackPopup.open)
+
+            aboutYouPopups
         }
         .overlay { notificationsOverlay }
         .overlay { searchOverlay }
@@ -84,6 +86,32 @@ struct ProfileView: View {
         }
         .onChange(of: appState.accessToken) { _, token in
             schoolSearch.prefetchAll(accessToken: token)
+        }
+        .fullScreenCover(isPresented: $viewModel.courseEditorOpen) {
+            ProfileCourseEditorSheet(viewModel: viewModel)
+        }
+    }
+
+    @ViewBuilder
+    private var aboutYouPopups: some View {
+        if let field = viewModel.profileTextEditor {
+            ProfileTextEditPopup(
+                field: field,
+                value: $viewModel.profileTextEditorValue,
+                onClose: { viewModel.closeProfileTextEditor() },
+                onSave: { viewModel.saveProfileTextEditor() }
+            )
+            .transition(.opacity)
+        }
+
+        if viewModel.schoolEditorOpen {
+            ProfileSchoolSearchPopup(viewModel: viewModel, searchService: schoolSearch)
+                .transition(.opacity)
+        }
+
+        if viewModel.gradeEditorOpen {
+            ProfileGradeSelectPopup(viewModel: viewModel)
+                .transition(.opacity)
         }
     }
 
