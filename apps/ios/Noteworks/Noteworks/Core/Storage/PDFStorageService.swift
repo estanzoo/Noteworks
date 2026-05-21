@@ -47,13 +47,26 @@ final class PDFStorageService {
         note: Note,
         store: NotesStore,
         livePage: Int?,
-        liveDrawing: PKDrawing?
+        liveDrawing: PKDrawing?,
+        pageNumbers: [Int]? = nil
     ) -> Data {
         let pageCount = max(1, note.pageSettings.count)
+        let indices: [Int]
+        if let pageNumbers, !pageNumbers.isEmpty {
+            indices = pageNumbers
+                .filter { $0 >= 1 && $0 <= pageCount }
+                .sorted()
+        } else {
+            indices = Array(1...pageCount)
+        }
+        guard !indices.isEmpty else {
+            return exportDrawingToPDF(liveDrawing ?? PKDrawing())
+        }
+
         let renderer = UIGraphicsPDFRenderer(bounds: CGRect(origin: .zero, size: Self.pdfLogicalPageSize))
 
         return renderer.pdfData { pdfContext in
-            for pageIndex in 1...pageCount {
+            for pageIndex in indices {
                 let setting = (pageIndex <= note.pageSettings.count)
                     ? note.pageSettings[pageIndex - 1]
                     : NotePageSetting()

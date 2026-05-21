@@ -78,12 +78,19 @@ struct NoteEditorView: View {
     @State private var editingOverlayId: String? = nil
     @State private var showPhotoPicker = false
     @State private var photoSelection: PhotosPickerItem? = nil
+    @State private var showPageThumbnails = false
+    @State private var showSelectedPagesShare = false
+    @State private var selectedPagesShareData = Data()
+    @State private var isOverlayDragging = false
 
     /// True while an image / text / shape overlay is selected or being
-    /// inline-edited. Drives page-swipe suppression and the tap-outside
-    /// deselect layer that returns the canvas to its normal mode.
+    /// inline-edited, or actively dragged in Select mode.
     private var hasOverlaySelection: Bool {
-        selectedOverlayId != nil || editingOverlayId != nil
+        selectedOverlayId != nil || editingOverlayId != nil || isOverlayDragging
+    }
+
+    private var isSelectMode: Bool {
+        viewModel.activeTool.isObjectManipulationMode
     }
 
     var noteId: String?
@@ -159,6 +166,24 @@ struct NoteEditorView: View {
                     )
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
                     .zIndex(450)
+                }
+
+                if showPageThumbnails {
+                    PageThumbnailsModal(
+                        viewModel: viewModel,
+                        store: store,
+                        onClose: {
+                            showPageThumbnails = false
+                            viewModel.flashStatus("Page thumbnails closed")
+                        },
+                        onSharePages: { pages in
+                            selectedPagesShareData = viewModel.exportSelectedPagesPDF(store: store, pages: pages)
+                            showSelectedPagesShare = true
+                            viewModel.flashStatus("Preparing selected pages PDF")
+                        }
+                    )
+                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                    .zIndex(420)
                 }
 
                 if showCommunityUpload {
@@ -270,6 +295,12 @@ struct NoteEditorView: View {
                 filename: sharePDFFilename(title: viewModel.noteTitle)
             )
         }
+        .sheet(isPresented: $showSelectedPagesShare) {
+            ShareSheet(
+                data: selectedPagesShareData,
+                filename: sharePDFFilename(title: "\(viewModel.noteTitle) selected pages")
+            )
+        }
         .sheet(isPresented: $showSubjectPicker) {
             BubblePickerSheet(
                 currentSubject: viewModel.subject,
@@ -320,6 +351,14 @@ struct NoteEditorView: View {
             // PencilKit interaction for no reason.
             selectedOverlayId = nil
             editingOverlayId = nil
+        }
+        .onChange(of: viewModel.activeTool) { _, newTool in
+            // Leaving Select clears sticker selection so write tools don't
+            // inherit a half-selected overlay chrome.
+            if !newTool.isObjectManipulationMode {
+                selectedOverlayId = nil
+                editingOverlayId = nil
+            }
         }
     }
 
@@ -751,7 +790,12 @@ struct NoteEditorView: View {
             canUndo: canUndoCanvas,
             canRedo: canRedoCanvas,
             onUndo: handleCanvasUndo,
-            onRedo: handleCanvasRedo
+            onRedo: handleCanvasRedo,
+            onOpenThumbnails: {
+                openPanel = nil
+                showPageThumbnails = true
+                viewModel.flashStatus("Page thumbnails opened")
+            }
         )
         .id(canvasRevision)
     }
@@ -813,6 +857,11 @@ struct NoteEditorView: View {
                 height: overlay.normH * pageSize.height
             )
             guard rect.contains(point) else { continue }
+
+            // Write mode: finger on a sticker jumps to Select (GoodNotes-style).
+            if viewModel.activeTool.isWriteTool {
+                viewModel.enterSelectModeFromOverlayTap()
+            }
 
             if selectedOverlayId == overlay.id {
                 if overlay.kind == .image {
@@ -956,6 +1005,7 @@ struct NoteEditorView: View {
                         overlays: viewModel.currentPageOverlays(store: store),
                         pageSize: logicalPageSize,
                         noteId: noteId,
+                        manipulationMode: isSelectMode,
                         selectedId: $selectedOverlayId,
                         editingId: $editingOverlayId,
                         onUpdate: { updated in
@@ -971,12 +1021,14 @@ struct NoteEditorView: View {
                             }
                         },
                         onSelectLasso: {
-                            viewModel.activeTool = .lasso
+                            viewModel.selectTool(.select)
                             selectedOverlayId = nil
-                            viewModel.flashStatus("Lasso selected")
                         },
                         onCropImage: { _ in
                             viewModel.flashStatus("Crop coming soon")
+                        },
+                        onOverlayDragChanged: { dragging in
+                            isOverlayDragging = dragging
                         },
                         imageDataProvider: { filename in
                             store.loadOverlayImageData(for: noteId, filename: filename)
@@ -995,8 +1047,8 @@ struct NoteEditorView: View {
                     // ink is gated by `canDraw` through the drawing policy.
                     isDrawingEnabled: true,
                     allowsPencilDrawing: viewModel.activeTool.canDraw,
-                    passesFingerTouchesThrough: viewModel.activeTool != .eraser
-                        && viewModel.activeTool != .lasso,
+                    passesFingerTouchesThrough: viewModel.activeTool.passesFingerToOverlays,
+                    passesPencilTouchesThrough: viewModel.activeTool.passesPencilToOverlays,
                     onCanvasReady: { canvas in
                         self.liveCanvas = canvas
                         refreshCanvasUndoState()

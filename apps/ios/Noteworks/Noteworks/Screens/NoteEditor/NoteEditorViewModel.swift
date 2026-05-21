@@ -25,6 +25,9 @@ import UIKit
 /// flash a "coming soon" status when tapped (no PencilKit primitive,
 /// would require overlay layers we deferred for v1).
 enum NoteEditorTool: String, Equatable {
+    /// GoodNotes-style object selection — default when a note opens.
+    /// Finger and Apple Pencil manipulate overlays; no ink.
+    case select
     case pen
     case highlighter
     case eraser
@@ -39,7 +42,20 @@ enum NoteEditorTool: String, Equatable {
     /// still a stub for v1.
     var isImplemented: Bool {
         switch self {
-        case .pen, .highlighter, .eraser, .lasso, .text, .image, .shape: return true
+        case .select, .pen, .highlighter, .eraser, .lasso, .text, .image, .shape: return true
+        }
+    }
+
+    /// Object manipulation mode — overlays accept finger *and* Pencil.
+    var isObjectManipulationMode: Bool {
+        self == .select
+    }
+
+    /// Ink tools where a finger tap on a sticker auto-switches to Select.
+    var isWriteTool: Bool {
+        switch self {
+        case .pen, .highlighter: return true
+        default: return false
         }
     }
 
@@ -50,17 +66,23 @@ enum NoteEditorTool: String, Equatable {
     var canDraw: Bool {
         switch self {
         case .pen, .highlighter, .eraser, .lasso: return true
-        case .text, .image, .shape: return false
+        case .select, .text, .image, .shape: return false
         }
     }
 
     /// When true, finger taps pass through the canvas to stickers below
-    /// (Pencil still draws ink on the canvas layer).
+    /// (Pencil still draws ink on the canvas layer unless Select mode).
     var passesFingerToOverlays: Bool {
         switch self {
-        case .pen, .highlighter, .text, .image, .shape: return true
+        case .select, .pen, .highlighter, .text, .image, .shape: return true
         case .eraser, .lasso: return false
         }
+    }
+
+    /// When true, Apple Pencil passes through the canvas to overlays
+    /// (Select mode only — write tools keep Pencil on the canvas).
+    var passesPencilToOverlays: Bool {
+        self == .select
     }
 }
 
@@ -345,7 +367,7 @@ final class NoteEditorViewModel: ObservableObject {
 
     // MARK: - Tool state
 
-    @Published var activeTool: NoteEditorTool = .pen
+    @Published var activeTool: NoteEditorTool = .select
 
     // Pen
     @Published var penBrush: NotePenBrush = .pen
@@ -536,6 +558,9 @@ final class NoteEditorViewModel: ObservableObject {
     /// `PencilCanvasView` so the underlying `PKCanvasView.tool` updates.
     var pkTool: PKTool {
         switch activeTool {
+        case .select:
+            // Canvas doesn't ink in Select mode; keep a harmless default.
+            return PKInkingTool(.pen, color: .clear, width: 1)
         case .pen:
             return PKInkingTool(penBrush.pkInkType, color: UIColor(penColor), width: penThickness)
         case .highlighter:
@@ -786,6 +811,76 @@ final class NoteEditorViewModel: ObservableObject {
         flashStatus("Page rotated \(rotation)°")
     }
 
+    /// All per-page settings for the active note (Page Thumbnails grid).
+    func pageSettingsSnapshot(store: NotesStore) -> [NotePageSetting] {
+        guard let id = noteId, let note = store.note(id: id) else { return [] }
+        return note.pageSettings
+    }
+
+    /// Moves one page to another slot (1-based). Mirrors JSX reorder in the
+    /// Page Thumbnails modal.
+    func reorderPages(from fromPage: Int, to toPage: Int) {
+        guard hasLoaded, let id = noteId, let store else { return }
+        flushPendingSave()
+        guard let landed = store.reorderPages(noteId: id, fromPage: fromPage, toPage: toPage) else { return }
+        syncPageStateFromStore(store: store, noteId: id, landedPage: landed)
+        flashStatus("Pages rearranged")
+    }
+
+    /// Deletes the given 1-based page numbers. Refuses only when the store
+    /// returns an error string.
+    func deletePages(_ pages: [Int]) {
+        guard hasLoaded, let id = noteId, let store else { return }
+        flushPendingSave()
+        if let error = store.deletePages(noteId: id, pages: pages) {
+            flashStatus(error)
+            return
+        }
+        syncPageStateFromStore(store: store, noteId: id, landedPage: nil)
+        let count = pages.count
+        flashStatus("\(count) page\(count == 1 ? "" : "s") deleted")
+    }
+
+    /// Applies an absolute rotation to each selected page.
+    func rotatePages(_ pages: [Int], to rotation: Int) {
+        guard hasLoaded, let id = noteId, let store else { return }
+        store.rotatePages(noteId: id, pages: pages, to: rotation)
+        if pages.contains(currentPage),
+           let setting = store.note(id: id)?.pageSettings[currentPage - 1] {
+            currentPageRotation = setting.rotation
+        }
+        let count = pages.count
+        flashStatus("\(count) page\(count == 1 ? "" : "s") rotated \(rotation)°")
+    }
+
+    /// Exports only the requested pages to a multi-page PDF.
+    @MainActor
+    func exportSelectedPagesPDF(store: NotesStore, pages: [Int]) -> Data {
+        guard let id = noteId, let note = store.note(id: id) else {
+            return pdfService.exportDrawingToPDF(drawing)
+        }
+        return pdfService.exportNoteToPDF(
+            note: note,
+            store: store,
+            livePage: currentPage,
+            liveDrawing: drawing,
+            pageNumbers: pages
+        )
+    }
+
+    private func syncPageStateFromStore(store: NotesStore, noteId: String, landedPage: Int?) {
+        guard let updated = store.note(id: noteId) else { return }
+        totalPages = max(1, updated.pageSettings.count)
+        if let landedPage {
+            currentPage = landedPage
+        } else {
+            currentPage = updated.currentPage
+        }
+        let setting = updated.pageSettings[currentPage - 1]
+        applyPageSetting(setting)
+        loadDrawing(for: currentPage)
+    }
+
     func setBackground(_ background: NotePageBackground) {
         guard hasLoaded, let id = noteId, let store else { return }
         store.setBackground(noteId: id, background: background)
@@ -1025,6 +1120,7 @@ final class NoteEditorViewModel: ObservableObject {
 
     private func toolReadyStatus(for tool: NoteEditorTool) -> String {
         switch tool {
+        case .select: return "Select ready"
         case .pen: return penStatus()
         case .highlighter: return highlighterStatus()
         case .eraser: return eraserStatus()
@@ -1032,6 +1128,15 @@ final class NoteEditorViewModel: ObservableObject {
         case .shape: return shapeStatus()
         case .text: return textStatus()
         case .image: return "Pick an image to insert"
+        }
+    }
+
+    /// Switches to Select and reports status — used when a write-tool
+    /// finger tap hits an overlay sticker.
+    func enterSelectModeFromOverlayTap() {
+        if activeTool != .select {
+            assignActiveToolTracksPencil(.select)
+            flashStatus("Select ready")
         }
     }
 

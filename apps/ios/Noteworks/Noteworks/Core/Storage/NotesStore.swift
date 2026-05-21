@@ -966,6 +966,132 @@ final class NotesStore: ObservableObject {
         saveDebounced()
     }
 
+    /// Sets an absolute rotation on one or more pages (Page Thumbnails select
+    /// mode). Mirrors JSX `handleRotatePages`.
+    func rotatePages(noteId: String, pages: [Int], to rotation: Int) {
+        guard let idx = notes.firstIndex(where: { $0.id == noteId }) else { return }
+        let selected = Set(pages)
+        guard !selected.isEmpty else { return }
+        let normalized = ((rotation % 360) + 360) % 360
+        for pageIndex in notes[idx].pageSettings.indices where selected.contains(pageIndex + 1) {
+            notes[idx].pageSettings[pageIndex].rotation = normalized
+        }
+        notes[idx].updatedAt = Date()
+        saveDebounced()
+    }
+
+    /// Moves a page from one position to another (1-based). Mirrors JSX
+    /// `handleReorderPages`.
+    @discardableResult
+    func reorderPages(noteId: String, fromPage: Int, toPage: Int) -> Int? {
+        guard fromPage != toPage,
+              fromPage >= 1, toPage >= 1,
+              let idx = notes.firstIndex(where: { $0.id == noteId }) else { return nil }
+        let total = notes[idx].pageSettings.count
+        guard fromPage <= total, toPage <= total else { return nil }
+
+        var order = Array(1...total)
+        guard let fromIndex = order.firstIndex(of: fromPage),
+              let toIndex = order.firstIndex(of: toPage) else { return nil }
+        let moved = order.remove(at: fromIndex)
+        order.insert(moved, at: toIndex)
+
+        var oldToNewPage: [Int: Int] = [:]
+        for (newIndex, oldPage) in order.enumerated() {
+            oldToNewPage[oldPage] = newIndex + 1
+        }
+
+        let nextSettings = order.map { notes[idx].pageSettings[$0 - 1] }
+        notes[idx].pageSettings = nextSettings
+        notes[idx].pageCount = nextSettings.count
+        notes[idx].currentPage = oldToNewPage[notes[idx].currentPage] ?? notes[idx].currentPage
+        notes[idx].updatedAt = Date()
+
+        var drawingMap: [Int: Int] = [:]
+        for (newIndex, oldPage) in order.enumerated() {
+            drawingMap[oldPage - 1] = newIndex
+        }
+        persistence.remapDrawings(for: noteId, oldZeroToNewZero: drawingMap)
+
+        for overlayIndex in notes[idx].overlays.indices {
+            let oldPage = notes[idx].overlays[overlayIndex].page
+            if let mapped = oldToNewPage[oldPage] {
+                notes[idx].overlays[overlayIndex].page = mapped
+            }
+        }
+
+        saveDebounced()
+        return notes[idx].currentPage
+    }
+
+    /// Deletes one or more pages from a note. If every page would be removed,
+    /// leaves a single blank page (mirrors JSX `handleDeleteSelectedPages`).
+    @discardableResult
+    func deletePages(noteId: String, pages: [Int]) -> String? {
+        let selected = Set(pages)
+        guard !selected.isEmpty else { return nil }
+        guard let idx = notes.firstIndex(where: { $0.id == noteId }) else {
+            return "Note not found."
+        }
+
+        var oldToNewPage: [Int: Int] = [:]
+        var keptSettings: [NotePageSetting] = []
+        for (index, setting) in notes[idx].pageSettings.enumerated() {
+            let oldPage = index + 1
+            if selected.contains(oldPage) { continue }
+            oldToNewPage[oldPage] = keptSettings.count + 1
+            keptSettings.append(setting)
+        }
+
+        let allDeleted = keptSettings.isEmpty
+        let nextSettings = allDeleted ? [NotePageSetting()] : keptSettings
+        let previousCurrent = notes[idx].currentPage
+
+        var drawingMap: [Int: Int] = [:]
+        for (oldPage, newPage) in oldToNewPage {
+            drawingMap[oldPage - 1] = newPage - 1
+        }
+
+        for (index, setting) in notes[idx].pageSettings.enumerated() where selected.contains(index + 1) {
+            if let filename = setting.backgroundImageFilename {
+                persistence.deleteOverlayImage(for: noteId, filename: filename)
+            }
+        }
+
+        let doomedOverlays = notes[idx].overlays.filter { selected.contains($0.page) }
+        notes[idx].overlays.removeAll { selected.contains($0.page) }
+        for overlay in doomedOverlays {
+            if let filename = overlay.imageFilename {
+                persistence.deleteOverlayImage(for: noteId, filename: filename)
+            }
+        }
+        for overlayIndex in notes[idx].overlays.indices {
+            let oldPage = notes[idx].overlays[overlayIndex].page
+            if let mapped = oldToNewPage[oldPage] {
+                notes[idx].overlays[overlayIndex].page = mapped
+            }
+        }
+
+        notes[idx].pageSettings = nextSettings
+        notes[idx].pageCount = nextSettings.count
+        if let mappedCurrent = oldToNewPage[previousCurrent] {
+            notes[idx].currentPage = mappedCurrent
+        } else if allDeleted {
+            notes[idx].currentPage = 1
+        } else {
+            let deletedBefore = pages.filter { $0 < previousCurrent }.count
+            notes[idx].currentPage = min(
+                nextSettings.count,
+                max(1, previousCurrent - deletedBefore)
+            )
+        }
+        notes[idx].updatedAt = Date()
+
+        persistence.remapDrawings(for: noteId, oldZeroToNewZero: drawingMap)
+        saveDebounced()
+        return nil
+    }
+
     func setBackground(noteId: String, background: NotePageBackground) {
         guard let idx = notes.firstIndex(where: { $0.id == noteId }) else { return }
         let page = notes[idx].currentPage

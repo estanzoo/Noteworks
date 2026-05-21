@@ -24,6 +24,7 @@ import PencilKit
 /// while Apple Pencil still draws on this layer.
 final class FingerPassThroughPKCanvasView: PKCanvasView {
     var passesFingerTouchesThrough = false
+    var passesPencilTouchesThrough = false
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         if shouldPassThrough(event: event) { return false }
@@ -35,31 +36,24 @@ final class FingerPassThroughPKCanvasView: PKCanvasView {
         return super.hitTest(point, with: event)
     }
 
-    /// Only return `true` when we are **certain** the event is finger-only,
-    /// so we can punch through to the overlay layer beneath. For any
-    /// ambiguous case — `nil` event (layout queries / `sizeThatFits` /
-    /// accessibility), empty `allTouches` (hover before tip-down, scroll
-    /// view recognizer probes), or any pencil touch present in the event
-    /// — fall back to `super` so PencilKit still gets the touch.
-    ///
-    /// The previous implementation returned `true` (i.e. "pass through")
-    /// for every event that didn't explicitly contain `.pencil`, which
-    /// silently swallowed the Pencil's `.began` event in cases where
-    /// UIKit dispatches a probe hitTest before the touch is attached to
-    /// the event's `allTouches` set. Result: ink never started, even on
-    /// a real iPad with a paired Pencil.
+    /// Yield touches to the overlay layer beneath when Select mode (or
+    /// finger-only pass-through in write tools) requests it.
     private func shouldPassThrough(event: UIEvent?) -> Bool {
-        guard passesFingerTouchesThrough else { return false }
+        guard passesFingerTouchesThrough || passesPencilTouchesThrough else { return false }
 
         let touches = event?.allTouches ?? []
         // Always yield multi-finger sequences to the outer scroll view.
         if touches.count >= 2 { return true }
 
-        // Ambiguous probe (nil event, hover, scroll-view sniff) — keep
-        // the canvas in the hit-test chain so PencilKit receives `.began`.
+        // Ambiguous probe — keep canvas in chain so PencilKit receives `.began`.
         if touches.isEmpty { return false }
 
-        if touches.contains(where: { $0.type == .pencil }) { return false }
+        let isPencil = touches.contains(where: { $0.type == .pencil })
+        if isPencil {
+            return passesPencilTouchesThrough
+        }
+
+        guard passesFingerTouchesThrough else { return false }
 
         let drawingState = drawingGestureRecognizer.state
         if drawingState == .began || drawingState == .changed { return false }
@@ -119,6 +113,9 @@ struct PencilCanvasView: UIViewRepresentable {
     /// Finger taps reach overlays under the canvas; Pencil still draws here.
     var passesFingerTouchesThrough: Bool = false
 
+    /// Select mode — Apple Pencil reaches overlays instead of inking.
+    var passesPencilTouchesThrough: Bool = false
+
     /// Setter exposed so the chrome can wire its undo/redo buttons to the
     /// real canvas `UndoManager` once the view exists.
     var onCanvasReady: ((PKCanvasView) -> Void)? = nil
@@ -130,6 +127,7 @@ struct PencilCanvasView: UIViewRepresentable {
     func makeUIView(context: Context) -> FingerPassThroughPKCanvasView {
         let canvasView = FingerPassThroughPKCanvasView()
         canvasView.passesFingerTouchesThrough = passesFingerTouchesThrough
+        canvasView.passesPencilTouchesThrough = passesPencilTouchesThrough
         canvasView.applyTouchRoutingPolicy()
         canvasView.drawingPolicy = drawingPolicy
         canvasView.backgroundColor = .clear
@@ -156,8 +154,10 @@ struct PencilCanvasView: UIViewRepresentable {
     }
 
     func updateUIView(_ canvasView: FingerPassThroughPKCanvasView, context: Context) {
-        if canvasView.passesFingerTouchesThrough != passesFingerTouchesThrough {
+        if canvasView.passesFingerTouchesThrough != passesFingerTouchesThrough
+            || canvasView.passesPencilTouchesThrough != passesPencilTouchesThrough {
             canvasView.passesFingerTouchesThrough = passesFingerTouchesThrough
+            canvasView.passesPencilTouchesThrough = passesPencilTouchesThrough
             canvasView.applyTouchRoutingPolicy()
         }
         if canvasView.drawingPolicy != drawingPolicy {

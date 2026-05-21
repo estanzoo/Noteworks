@@ -452,6 +452,33 @@ final class LocalNotesPersistence {
         }
     }
 
+    /// Rewrites drawing files after a page reorder or multi-delete. Keys and
+    /// values are zero-based page indices (`oldZeroBased` → `newZeroBased`).
+    func remapDrawings(for noteId: String, oldZeroToNewZero: [Int: Int]) {
+        guard let userId = activeUserId else { return }
+        ensureDrawingFolderExists(userId: userId, noteId: noteId)
+        let folder = drawingFolder(for: userId, noteId: noteId)
+        queue.async {
+            let fm = FileManager.default
+            var cached: [Int: Data] = [:]
+            for oldIndex in oldZeroToNewZero.keys {
+                let url = folder.appendingPathComponent("\(oldIndex).drawing")
+                if let data = try? Data(contentsOf: url) {
+                    cached[oldIndex] = data
+                }
+            }
+            let contents = (try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
+            for url in contents where url.pathExtension == "drawing" {
+                try? fm.removeItem(at: url)
+            }
+            for (oldIndex, newIndex) in oldZeroToNewZero {
+                guard let data = cached[oldIndex] else { continue }
+                let dst = folder.appendingPathComponent("\(newIndex).drawing")
+                try? data.write(to: dst, options: [.atomic])
+            }
+        }
+    }
+
     // MARK: - Overlay image IO
 
     private func ensureOverlayImageFolderExists(userId: String, noteId: String) {

@@ -21,6 +21,9 @@ struct NoteOverlayLayer: View {
     let overlays: [NotePageOverlay]
     let pageSize: CGSize
     let noteId: String
+    /// When true (Select tool), overlays accept finger and Pencil for
+    /// tap-to-select and drag-to-move.
+    var manipulationMode: Bool = false
     @Binding var selectedId: String?
     /// Currently inline-editing text overlay (focused TextField). Set
     /// when the user inserts a fresh text overlay or taps an existing
@@ -37,6 +40,7 @@ struct NoteOverlayLayer: View {
     var onDuplicate: (NotePageOverlay) -> Void = { _ in }
     var onSelectLasso: () -> Void = {}
     var onCropImage: (NotePageOverlay) -> Void = { _ in }
+    var onOverlayDragChanged: (Bool) -> Void = { _ in }
 
     /// Looks up the image data for a `.image` overlay. Wired to
     /// `NotesStore.loadOverlayImageData` so this view stays presentation
@@ -49,6 +53,7 @@ struct NoteOverlayLayer: View {
                 NoteOverlayItem(
                     overlay: overlay,
                     pageSize: pageSize,
+                    manipulationMode: manipulationMode,
                     isSelected: overlay.id == selectedId,
                     isEditing: overlay.id == editingId,
                     noteId: noteId,
@@ -62,6 +67,16 @@ struct NoteOverlayLayer: View {
                     onDuplicate: onDuplicate,
                     onSelectLasso: onSelectLasso,
                     onCropImage: { onCropImage(overlay) },
+                    onSelect: {
+                        selectedId = overlay.id
+                        editingId = nil
+                    },
+                    onDeselect: {
+                        if selectedId == overlay.id {
+                            selectedId = nil
+                            editingId = nil
+                        }
+                    },
                     onStartEditing: {
                         selectedId = overlay.id
                         editingId = overlay.id
@@ -71,13 +86,14 @@ struct NoteOverlayLayer: View {
                         updated.text = newText
                         onUpdate(updated)
                         editingId = nil
-                    }
+                    },
+                    onDragChanged: onOverlayDragChanged
                 )
             }
         }
         .frame(width: pageSize.width, height: pageSize.height, alignment: .topLeading)
         .clipped()
-        .allowsHitTesting(selectedId != nil || editingId != nil)
+        .allowsHitTesting(manipulationMode || selectedId != nil || editingId != nil)
     }
 }
 
@@ -86,6 +102,7 @@ struct NoteOverlayLayer: View {
 private struct NoteOverlayItem: View {
     let overlay: NotePageOverlay
     let pageSize: CGSize
+    let manipulationMode: Bool
     let isSelected: Bool
     let isEditing: Bool
     let noteId: String
@@ -95,10 +112,13 @@ private struct NoteOverlayItem: View {
     var onDuplicate: (NotePageOverlay) -> Void
     var onSelectLasso: () -> Void
     var onCropImage: () -> Void
+    var onSelect: () -> Void
+    var onDeselect: () -> Void
     /// Tap-on-already-selected-text starts inline editing.
     var onStartEditing: () -> Void
     /// TextField submit / focus-loss commits the new string.
     var onCommitEditing: (String) -> Void
+    var onDragChanged: (Bool) -> Void
 
     /// Local working copy of the text while the user is typing. Synced
     /// from `overlay.text` when editing begins so the field starts with
@@ -110,6 +130,7 @@ private struct NoteOverlayItem: View {
     /// sticker does not snap back when the gesture ends.
     @State private var resizeTranslation: CGSize = .zero
     @State private var pinchScale: CGFloat = 1.0
+    @State private var moveTranslation: CGSize = .zero
 
     private var isImage: Bool { overlay.kind == .image }
     private var isShape: Bool { overlay.kind == .shape }
@@ -146,8 +167,8 @@ private struct NoteOverlayItem: View {
             height: (resized.size.height - resized.size.height * pinchScale) / 2
         )
         return CGPoint(
-            x: resized.origin.x + pinchOriginShift.width,
-            y: resized.origin.y + pinchOriginShift.height
+            x: resized.origin.x + pinchOriginShift.width + moveTranslation.width,
+            y: resized.origin.y + pinchOriginShift.height + moveTranslation.height
         )
     }
 
@@ -165,14 +186,14 @@ private struct NoteOverlayItem: View {
         }
         .animation(.easeInOut(duration: 0.12), value: isSelected)
         .transaction { transaction in
-            if resizeTranslation != .zero || pinchScale != 1.0 {
+            if resizeTranslation != .zero || pinchScale != 1.0 || moveTranslation != .zero {
                 transaction.animation = nil
             }
         }
     }
 
-    /// Image / text / shape drawing — never hit-testable so page pinch
-    /// works on top of stickers. Text inline edit opts back in below.
+    /// Image / text / shape drawing — hit-testable in Select mode and
+    /// during text inline edit so stickers can be tapped and moved.
     private var pageVisual: some View {
         ZStack {
             content
@@ -185,7 +206,9 @@ private struct NoteOverlayItem: View {
         .frame(width: liveSize.width, height: liveSize.height)
         .rotationEffect(.degrees(usesFullTransformChrome ? overlay.rotationDegrees : 0))
         .offset(x: liveOrigin.x, y: liveOrigin.y)
-        .allowsHitTesting(isEditing && overlay.kind == .text)
+        .contentShape(Rectangle())
+        .allowsHitTesting((manipulationMode && !isEditing) || (isEditing && overlay.kind == .text))
+        .gesture(manipulationBodyGesture, including: manipulationMode && !isEditing ? .all : .subviews)
     }
 
     /// Corner handles + floating toolbars — small targets only; the
@@ -377,9 +400,47 @@ private struct NoteOverlayItem: View {
 
     // MARK: Gestures
 
-    // Body drag / pinch / rotate are intentionally not exposed on images.
-    // Page pinch is owned by the outer `UIScrollView`; resize is via the
-    // four corner handles only once the overlay is selected.
+    /// Tap-to-select and drag-to-move when Select mode is active.
+    private var manipulationBodyGesture: some Gesture {
+        DragGesture(minimumDistance: 4)
+            .onChanged { value in
+                if !isSelected {
+                    onSelect()
+                }
+                moveTranslation = value.translation
+                onDragChanged(true)
+            }
+            .onEnded { value in
+                commitMove(translation: value.translation)
+                moveTranslation = .zero
+                onDragChanged(false)
+            }
+            .simultaneously(with:
+                TapGesture(count: 1)
+                    .onEnded {
+                        if isSelected {
+                            if overlay.kind == .text {
+                                onStartEditing()
+                            } else if overlay.kind == .image {
+                                onDeselect()
+                            }
+                        } else {
+                            onSelect()
+                        }
+                    }
+            )
+    }
+
+    private func commitMove(translation: CGSize) {
+        let newOrigin = CGPoint(
+            x: max(0, min(pageSize.width - liveSize.width, basePoint.x + translation.width)),
+            y: max(0, min(pageSize.height - liveSize.height, basePoint.y + translation.height))
+        )
+        var updated = overlay
+        updated.normX = newOrigin.x / pageSize.width
+        updated.normY = newOrigin.y / pageSize.height
+        onUpdate(updated)
+    }
 
     /// Drag from a corner handle — resizes anchored at the opposite side.
     /// Images preserve aspect ratio; text overlays free-scale.

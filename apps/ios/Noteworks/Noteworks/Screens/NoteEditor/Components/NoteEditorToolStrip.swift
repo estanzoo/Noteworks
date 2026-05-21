@@ -6,7 +6,7 @@
 //  `note-tool-strip` (L3755):
 //
 //    Left   : undo / redo
-//    Center : pen, eraser, highlighter, lasso, shape, text, image
+//    Center : select, pen, eraser, highlighter, lasso, shape, text, image
 //    Right  : (reserved)
 //
 //  Renders without its own glass card so the parent `NoteEditorView` can
@@ -57,6 +57,7 @@ struct NoteEditorToolStrip: View {
     var canRedo: Bool = false
     var onUndo: () -> Void = {}
     var onRedo: () -> Void = {}
+    var onOpenThumbnails: () -> Void = {}
 
     var body: some View {
         HStack(spacing: 0) {
@@ -77,8 +78,9 @@ struct NoteEditorToolStrip: View {
 
             Spacer(minLength: 8)
 
-            // Center cluster — the seven tools, mirroring JSX order.
+            // Center cluster — Select first (default), then write tools.
             HStack(spacing: 4) {
+                toolButton(.select, symbol: "cursorarrow", panel: nil)
                 toolButton(.pen, symbol: "pencil.tip", panel: .pen)
                 toolButton(.eraser, symbol: "eraser", panel: .eraser)
                 toolButton(.highlighter, symbol: "highlighter", panel: .highlighter)
@@ -90,11 +92,14 @@ struct NoteEditorToolStrip: View {
 
             Spacer(minLength: 8)
 
-            // Right cluster reserved (kept as an invisible mirror of the
-            // left cluster's width so the tool row stays visually
-            // centered relative to the chrome).
+            // Right cluster — page thumbnails (NoteWorks_UI 4 tool strip).
             HStack(spacing: 4) {
-                Color.clear.frame(width: 38, height: 34)
+                ChromeIconButton(
+                    symbol: "rectangle.grid.2x2",
+                    size: 14,
+                    isActive: false,
+                    action: onOpenThumbnails
+                )
                 Color.clear.frame(width: 38, height: 34)
             }
         }
