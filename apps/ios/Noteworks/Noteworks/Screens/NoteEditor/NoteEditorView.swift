@@ -59,6 +59,10 @@ struct NoteEditorView: View {
     /// pinning layout to this max (top-aligned) keeps the chrome and title
     /// under the status bar while the keyboard covers the bottom.
     @State private var editorStableMaxHeight: CGFloat = 0
+    /// Latest `GeometryReader` height for the visible editor viewport.
+    /// Used to re-sync `editorStableMaxHeight` when modal overlays open so
+    /// keyboard-pinned layout state cannot drift after backgrounding.
+    @State private var editorViewportHeight: CGFloat = 0
     /// Ticks once after a note has loaded and the navigation push has had
     /// a runloop turn to settle its frames. The value is folded into the
     /// inner `canvasArea` `.id` so the page-card `GeometryReader` is
@@ -84,13 +88,13 @@ struct NoteEditorView: View {
     @State private var isOverlayDragging = false
 
     /// True while an image / text / shape overlay is selected or being
-    /// inline-edited, or actively dragged in Select mode.
+    /// inline-edited, or actively dragged.
     private var hasOverlaySelection: Bool {
         selectedOverlayId != nil || editingOverlayId != nil || isOverlayDragging
     }
 
-    private var isSelectMode: Bool {
-        viewModel.activeTool.isObjectManipulationMode
+    private var allowsOverlayManipulation: Bool {
+        viewModel.activeTool.allowsOverlayManipulation
     }
 
     var noteId: String?
@@ -98,7 +102,8 @@ struct NoteEditorView: View {
     var body: some View {
         GeometryReader { outerGeo in
             let stableEditorH = max(outerGeo.size.height, editorStableMaxHeight)
-            ZStack {
+            ZStack(alignment: .top) {
+                ZStack {
                 // `.ignoresSafeArea()` mirrors every other screen using
                 // `OnboardingBackground` (Home, Profile, Community). Without it
                 // the status-bar and home-indicator regions show through as a
@@ -156,19 +161,6 @@ struct NoteEditorView: View {
                 dropdownsLayer
                     .ignoresSafeArea(.keyboard, edges: .bottom)
 
-                if viewModel.showGapDetectionPopup {
-                    GapDetectionPopup(
-                        viewModel: viewModel,
-                        creditsStore: appState.creditsStore,
-                        currentNote: currentEditorNote,
-                        notes: store.notes,
-                        accessToken: appState.accessToken ?? "",
-                        onClose: { viewModel.closeGapDetectionPopup() }
-                    )
-                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
-                    .zIndex(450)
-                }
-
                 if showPageThumbnails {
                     PageThumbnailsModal(
                         viewModel: viewModel,
@@ -222,17 +214,44 @@ struct NoteEditorView: View {
                     .transition(.opacity)
                     .zIndex(400)
                 }
+                }
+                .frame(width: outerGeo.size.width, height: stableEditorH, alignment: .top)
+
+                if viewModel.showGapDetectionPopup {
+                    GapDetectionPopup(
+                        viewModel: viewModel,
+                        creditsStore: appState.creditsStore,
+                        currentNote: currentEditorNote,
+                        notes: store.notes,
+                        accessToken: appState.accessToken ?? "",
+                        onClose: { viewModel.closeGapDetectionPopup() }
+                    )
+                    // Sized to the *visible* viewport (`outerGeo`), not the
+                    // keyboard-pinned `stableEditorH` editor stack. Overlaying
+                    // on the taller stack centred the modal in off-screen space
+                    // and made it look pinned to the bottom after resume.
+                    .frame(width: outerGeo.size.width, height: outerGeo.size.height)
+                    .ignoresSafeArea(.keyboard, edges: .bottom)
+                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                    .zIndex(450)
+                }
             }
-            .frame(width: outerGeo.size.width, height: stableEditorH, alignment: .top)
+            .frame(width: outerGeo.size.width, height: outerGeo.size.height, alignment: .top)
             .coordinateSpace(name: "NoteEditorCoord")
             .onPreferenceChange(ToolButtonAnchorKey.self) { anchors in
                 toolAnchors = anchors
             }
             .onChange(of: outerGeo.size.height) { _, h in
+                editorViewportHeight = h
                 editorStableMaxHeight = max(editorStableMaxHeight, h)
             }
             .onAppear {
+                editorViewportHeight = outerGeo.size.height
                 editorStableMaxHeight = max(editorStableMaxHeight, outerGeo.size.height)
+            }
+            .onChange(of: viewModel.showGapDetectionPopup) { _, isShowing in
+                guard isShowing, editorViewportHeight > 0 else { return }
+                editorStableMaxHeight = editorViewportHeight
             }
         }
         .navigationBarHidden(true)
@@ -354,9 +373,7 @@ struct NoteEditorView: View {
             editingOverlayId = nil
         }
         .onChange(of: viewModel.activeTool) { _, newTool in
-            // Leaving Select clears sticker selection so write tools don't
-            // inherit a half-selected overlay chrome.
-            if !newTool.isObjectManipulationMode {
+            if !newTool.allowsOverlayManipulation {
                 selectedOverlayId = nil
                 editingOverlayId = nil
             }
@@ -858,11 +875,6 @@ struct NoteEditorView: View {
             )
             guard rect.contains(point) else { continue }
 
-            // Write mode: finger on a sticker jumps to Select (GoodNotes-style).
-            if viewModel.activeTool.isWriteTool {
-                viewModel.enterSelectModeFromOverlayTap()
-            }
-
             if selectedOverlayId == overlay.id {
                 if overlay.kind == .image {
                     deselectOverlays()
@@ -1005,7 +1017,7 @@ struct NoteEditorView: View {
                         overlays: viewModel.currentPageOverlays(store: store),
                         pageSize: logicalPageSize,
                         noteId: noteId,
-                        manipulationMode: isSelectMode,
+                        manipulationMode: allowsOverlayManipulation,
                         selectedId: $selectedOverlayId,
                         editingId: $editingOverlayId,
                         onUpdate: { updated in
@@ -1021,7 +1033,7 @@ struct NoteEditorView: View {
                             }
                         },
                         onSelectLasso: {
-                            viewModel.selectTool(.select)
+                            viewModel.selectTool(.lasso)
                             selectedOverlayId = nil
                         },
                         onCropImage: { _ in
@@ -1048,7 +1060,6 @@ struct NoteEditorView: View {
                     isDrawingEnabled: true,
                     allowsPencilDrawing: viewModel.activeTool.canDraw,
                     passesFingerTouchesThrough: viewModel.activeTool.passesFingerToOverlays,
-                    passesPencilTouchesThrough: viewModel.activeTool.passesPencilToOverlays,
                     onCanvasReady: { canvas in
                         self.liveCanvas = canvas
                         refreshCanvasUndoState()

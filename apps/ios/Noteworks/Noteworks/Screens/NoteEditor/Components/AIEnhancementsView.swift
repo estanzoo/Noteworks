@@ -491,10 +491,13 @@ struct GapDetectionPopup: View {
     @ObservedObject var viewModel: NoteEditorViewModel
     @ObservedObject var creditsStore: CreditsStore
     @EnvironmentObject private var store: NotesStore
+    @Environment(\.scenePhase) private var scenePhase
     let currentNote: Note?
     let notes: [Note]
     let accessToken: String
     let onClose: () -> Void
+
+    @State private var scrollResetToken = UUID()
 
     private var selectedSources: Int { viewModel.selectedGapSourceIds.count }
     private var materialCount: Int { viewModel.gapClassMaterialNames.count }
@@ -517,41 +520,65 @@ struct GapDetectionPopup: View {
                 .ignoresSafeArea()
                 .onTapGesture { onClose() }
 
-            GeometryReader { proxy in
-                let modalWidth = min(880, proxy.size.width - 32)
-                let modalHeight = min(860, proxy.size.height - 48)
-
-                VStack(spacing: 0) {
-                    header
-                    Divider().overlay(NoteEditorTheme.chromeBorder.opacity(0.7))
-                    content
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                }
-                .frame(width: modalWidth, height: modalHeight)
-                .background(
-                    RoundedRectangle(cornerRadius: 30)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color.white.opacity(0.84),
-                                    Color(red: 244/255, green: 248/255, blue: 252/255).opacity(0.66),
-                                    Color(red: 233/255, green: 241/255, blue: 247/255).opacity(0.56)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 30))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 30)
-                        .strokeBorder(NoteEditorTheme.glassBorder, lineWidth: 1)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 30))
-                .shadow(color: .black.opacity(0.18), radius: 70, x: 0, y: 28)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+            modalCard
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea(.keyboard, edges: .bottom)
+        .onAppear {
+            dismissKeyboard()
+            scrollResetToken = UUID()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            dismissKeyboard()
+            scrollResetToken = UUID()
+        }
+    }
+
+    private var modalCard: some View {
+        GeometryReader { proxy in
+            let modalWidth = min(880, proxy.size.width - 32)
+            let modalHeight = min(860, max(320, proxy.size.height - 48))
+
+            VStack(spacing: 0) {
+                header
+                Divider().overlay(NoteEditorTheme.chromeBorder.opacity(0.7))
+                content
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            }
+            .frame(width: modalWidth, height: modalHeight)
+            .background(
+                RoundedRectangle(cornerRadius: 30)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(0.84),
+                                Color(red: 244/255, green: 248/255, blue: 252/255).opacity(0.66),
+                                Color(red: 233/255, green: 241/255, blue: 247/255).opacity(0.56)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 30))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 30)
+                    .strokeBorder(NoteEditorTheme.glassBorder, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 30))
+            .shadow(color: .black.opacity(0.18), radius: 70, x: 0, y: 28)
+            .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
+        }
+    }
+
+    private func dismissKeyboard() {
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
+        )
     }
 
     private var header: some View {
@@ -609,6 +636,7 @@ struct GapDetectionPopup: View {
                     .frame(maxWidth: .infinity, alignment: .topLeading)
             }
             .scrollIndicators(.automatic)
+            .id(scrollResetToken)
         case .running, .completed:
             ScrollView {
                 resultContent
@@ -616,6 +644,7 @@ struct GapDetectionPopup: View {
                     .frame(maxWidth: .infinity, alignment: .top)
             }
             .scrollIndicators(.automatic)
+            .id(scrollResetToken)
         }
     }
 
@@ -1308,16 +1337,23 @@ struct GapDetectionPopup: View {
     private func sourcePreviewCard(_ note: Note) -> some View {
         let selected = viewModel.selectedGapSourceIds.contains(note.id)
         return VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top, spacing: 14) {
-                VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("NOTE PREVIEW")
+                        .font(.system(size: 11, weight: .heavy))
+                        .tracking(1.1)
+                        .foregroundStyle(NoteEditorTheme.textMuted)
                     Text(note.title.isEmpty ? "Untitled Note" : note.title)
-                        .font(.system(size: 22, weight: .bold))
+                        .font(.system(size: 19, weight: .heavy))
+                        .tracking(-0.5)
                         .foregroundStyle(NoteEditorTheme.textPrimary)
+                        .lineLimit(2)
                     Text([note.subject, note.tag, note.formattedDate].compactMap { $0 }.joined(separator: " · "))
-                        .font(.system(size: 13, weight: .medium))
+                        .font(.system(size: 12.5, weight: .semibold))
                         .foregroundStyle(NoteEditorTheme.textSecondary)
+                        .lineLimit(2)
                 }
-                Spacer()
+                Spacer(minLength: 8)
                 Text("\(max(4, min(12, note.pageSettings.count + 3))) Credits")
                     .font(.system(size: 12, weight: .black))
                     .foregroundStyle(NoteEditorTheme.accent)
@@ -1325,20 +1361,19 @@ struct GapDetectionPopup: View {
                     .padding(.vertical, 6)
                     .background(Capsule().fill(NoteEditorTheme.accent.opacity(0.12)))
             }
-            HStack(spacing: 8) {
-                gapChip(note.subject ?? "Same course")
-                gapChip(note.formattedDate)
-                gapChip("Similar topic")
-            }
+
             LocalNotePDFPreview(
                 store: store,
                 note: note,
                 livePage: note.id == viewModel.noteId ? viewModel.currentPage : nil,
                 liveDrawing: note.id == viewModel.noteId ? viewModel.drawing : nil,
-                minHeight: 220,
-                cornerRadius: 20
+                minHeight: 280
             )
-            .frame(height: 220)
+            .frame(height: 280)
+
+            Text("1 attached file")
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(NoteEditorTheme.textMuted)
             HStack {
                 Text(selected ? "This peer note is already included." : "Preview first, then decide whether to include this source.")
                     .font(.system(size: 12, weight: .semibold))

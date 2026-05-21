@@ -25,9 +25,6 @@ import UIKit
 /// flash a "coming soon" status when tapped (no PencilKit primitive,
 /// would require overlay layers we deferred for v1).
 enum NoteEditorTool: String, Equatable {
-    /// GoodNotes-style object selection — default when a note opens.
-    /// Finger and Apple Pencil manipulate overlays; no ink.
-    case select
     case pen
     case highlighter
     case eraser
@@ -42,19 +39,14 @@ enum NoteEditorTool: String, Equatable {
     /// still a stub for v1.
     var isImplemented: Bool {
         switch self {
-        case .select, .pen, .highlighter, .eraser, .lasso, .text, .image, .shape: return true
+        case .pen, .highlighter, .eraser, .lasso, .text, .image, .shape: return true
         }
     }
 
-    /// Object manipulation mode — overlays accept finger *and* Pencil.
-    var isObjectManipulationMode: Bool {
-        self == .select
-    }
-
-    /// Ink tools where a finger tap on a sticker auto-switches to Select.
-    var isWriteTool: Bool {
+    /// Overlay tools where stickers accept direct finger drag on the body.
+    var allowsOverlayManipulation: Bool {
         switch self {
-        case .pen, .highlighter: return true
+        case .text, .image, .shape: return true
         default: return false
         }
     }
@@ -66,23 +58,16 @@ enum NoteEditorTool: String, Equatable {
     var canDraw: Bool {
         switch self {
         case .pen, .highlighter, .eraser, .lasso: return true
-        case .select, .text, .image, .shape: return false
+        case .text, .image, .shape: return false
         }
     }
 
-    /// When true, finger taps pass through the canvas to stickers below
-    /// (Pencil still draws ink on the canvas layer unless Select mode).
+    /// When true, finger taps pass through the canvas to stickers below.
     var passesFingerToOverlays: Bool {
         switch self {
-        case .select, .pen, .highlighter, .text, .image, .shape: return true
+        case .pen, .highlighter, .text, .image, .shape: return true
         case .eraser, .lasso: return false
         }
-    }
-
-    /// When true, Apple Pencil passes through the canvas to overlays
-    /// (Select mode only — write tools keep Pencil on the canvas).
-    var passesPencilToOverlays: Bool {
-        self == .select
     }
 }
 
@@ -367,7 +352,7 @@ final class NoteEditorViewModel: ObservableObject {
 
     // MARK: - Tool state
 
-    @Published var activeTool: NoteEditorTool = .select
+    @Published var activeTool: NoteEditorTool = .pen
 
     // Pen
     @Published var penBrush: NotePenBrush = .pen
@@ -559,9 +544,6 @@ final class NoteEditorViewModel: ObservableObject {
     /// `PencilCanvasView` so the underlying `PKCanvasView.tool` updates.
     var pkTool: PKTool {
         switch activeTool {
-        case .select:
-            // Canvas doesn't ink in Select mode; keep a harmless default.
-            return PKInkingTool(.pen, color: .clear, width: 1)
         case .pen:
             return PKInkingTool(penBrush.pkInkType, color: UIColor(penColor), width: penThickness)
         case .highlighter:
@@ -1147,7 +1129,6 @@ final class NoteEditorViewModel: ObservableObject {
 
     private func toolReadyStatus(for tool: NoteEditorTool) -> String {
         switch tool {
-        case .select: return "Select ready"
         case .pen: return penStatus()
         case .highlighter: return highlighterStatus()
         case .eraser: return eraserStatus()
@@ -1155,15 +1136,6 @@ final class NoteEditorViewModel: ObservableObject {
         case .shape: return shapeStatus()
         case .text: return textStatus()
         case .image: return "Pick an image to insert"
-        }
-    }
-
-    /// Switches to Select and reports status — used when a write-tool
-    /// finger tap hits an overlay sticker.
-    func enterSelectModeFromOverlayTap() {
-        if activeTool != .select {
-            assignActiveToolTracksPencil(.select)
-            flashStatus("Select ready")
         }
     }
 

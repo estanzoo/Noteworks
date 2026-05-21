@@ -75,14 +75,13 @@ enum HomeBubbleLayout {
 
     private static let slotSets: [Int: [Slot]] = [
         1: [Slot(x: 0.50, y: 0.50)],
-        // The JSX 2-bubble template is a desktop-card diagonal
-        // (`[(0.40, 0.30), (0.60, 0.47)]`) that on a wide iPad canvas
-        // reads as "one bubble in the upper-left, one in the lower-
-        // right" rather than a centred pair. We use a symmetric
-        // horizontal pair at the vertical middle so a freshly-
-        // onboarded user sees their two course bubbles balanced at the
-        // centre of the field.
-        2: [Slot(x: 0.38, y: 0.50), Slot(x: 0.62, y: 0.50)],
+        // Two equal-sized bubbles at the default empty size (~180pt) need
+        // roughly `2 * size + padding` centre-to-centre spacing. The old
+        // 0.38 / 0.62 pair (24% of width apart) collides on every iPad
+        // width — shrink-to-fit bottoms out at `shrinkFloor` before the
+        // pair fits, so both bubbles spawn overlapping. `slotsForLayout`
+        // widens this pair dynamically; these constants are only a fallback.
+        2: [Slot(x: 0.27, y: 0.50), Slot(x: 0.73, y: 0.50)],
         3: [Slot(x: 0.34, y: 0.30), Slot(x: 0.56, y: 0.30), Slot(x: 0.45, y: 0.52)],
         4: [
             Slot(x: 0.31, y: 0.29), Slot(x: 0.52, y: 0.29),
@@ -146,14 +145,7 @@ enum HomeBubbleLayout {
         // preserved without per-count fidelity at the top end.
         let actualMaxCount = max(1, sortedRaws.map(\.count).max() ?? 1)
         let referenceMax = max(1, min(actualMaxCount, sizingReferenceCount))
-        let emptyBase: CGFloat = {
-            switch sortedRaws.count {
-            case ...1: return 200
-            case ...4: return 180
-            case ...6: return 160
-            default:   return 140
-            }
-        }()
+        let emptyBase: CGFloat = emptyBaseSize(for: sortedRaws.count)
 
         let sized: [Sized] = sortedRaws.map { raw in
             let size: CGFloat
@@ -296,7 +288,7 @@ enum HomeBubbleLayout {
         // Stable iteration order so identical inputs converge to the
         // same output on every render.
         let names = result.keys.sorted { $0.lowercased() < $1.lowercased() }
-        let maxIterations = 6
+        let maxIterations = 12
         for _ in 0..<maxIterations {
             var moved = false
             for name in names {
@@ -420,7 +412,7 @@ enum HomeBubbleLayout {
 
     private static func placeBubbles(_ sized: [Sized], in container: CGSize) -> [Placed] {
         let padding = packingPadding(for: container)
-        let slots = slotSets[min(sized.count, 6)] ?? defaultSlots
+        let slots = slotsForLayout(count: sized.count, sized: sized, in: container, padding: padding)
 
         // JSX `buildPlaced` (L1481–L1491): scale every bubble uniformly,
         // map index → slot, clamp to the inside of the container so the
@@ -462,9 +454,50 @@ enum HomeBubbleLayout {
             scale -= 0.035
         }
 
-        // JSX L1510 fallback: pathological canvas — return the 56%
-        // layout even though some bubbles may overlap. Better than
-        // pushing bubbles off-screen.
-        return buildPlaced(scale: 0.56)
+        // Pathological canvas — shrink to the floor, then run a whole-field
+        // separation pass so we never ship overlapping slot positions when
+        // there is room to separate (the old 0.56 fallback left pairs
+        // overlapping whenever `shrinkFloor` stopped the scale loop early).
+        var fallback = buildPlaced(scale: 0.56)
+        if !fits(fallback) {
+            var byName = Dictionary(uniqueKeysWithValues: fallback.map { ($0.name, $0) })
+            byName = enforceNonOverlap(byName, in: container, pinned: [])
+            fallback = fallback.map { byName[$0.name] ?? $0 }
+        }
+        return fallback
+    }
+
+    /// Slot table for the current bubble count. The 2-bubble case is computed
+    /// from the largest requested size so freshly-onboarded pairs never spawn
+    /// on top of each other.
+    private static func slotsForLayout(
+        count: Int,
+        sized: [Sized],
+        in container: CGSize,
+        padding: CGFloat
+    ) -> [Slot] {
+        guard count == 2, container.width > 0 else {
+            return slotSets[min(count, 6)] ?? defaultSlots
+        }
+
+        let maxSize = sized.map(\.size).max() ?? emptyBaseSize(for: count)
+        let minCenterDistance = maxSize * 2 + padding
+        let halfSpan = min(
+            0.46,
+            max(minCenterDistance / (2 * container.width), 0.26)
+        )
+        return [
+            Slot(x: 0.5 - halfSpan, y: 0.50),
+            Slot(x: 0.5 + halfSpan, y: 0.50),
+        ]
+    }
+
+    private static func emptyBaseSize(for count: Int) -> CGFloat {
+        switch count {
+        case ...1: return 200
+        case ...4: return 180
+        case ...6: return 160
+        default:   return 140
+        }
     }
 }

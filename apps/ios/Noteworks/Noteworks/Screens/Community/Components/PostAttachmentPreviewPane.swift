@@ -296,12 +296,21 @@ struct PostAttachmentPreviewPane: View {
 /// `cacheKey` is optional: when provided, the rendered `UIImage` is
 /// cached so reopening the same PDF doesn't re-rasterise. Pass the
 /// note id for posted PDFs, or a local UUID for unpublished ones.
+enum PDFFirstPageImageContentMode {
+    /// Letterbox the page inside the container (Community attachments).
+    case fit
+    /// Crop-to-fill so the container is entirely the note page preview.
+    case fill
+}
+
 struct PDFFirstPageImage: View {
     let data: Data
     var cacheKey: String? = nil
     var fileLabel: String? = nil
     /// Inset around the rendered page so it doesn't bleed to the corners.
     var padding: CGFloat = 28
+    var contentMode: PDFFirstPageImageContentMode = .fit
+    var showsLabel: Bool = true
 
     @State private var image: UIImage?
     @State private var failed: Bool = false
@@ -311,10 +320,7 @@ struct PDFFirstPageImage: View {
             ZStack {
                 Color.white
                 if let image {
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFit()
-                        .padding(padding)
+                    renderedImage(image, in: geo.size)
                 } else if failed {
                     PDFPlaceholderTile(label: fileLabel)
                 } else {
@@ -329,7 +335,11 @@ struct PDFFirstPageImage: View {
                     ProgressView().tint(CommunityTheme.accent)
                 }
 
-                if image != nil, let label = fileLabel, !label.isEmpty {
+                if image != nil,
+                   showsLabel,
+                   contentMode == .fit,
+                   let label = fileLabel,
+                   !label.isEmpty {
                     VStack {
                         Spacer()
                         HStack {
@@ -349,9 +359,26 @@ struct PDFFirstPageImage: View {
                     .allowsHitTesting(false)
                 }
             }
-            .task(id: cacheKey ?? "\(data.hashValue)") {
+            .task(id: "\(cacheKey ?? "\(data.hashValue)")-\(contentMode)") {
                 await render(at: geo.size)
             }
+        }
+    }
+
+    @ViewBuilder
+    private func renderedImage(_ image: UIImage, in size: CGSize) -> some View {
+        switch contentMode {
+        case .fit:
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFit()
+                .padding(padding)
+        case .fill:
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: size.width, height: size.height)
+                .clipped()
         }
     }
 
@@ -365,7 +392,11 @@ struct PDFFirstPageImage: View {
             width: max(120, size.width * UIScreen.main.scale),
             height: max(160, size.height * UIScreen.main.scale)
         )
-        let rendered = await Self.renderFirstPage(data: data, size: renderSize)
+        let rendered = await Self.renderFirstPage(
+            data: data,
+            size: renderSize,
+            contentMode: contentMode
+        )
         if let rendered {
             image = rendered
             if let cacheKey {
@@ -376,13 +407,23 @@ struct PDFFirstPageImage: View {
         }
     }
 
-    private static func renderFirstPage(data: Data, size: CGSize) async -> UIImage? {
+    private static func renderFirstPage(
+        data: Data,
+        size: CGSize,
+        contentMode: PDFFirstPageImageContentMode = .fit
+    ) async -> UIImage? {
         await Task.detached(priority: .userInitiated) {
             guard let doc = PDFDocument(data: data),
                   let page = doc.page(at: 0) else { return nil }
             let pageRect = page.bounds(for: .mediaBox)
             guard pageRect.width > 0, pageRect.height > 0 else { return nil }
-            let scale = min(size.width / pageRect.width, size.height / pageRect.height)
+            let scale: CGFloat
+            switch contentMode {
+            case .fit:
+                scale = min(size.width / pageRect.width, size.height / pageRect.height)
+            case .fill:
+                scale = max(size.width / pageRect.width, size.height / pageRect.height)
+            }
             let drawSize = CGSize(
                 width: pageRect.width * scale,
                 height: pageRect.height * scale

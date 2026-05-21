@@ -78,9 +78,8 @@ struct NoteEditorToolStrip: View {
 
             Spacer(minLength: 8)
 
-            // Center cluster — Select first (default), then write tools.
+            // Center cluster — write tools.
             HStack(spacing: 4) {
-                toolButton(.select, symbol: "cursorarrow", panel: nil)
                 toolButton(.pen, symbol: "pencil.tip", panel: .pen)
                 toolButton(.eraser, symbol: "eraser", panel: .eraser)
                 toolButton(.highlighter, symbol: "highlighter", panel: .highlighter)

@@ -3,7 +3,8 @@
 //  Noteworks
 //
 //  Renders the first page of a local library note using the same PDF
-//  rasterisation path as Community attachments (`PDFFirstPageImage`).
+//  rasterisation path and primary-tile chrome as Community post
+//  attachments (`PostAttachmentPreviewPane.primaryTile`).
 //
 
 import SwiftUI
@@ -17,9 +18,7 @@ struct LocalNotePDFPreview: View {
     var livePage: Int? = nil
     var liveDrawing: PKDrawing? = nil
     var fileLabel: String? = nil
-    var minHeight: CGFloat = 180
-    var cornerRadius: CGFloat = 20
-    var pdfPadding: CGFloat = 18
+    var minHeight: CGFloat = 280
 
     @State private var pdfData: Data?
     @State private var failed = false
@@ -29,42 +28,65 @@ struct LocalNotePDFPreview: View {
         return trimmed.isEmpty ? "Untitled Note" : trimmed
     }
 
+    private var pdfFilenameLabel: String {
+        let base = displayLabel
+        return base.lowercased().hasSuffix(".pdf") ? base : "\(base).pdf"
+    }
+
     var body: some View {
-        Group {
-            if let pdfData, !pdfData.isEmpty {
-                PDFFirstPageImage(
-                    data: pdfData,
-                    cacheKey: "local-note-\(note.id)-\(Int(note.updatedAt.timeIntervalSince1970))",
-                    fileLabel: displayLabel,
-                    padding: pdfPadding
+        RoundedRectangle(cornerRadius: 24, style: .continuous)
+            .fill(Color.white.opacity(0.52))
+            .overlay {
+                previewContent
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.74), lineWidth: 1)
+            )
+            .shadow(
+                color: Color(red: 73/255, green: 99/255, blue: 124/255).opacity(0.12),
+                radius: 18,
+                y: 8
+            )
+            .frame(maxWidth: .infinity)
+            .frame(minHeight: minHeight)
+            .task(id: taskKey) {
+                await loadPreviewPDF()
+            }
+    }
+
+    @ViewBuilder
+    private var previewContent: some View {
+        if let pdfData, !pdfData.isEmpty {
+            PDFFirstPageImage(
+                data: pdfData,
+                cacheKey: "local-note-\(note.id)-\(Int(note.updatedAt.timeIntervalSince1970))",
+                fileLabel: pdfFilenameLabel,
+                padding: 28,
+                contentMode: .fit,
+                showsLabel: true
+            )
+        } else if failed {
+            PDFPlaceholderTile(label: pdfFilenameLabel)
+        } else {
+            ZStack {
+                LinearGradient(
+                    colors: [
+                        Color(red: 226/255, green: 237/255, blue: 246/255).opacity(0.86),
+                        Color.white.opacity(0.74),
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
                 )
-            } else if failed {
-                PDFPlaceholderTile(label: displayLabel)
-            } else {
-                ZStack {
-                    LinearGradient(
-                        colors: [
-                            Color(red: 226/255, green: 237/255, blue: 246/255).opacity(0.86),
-                            Color.white.opacity(0.74),
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
+                VStack(spacing: 10) {
                     ProgressView()
                         .tint(NoteEditorTheme.accent)
+                    Text("Loading preview…")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(NoteEditorTheme.textMuted)
                 }
             }
-        }
-        .frame(maxWidth: .infinity)
-        .frame(minHeight: minHeight)
-        .background(Color(red: 255/255, green: 253/255, blue: 241/255))
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .strokeBorder(Color.black.opacity(0.72), lineWidth: 2)
-        )
-        .task(id: taskKey) {
-            await loadPreviewPDF()
         }
     }
 
