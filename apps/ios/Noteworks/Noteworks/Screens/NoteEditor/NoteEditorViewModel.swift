@@ -1449,8 +1449,27 @@ final class NoteEditorViewModel: ObservableObject {
         accessToken: String,
         store: NotesStore
     ) async {
+        func setGapProgress(_ value: Double) {
+            setJob(.gap, to: .running(progress: min(0.99, max(0, value))))
+        }
+
+        func animateGapProgress(from start: Double, to end: Double, duration: TimeInterval) async {
+            guard end > start else {
+                setGapProgress(end)
+                return
+            }
+            let steps = max(1, Int(duration / 0.12))
+            let stepDuration = duration / Double(steps)
+            for step in 1...steps {
+                if Task.isCancelled { return }
+                let t = Double(step) / Double(steps)
+                setGapProgress(start + (end - start) * t)
+                try? await Task.sleep(nanoseconds: UInt64(stepDuration * 1_000_000_000))
+            }
+        }
+
         do {
-            setJob(.gap, to: .running(progress: 0.16))
+            await animateGapProgress(from: 0, to: 0.14, duration: 0.45)
             flashStatus("Preparing comparison")
 
             let sourcePDF = exportPDFData(for: sourceNote, store: store)
@@ -1459,7 +1478,7 @@ final class NoteEditorViewModel: ObservableObject {
             try validateGapPDF(sourcePDF, label: "Current note")
             try validateGapPDF(comparisonPDF, label: "Comparison note")
 
-            setJob(.gap, to: .running(progress: 0.34))
+            await animateGapProgress(from: gapJob.progress, to: 0.28, duration: 0.35)
             flashStatus("Sending PDFs to Gemini")
 
             let request = GapDetectionRequest(
@@ -1471,15 +1490,34 @@ final class NoteEditorViewModel: ObservableObject {
                 comparisonTitle: displayTitle(comparisonNote),
                 courseContext: sourceNote.subject ?? comparisonNote.subject
             )
-            let response = try await gapDetectionService.compare(request, accessToken: accessToken)
+
+            let creepTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                var value = self.gapJob.progress
+                while !Task.isCancelled && value < 0.88 {
+                    try? await Task.sleep(nanoseconds: 450_000_000)
+                    if Task.isCancelled { return }
+                    value = min(0.88, value + 0.018)
+                    setGapProgress(value)
+                }
+            }
+
+            let response: GapDetectionResponse
+            do {
+                response = try await gapDetectionService.compare(request, accessToken: accessToken)
+            } catch {
+                creepTask.cancel()
+                throw error
+            }
+            creepTask.cancel()
             gapDetectionResponse = response
 
-            setJob(.gap, to: .running(progress: 0.74))
+            await animateGapProgress(from: gapJob.progress, to: 0.92, duration: 0.35)
             flashStatus("Rendering summary")
 
             let rendered = try GapSummaryRenderer.render(response)
 
-            setJob(.gap, to: .running(progress: 0.90))
+            await animateGapProgress(from: gapJob.progress, to: 0.98, duration: 0.25)
             flashStatus("Inserting summary")
 
             insertGapSummary(rendered, store: store)

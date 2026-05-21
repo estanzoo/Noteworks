@@ -308,6 +308,7 @@ struct HomeView: View {
                         isEditing: isEditingLayout,
                         hasManualOffset: store.bubble(named: course.name)?.manualOffsetX != nil,
                         isReservedName: Self.isReservedBubbleName(course.name),
+                        canDelete: course.name.caseInsensitiveCompare(NotesStore.initialGuestBubbleName) != .orderedSame,
                         draggingName: $draggingName,
                         onTap: { handleBubbleTap(course.name) },
                         onRename: { handleRenameBubble(course.name) },
@@ -400,13 +401,10 @@ struct HomeView: View {
         }
     }
 
-    /// Bubbles whose names are managed by the system — they show up
-    /// when there are orphaned notes or for a fresh empty
-    /// account (`Untitled Bubble`). JSX L2276 hides the action menu
-    /// on these, so we do the same.
+    /// Legacy virtual bucket labels that should never appear as editable
+    /// bubbles on Home (`Unnamed`, `Uncategorized`).
     private static func isReservedBubbleName(_ name: String) -> Bool {
-        let lower = name.lowercased()
-        return NotesStore.reservedBubbleNames.contains(lower) || lower == "untitled bubble"
+        NotesStore.isLegacyOrphanSubject(name)
     }
 
     private func resolveBubbleCourse(_ name: String) {
@@ -524,6 +522,7 @@ private struct HomeBubbleCell: View {
     let isEditing: Bool
     let hasManualOffset: Bool
     let isReservedName: Bool
+    let canDelete: Bool
     @Binding var draggingName: String?
 
     let onTap: () -> Void
@@ -656,10 +655,12 @@ private struct HomeBubbleCell: View {
                             Label("Reset Position", systemImage: "arrow.uturn.backward")
                         }
                     }
-                    Button(role: .destructive) {
-                        onDelete()
-                    } label: {
-                        Label("Delete Bubble", systemImage: "trash")
+                    if canDelete {
+                        Button(role: .destructive) {
+                            onDelete()
+                        } label: {
+                            Label("Delete Bubble", systemImage: "trash")
+                        }
                     }
                 }
             }

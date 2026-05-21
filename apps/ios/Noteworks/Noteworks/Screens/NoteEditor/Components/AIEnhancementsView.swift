@@ -59,15 +59,15 @@ struct AIEnhancementsPill: View {
     }
 
     private func progressPill(label: String, progress: Double) -> some View {
-        let clamped = max(0.06, min(1, progress))
+        let fill = max(0, min(1, progress))
         return GeometryReader { proxy in
             ZStack(alignment: .leading) {
                 Capsule()
                     .fill(NoteEditorTheme.accent.opacity(0.16))
-                    .frame(width: proxy.size.width * clamped)
-                    .animation(.easeInOut(duration: 0.18), value: clamped)
+                    .frame(width: proxy.size.width * fill)
+                    .animation(.easeInOut(duration: 0.18), value: fill)
                 HStack(spacing: 6) {
-                    Text("\(Int(clamped * 100))%")
+                    Text("\(Int(fill * 100))%")
                         .font(.system(size: 11, weight: .bold))
                         .foregroundStyle(NoteEditorTheme.accent)
                     Text(label)
@@ -82,6 +82,7 @@ struct AIEnhancementsPill: View {
                     .background(.ultraThinMaterial, in: Capsule())
             )
             .overlay(Capsule().strokeBorder(NoteEditorTheme.accent.opacity(0.18), lineWidth: 1))
+            .clipShape(Capsule())
         }
         .frame(width: 148, height: 26)
     }
@@ -434,6 +435,12 @@ private struct AIEnhancementStatusRow: View {
 private struct AIEnhancementProgressBar: View {
     let progress: Double
     let isCompleted: Bool
+    var inProgressLabel: String = "Organizing..."
+    var completedLabel: String = "Organized!"
+
+    private var fillFraction: Double {
+        max(0, min(1, isCompleted ? 1 : progress))
+    }
 
     var body: some View {
         VStack(spacing: 8) {
@@ -449,18 +456,19 @@ private struct AIEnhancementProgressBar: View {
                                 endPoint: .trailing
                             )
                         )
-                        .frame(width: proxy.size.width * max(0.06, min(1, isCompleted ? 1 : progress)))
-                        .animation(.easeInOut(duration: 0.18), value: progress)
+                        .frame(width: proxy.size.width * fillFraction)
+                        .animation(.easeInOut(duration: 0.18), value: fillFraction)
                 }
+                .clipShape(Capsule())
             }
             .frame(height: 9)
 
             HStack {
-                Text(isCompleted ? "Organized!" : "Organizing...")
+                Text(isCompleted ? completedLabel : inProgressLabel)
                     .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(isCompleted ? NoteEditorTheme.accent : NoteEditorTheme.textPrimary)
                 Spacer()
-                Text(isCompleted ? "Done" : "\(Int(progress * 100))%")
+                Text(isCompleted ? "Done" : "\(Int(fillFraction * 100))%")
                     .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(NoteEditorTheme.textMuted)
             }
@@ -482,6 +490,7 @@ private struct AIEnhancementProgressBar: View {
 struct GapDetectionPopup: View {
     @ObservedObject var viewModel: NoteEditorViewModel
     @ObservedObject var creditsStore: CreditsStore
+    @EnvironmentObject private var store: NotesStore
     let currentNote: Note?
     let notes: [Note]
     let accessToken: String
@@ -508,34 +517,40 @@ struct GapDetectionPopup: View {
                 .ignoresSafeArea()
                 .onTapGesture { onClose() }
 
-            VStack(spacing: 0) {
-                header
-                Divider().overlay(NoteEditorTheme.chromeBorder.opacity(0.7))
-                content
-            }
-            .frame(maxWidth: 880)
-            .frame(maxHeight: 860)
-            .background(
-                RoundedRectangle(cornerRadius: 30)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color.white.opacity(0.84),
-                                Color(red: 244/255, green: 248/255, blue: 252/255).opacity(0.66),
-                                Color(red: 233/255, green: 241/255, blue: 247/255).opacity(0.56)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
+            GeometryReader { proxy in
+                let modalWidth = min(880, proxy.size.width - 32)
+                let modalHeight = min(860, proxy.size.height - 48)
+
+                VStack(spacing: 0) {
+                    header
+                    Divider().overlay(NoteEditorTheme.chromeBorder.opacity(0.7))
+                    content
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                }
+                .frame(width: modalWidth, height: modalHeight)
+                .background(
+                    RoundedRectangle(cornerRadius: 30)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color.white.opacity(0.84),
+                                    Color(red: 244/255, green: 248/255, blue: 252/255).opacity(0.66),
+                                    Color(red: 233/255, green: 241/255, blue: 247/255).opacity(0.56)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
                         )
-                    )
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 30))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 30)
-                    .strokeBorder(NoteEditorTheme.glassBorder, lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(0.18), radius: 70, x: 0, y: 28)
-            .padding(.horizontal, 16)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 30))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 30)
+                        .strokeBorder(NoteEditorTheme.glassBorder, lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 30))
+                .shadow(color: .black.opacity(0.18), radius: 70, x: 0, y: 28)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
     }
 
@@ -591,10 +606,16 @@ struct GapDetectionPopup: View {
             ScrollView {
                 configContent
                     .padding(24)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
             }
+            .scrollIndicators(.automatic)
         case .running, .completed:
-            resultContent
-                .padding(24)
+            ScrollView {
+                resultContent
+                    .padding(24)
+                    .frame(maxWidth: .infinity, alignment: .top)
+            }
+            .scrollIndicators(.automatic)
         }
     }
 
@@ -1032,7 +1053,12 @@ struct GapDetectionPopup: View {
                 .frame(width: 260, height: 330)
             }
 
-            AIEnhancementProgressBar(progress: viewModel.gapJob.progress, isCompleted: viewModel.gapJob.isCompleted)
+            AIEnhancementProgressBar(
+                progress: viewModel.gapJob.progress,
+                isCompleted: viewModel.gapJob.isCompleted,
+                inProgressLabel: "Analyzing...",
+                completedLabel: "Analysis complete!"
+            )
                 .frame(maxWidth: 520)
 
             if viewModel.gapJob.isCompleted {
@@ -1209,7 +1235,7 @@ struct GapDetectionPopup: View {
             }
             Spacer()
             Button("Preview") {
-                viewModel.gapDetectionConfigPanel = .preview
+                viewModel.pushGapPreview(noteId: note.id)
             }
             .font(.system(size: 12, weight: .bold))
             .foregroundStyle(NoteEditorTheme.textMuted)
@@ -1304,17 +1330,26 @@ struct GapDetectionPopup: View {
                 gapChip(note.formattedDate)
                 gapChip("Similar topic")
             }
-            RoundedRectangle(cornerRadius: 20)
-                .stroke(Color.black.opacity(0.72), lineWidth: 2)
-                .background(Color(red: 255/255, green: 253/255, blue: 241/255), in: RoundedRectangle(cornerRadius: 20))
-                .frame(height: 150)
+            LocalNotePDFPreview(
+                store: store,
+                note: note,
+                livePage: note.id == viewModel.noteId ? viewModel.currentPage : nil,
+                liveDrawing: note.id == viewModel.noteId ? viewModel.drawing : nil,
+                minHeight: 220,
+                cornerRadius: 20
+            )
+            .frame(height: 220)
             HStack {
                 Text(selected ? "This peer note is already included." : "Preview first, then decide whether to include this source.")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(NoteEditorTheme.textSecondary)
                 Spacer()
                 Button(viewModel.gapDetectionConfigPanel == .preview ? "Back to recommendations" : "Back") {
-                    viewModel.gapDetectionConfigPanel = .root
+                    if viewModel.gapDetectionConfigPanel == .preview {
+                        viewModel.popGapPreview()
+                    } else {
+                        viewModel.gapDetectionConfigPanel = .root
+                    }
                 }
                 .font(.system(size: 13, weight: .bold))
                 .foregroundStyle(NoteEditorTheme.textPrimary)

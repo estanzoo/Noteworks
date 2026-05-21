@@ -117,7 +117,7 @@ enum HomeBubbleLayout {
     /// layout reflows naturally across iPad sizes / split view / rotation.
     @MainActor
     static func bubbles(from store: NotesStore, in containerSize: CGSize) -> [CourseBubble] {
-        var names = store.bubbleNames
+        let names = store.bubbleNames
 
         struct Raw { let name: String; let count: Int }
         let raws = names.map { Raw(name: $0, count: store.noteCount(for: $0)) }

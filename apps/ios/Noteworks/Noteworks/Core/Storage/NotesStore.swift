@@ -525,7 +525,6 @@ final class NotesStore: ObservableObject {
             notes = snapshot.notes
             syncBubbleNamesFromBubbles()
             reconcileOrphanNotes()
-            ensureDefaultBubbleExists()
         }
         activeUserId = userId
         isReady = true
