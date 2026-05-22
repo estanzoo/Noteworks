@@ -1,0 +1,65 @@
+---
+description: Deploy and work on Supabase Edge Functions (use npx, not global CLI)
+globs: packages/supabase/**
+alwaysApply: false
+---
+
+# Supabase Edge Functions
+
+## CLI
+
+The `supabase` binary is **not** installed globally in this repo. Always run the CLI via **`npx`** from `packages/supabase`:
+
+```bash
+cd packages/supabase
+```
+
+Do **not** run bare `supabase …` — it will fail with `command not found`.
+
+## Deploy functions
+
+**All functions** (usual workflow):
+
+```bash
+cd packages/supabase && npx supabase functions deploy
+```
+
+**Single function**:
+
+```bash
+cd packages/supabase && npx supabase functions deploy <function-name>
+```
+
+Example:
+
+```bash
+cd packages/supabase && npx supabase functions deploy confirm-password-reset
+```
+
+Hosted project ref: `canhewvuprjwmpopcloj`  
+Dashboard: https://supabase.com/dashboard/project/canhewvuprjwmpopcloj/functions
+
+## First-time / new machine
+
+```bash
+cd packages/supabase
+npx supabase login
+npx supabase link --project-ref canhewvuprjwmpopcloj
+```
+
+Then run deploy again.
+
+## Local serve
+
+```bash
+cd packages/supabase && npx supabase functions serve
+```
+
+## `config.toml` paths
+
+`supabase/config.toml` paths (e.g. email `content_path`) are resolved from **`packages/supabase`**, not from `packages/supabase/supabase/`. Use `./supabase/templates/...` for template files under `supabase/templates/`.
+
+## Related docs
+
+- `docs/Hosted_Edge_Functions_Test_curl.md` — curl tests after deploy
+- `docs/Forgot_Password_Supabase_Setup_Guide.md` — recovery email + `confirm-password-reset`

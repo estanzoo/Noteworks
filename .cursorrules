@@ -1,0 +1,17 @@
+# Noteworks — Cursor project rules
+
+## Supabase Edge Functions deploy
+
+The Supabase CLI is not global. Always use `npx` from `packages/supabase`:
+
+```bash
+# All functions
+cd packages/supabase && npx supabase functions deploy
+
+# One function
+cd packages/supabase && npx supabase functions deploy <function-name>
+```
+
+First time: `npx supabase login` then `npx supabase link --project-ref canhewvuprjwmpopcloj`
+
+More detail: `.cursor/rules/supabase-edge-functions.mdc`

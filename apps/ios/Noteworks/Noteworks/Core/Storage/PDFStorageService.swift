@@ -82,7 +82,7 @@ final class PDFStorageService {
                     drawing = store.loadDrawing(for: note.id, page: pageIndex) ?? PKDrawing()
                 }
 
-                Self.fillWhitePage(cg, size: pageSize)
+                 Self.fillWhitePage(cg, size: pageSize)
 
                 let rotation = CGFloat(setting.rotation % 360)
                 cg.saveGState()

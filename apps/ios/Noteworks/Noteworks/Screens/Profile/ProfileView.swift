@@ -75,6 +75,7 @@ struct ProfileView: View {
                 viewModel.hydrate(from: userProfile)
             }
             schoolSearch.prefetchAll(accessToken: appState.accessToken)
+            Task { await appState.refreshSignInMethod() }
         }
         .onChange(of: appState.profile) { _, newValue in
             if let newValue {
@@ -87,8 +88,19 @@ struct ProfileView: View {
         .onChange(of: appState.accessToken) { _, token in
             schoolSearch.prefetchAll(accessToken: token)
         }
+        .onChange(of: appState.isOAuthSignIn) { _, isOAuth in
+            if isOAuth, viewModel.activeDetail == .security {
+                viewModel.activeDetail = .about
+            }
+        }
         .fullScreenCover(isPresented: $viewModel.courseEditorOpen) {
             ProfileCourseEditorSheet(viewModel: viewModel)
+        }
+    }
+
+    private var visibleProfileDetails: [ProfileDetail] {
+        ProfileDetail.allCases.filter { detail in
+            detail != .security || !appState.isOAuthSignIn
         }
     }
 
@@ -288,7 +300,7 @@ struct ProfileView: View {
 
     private var sidebar: some View {
         VStack(spacing: 10) {
-            ForEach(ProfileDetail.allCases) { item in
+            ForEach(visibleProfileDetails) { item in
                 ProfileNavItem(
                     label: item.label,
                     active: viewModel.activeDetail == item

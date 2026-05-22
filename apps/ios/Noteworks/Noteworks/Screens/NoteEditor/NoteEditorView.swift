@@ -74,6 +74,13 @@ struct NoteEditorView: View {
     /// does not touch the outer editor chrome / gesture wiring, so
     /// pinch-zoom on the scroll view is unaffected.
     @State private var canvasLayoutSettleNonce: Int = 0
+    /// Current zoom factor driven by `ZoomablePageScrollView`. 1.0 = fit.
+    /// The zoom architecture (see `ZoomablePageScrollView` doc comment)
+    /// resizes the page card to `logicalPageSize * canvasZoom` instead
+    /// of transform-scaling a fixed-size SwiftUI subtree — so PencilKit
+    /// strokes and the procedural background pattern stay vector-crisp
+    /// at every zoom level.
+    @State private var canvasZoom: CGFloat = 1.0
     // MARK: - Overlay editor state
 
     /// Currently selected text/image overlay on the active page.
@@ -371,6 +378,9 @@ struct NoteEditorView: View {
             // PencilKit interaction for no reason.
             selectedOverlayId = nil
             editingOverlayId = nil
+            // Return to fit zoom on page changes so the new page is
+            // visible end-to-end instead of opening mid-zoom.
+            canvasZoom = 1.0
         }
         .onChange(of: viewModel.activeTool) { _, newTool in
             if !newTool.allowsOverlayManipulation {
@@ -917,10 +927,19 @@ struct NoteEditorView: View {
         scrollContentSize: CGSize,
         rotation: Int
     ) -> some View {
+        // Page card at the CURRENT zoom. Multiplying the logical size by
+        // `canvasZoom` (driven by `ZoomablePageScrollView`'s pinch) lets
+        // PencilKit and the background pattern lay out at their true
+        // native size at every zoom level — vector content stays crisp
+        // because it's actually rendered larger, not stretched.
+        let zoomedPageSize = CGSize(
+            width: logicalPageSize.width * canvasZoom,
+            height: logicalPageSize.height * canvasZoom
+        )
         let pageStack = ZStack {
             ZoomablePageScrollView(
-                contentSize: scrollContentSize,
-                maxScale: 8.0,
+                baseContentSize: scrollContentSize,
+                maxZoom: 8.0,
                 nextSwipeCreatesPage: viewModel.currentPage >= viewModel.totalPages,
                 atFirstPage: viewModel.currentPage <= 1,
                 blocksPageGestures: hasOverlaySelection,
@@ -928,10 +947,13 @@ struct NoteEditorView: View {
                 onSwipeNext: { viewModel.goToNextPage() },
                 onSwipePrevious: { viewModel.goToPreviousPage() },
                 onPageFingerTap: { point in
+                    // `point` arrives in BASE (unzoomed) coordinates so
+                    // it lines up with `logicalPageSize`.
                     handlePageFingerTap(at: point, pageSize: logicalPageSize)
-                }
+                },
+                zoom: $canvasZoom
             ) {
-                pageCard(logicalPageSize: logicalPageSize, rotation: rotation)
+                pageCard(logicalPageSize: zoomedPageSize, rotation: rotation)
             }
             .id("\(viewModel.noteId ?? "new")-\(viewModel.currentPage)")
             .frame(width: geometry.size.width, height: geometry.size.height)
@@ -1009,13 +1031,15 @@ struct NoteEditorView: View {
                     .allowsHitTesting(false)
                 NotePageBackgroundView(
                     background: viewModel.currentPageBackground,
-                    imageData: currentPageBackgroundImageData()
+                    imageData: currentPageBackgroundImageData(),
+                    zoomScale: canvasZoom
                 )
                 .allowsHitTesting(false)
                 if let noteId = viewModel.noteId {
                     NoteOverlayLayer(
                         overlays: viewModel.currentPageOverlays(store: store),
                         pageSize: logicalPageSize,
+                        zoomScale: canvasZoom,
                         noteId: noteId,
                         manipulationMode: allowsOverlayManipulation,
                         selectedId: $selectedOverlayId,
@@ -1050,6 +1074,7 @@ struct NoteEditorView: View {
                 PencilCanvasView(
                     drawing: $viewModel.drawing,
                     tool: viewModel.pkTool,
+                    zoomScale: canvasZoom,
                     drawingPolicy: .pencilOnly,
                     // Keep the canvas in the responder chain for every tool
                     // so finger routing stays consistent — disabling it for

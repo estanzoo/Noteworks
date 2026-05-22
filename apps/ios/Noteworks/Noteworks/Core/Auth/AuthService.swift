@@ -89,6 +89,24 @@ private struct SubmitOnboardingResponse: Decodable, Sendable {
     let id: String
 }
 
+private struct ConfirmPasswordResetPayload: Encodable, Sendable {
+    let email: String
+    let code: String
+    let password: String
+    let confirmPassword: String
+
+    enum CodingKeys: String, CodingKey {
+        case email
+        case code
+        case password
+        case confirmPassword = "confirm_password"
+    }
+}
+
+private struct ConfirmPasswordResetResponse: Decodable, Sendable {
+    let message: String
+}
+
 // MARK: - Token refresh
 
 /// Returned by `/auth/v1/token?grant_type=refresh_token`. Only the fields
@@ -130,6 +148,10 @@ protocol AuthServiceProtocol: AnyObject {
     func restoreSession() async throws -> RefreshedSession?
     /// Signs the user out of Supabase (clears the Keychain-stored session).
     func signOut() async throws
+    /// True when the active Supabase session was created via Google or Apple
+    /// OAuth and has no email-password identity. Reads `auth.users` identities
+    /// from the restored session (Dashboard → Authentication → Users).
+    func isOAuthSignIn() async -> Bool
 }
 
 // MARK: - Supabase
@@ -238,19 +260,23 @@ final class SupabaseAuthService: AuthServiceProtocol {
     }
 
     func confirmPasswordReset(email: String, code: String, newPassword: String) async throws {
-        let token = code.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !token.isEmpty else {
-            throw APIError.badRequest("Enter the verification code.")
+        let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let digits = code.filter { $0.isNumber }
+        guard digits.count == 6 else {
+            throw APIError.badRequest("Enter the 6-digit recovery code.")
         }
-        let response = try await client.auth.verifyOTP(
-            email: email,
-            token: token,
-            type: .recovery
+        guard newPassword.count >= 8 else {
+            throw APIError.badRequest("Password must be at least 8 characters.")
+        }
+        let _: ConfirmPasswordResetResponse = try await APIClient.shared.postPublic(
+            SupabaseConfig.confirmPasswordResetURL,
+            body: ConfirmPasswordResetPayload(
+                email: trimmedEmail,
+                code: digits,
+                password: newPassword,
+                confirmPassword: newPassword
+            )
         )
-        guard response.session != nil else {
-            throw APIError.badRequest("Invalid or expired code. Please try again.")
-        }
-        try await client.auth.update(user: UserAttributes(password: newPassword))
     }
 
     func requestEmailChange(newEmail: String) async throws {
@@ -326,6 +352,19 @@ final class SupabaseAuthService: AuthServiceProtocol {
 
     func signOut() async throws {
         try await client.auth.signOut()
+    }
+
+    func isOAuthSignIn() async -> Bool {
+        guard let session = try? await client.auth.session else { return false }
+        return Self.isOAuthSignIn(identities: session.user.identities)
+    }
+
+    /// OAuth-only accounts have a `google` or `apple` identity and no `email`
+    /// identity (email/password users always carry an `email` provider row).
+    static func isOAuthSignIn(identities: [UserIdentity]?) -> Bool {
+        let providers = Set((identities ?? []).map(\.provider))
+        let hasOAuth = providers.contains("google") || providers.contains("apple")
+        return hasOAuth && !providers.contains("email")
     }
 
     private func authResult(from session: Session, fallbackEmail: String) -> AuthResult {

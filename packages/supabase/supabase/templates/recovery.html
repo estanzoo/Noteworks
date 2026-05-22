@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reset your password</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f0f4f8;font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f0f4f8;padding:40px 20px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="480" cellpadding="0" cellspacing="0" style="max-width:480px;width:100%;">
+
+          <!-- Header with gradient -->
+          <tr>
+            <td style="background:linear-gradient(135deg,#3A8FB0 0%,#5EADD3 50%,#7CC4E4 100%);border-radius:16px 16px 0 0;padding:40px 40px 32px;text-align:center;">
+              <img src="https://canhewvuprjwmpopcloj.supabase.co/storage/v1/object/public/app-icon/bed22ec5-46a3-487e-a6cb-70c653ebdc5a.jpeg" alt="NoteWorks" width="64" height="64" style="border-radius:14px;margin-bottom:16px;" />
+              <h1 style="margin:0 0 6px;font-size:24px;font-weight:700;color:#ffffff;letter-spacing:-0.3px;">
+                Note<span style="font-weight:400;">Works</span>
+              </h1>
+              <p style="margin:0;font-size:13px;color:rgba(255,255,255,0.75);font-weight:400;">
+                Turn isolated notes into collective mastery.
+              </p>
+            </td>
+          </tr>
+
+          <!-- Body -->
+          <tr>
+            <td style="background-color:#ffffff;padding:36px 40px 20px;text-align:center;">
+              <h2 style="margin:0 0 12px;font-size:20px;font-weight:600;color:#1C1C1E;">
+                Reset your password
+              </h2>
+              <p style="margin:0 0 28px;font-size:15px;line-height:1.6;color:#3C3C43;opacity:0.75;">
+                Enter this 6-digit code in the app to choose a new password:
+              </p>
+
+              <!-- OTP Code -->
+              <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 auto 28px;">
+                <tr>
+                  <td style="background:#f0f4f8;border-radius:12px;padding:16px 32px;">
+                    <span style="font-size:32px;font-weight:700;letter-spacing:8px;color:#1C1C1E;font-family:'Courier New',monospace;">
+                      {{ .Token }}
+                    </span>
+                  </td>
+                </tr>
+              </table>
+
+              <p style="margin:0;font-size:13px;line-height:1.5;color:#3C3C43;opacity:0.5;">
+                This code expires in 60 minutes. If you didn't request a password reset, you can safely ignore this email.
+              </p>
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="background-color:#ffffff;border-radius:0 0 16px 16px;padding:16px 40px 28px;text-align:center;border-top:1px solid #E8ECF4;">
+              <p style="margin:0;font-size:11px;line-height:1.5;color:#3C3C43;opacity:0.4;">
+                You received this email because a password reset was requested for {{ .Email }} on NoteWorks.
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

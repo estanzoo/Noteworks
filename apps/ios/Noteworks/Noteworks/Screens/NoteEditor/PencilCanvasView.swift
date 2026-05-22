@@ -90,12 +90,20 @@ final class FingerPassThroughPKCanvasView: PKCanvasView {
 struct PencilCanvasView: UIViewRepresentable {
 
     /// Live drawing — bound to the parent so strokes flow up and page
-    /// swaps flow down.
+    /// swaps flow down. Stored in **base** (zoom == 1) coordinates so
+    /// it round-trips through disk regardless of the current zoom.
     @Binding var drawing: PKDrawing
 
     /// Currently active tool (pen / highlighter / eraser / lasso). Pushed
     /// from the parent's toolbar; we apply it on every `updateUIView`.
     var tool: PKTool
+
+    /// Live zoom factor (1.0 = fit). The canvas's frame grows by this
+    /// factor in the parent layout, so we apply the same scale to the
+    /// drawing we hand to PencilKit, and the inverse scale to the
+    /// drawing PencilKit hands back, so persisted strokes always live
+    /// in base coordinates.
+    var zoomScale: CGFloat = 1.0
 
     /// `.anyInput` accepts both finger and Pencil. `.pencilOnly` lets the
     /// finger pan/zoom the canvas as a `UIScrollView`.
@@ -133,7 +141,9 @@ struct PencilCanvasView: UIViewRepresentable {
         canvasView.backgroundColor = .clear
         canvasView.isOpaque = false
         canvasView.isMultipleTouchEnabled = true
-        canvasView.drawing = drawing
+        context.coordinator.appliedZoom = max(0.0001, zoomScale)
+        context.coordinator.lastPublishedBaseDrawing = drawing
+        canvasView.drawing = drawing.transformed(using: CGAffineTransform(scaleX: zoomScale, y: zoomScale))
         canvasView.tool = tool
         canvasView.delegate = context.coordinator
         canvasView.isUserInteractionEnabled = isDrawingEnabled
@@ -170,10 +180,56 @@ struct PencilCanvasView: UIViewRepresentable {
             canvasView.drawingGestureRecognizer.isEnabled = allowsPencilDrawing
         }
         canvasView.tool = tool
+        context.coordinator.parent = self
 
-        if canvasView.drawing != drawing && !context.coordinator.isDrawing {
-            canvasView.drawing = drawing
+        if context.coordinator.isDrawing {
+            // Don't yank the canvas out from under the user mid-stroke.
+            // We re-sync at the next tool-end via the delegate path.
+            return
         }
+
+        let safeZoom = max(0.0001, zoomScale)
+        let zoomChanged = abs(context.coordinator.appliedZoom - safeZoom) > 0.0005
+
+        if zoomChanged {
+            // Zoom changed → push the freshly-scaled drawing into the
+            // canvas exactly ONCE. PencilKit re-rasterises the strokes
+            // at the new size, producing genuinely-crisp ink.
+            let displayDrawing = drawing.transformed(
+                using: CGAffineTransform(scaleX: safeZoom, y: safeZoom)
+            )
+            context.coordinator.suppressNextDelegateChange = true
+            context.coordinator.lastPublishedBaseDrawing = drawing
+            canvasView.drawing = displayDrawing
+            context.coordinator.appliedZoom = safeZoom
+            return
+        }
+
+        // Same zoom as last time: only reassign the canvas drawing when
+        // the binding's drawing genuinely differs from what we last
+        // received from (or pushed to) the canvas. Floating-point
+        // round-trip from the
+        //   canvas → 1/zoom → parent.drawing → ×zoom → displayDrawing
+        // path means `canvasView.drawing` and the freshly-recomputed
+        // `displayDrawing` are almost never byte-identical, so a naive
+        // `!=` check would reassign on every stroke and produce the
+        // flicker / disappear-reappear glitch the user is reporting.
+        if let last = context.coordinator.lastPublishedBaseDrawing,
+           last == drawing {
+            // The binding's value came from our own delegate echo —
+            // the canvas already has the correct content, leave it
+            // alone.
+            return
+        }
+
+        // Binding changed from outside (page load, undo, clear-page).
+        // Push the (newly-scaled) drawing into the canvas once.
+        let displayDrawing = drawing.transformed(
+            using: CGAffineTransform(scaleX: safeZoom, y: safeZoom)
+        )
+        context.coordinator.suppressNextDelegateChange = true
+        context.coordinator.lastPublishedBaseDrawing = drawing
+        canvasView.drawing = displayDrawing
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -183,6 +239,30 @@ struct PencilCanvasView: UIViewRepresentable {
     class Coordinator: NSObject, PKCanvasViewDelegate, UIPencilInteractionDelegate {
         var parent: PencilCanvasView
         var isDrawing: Bool = false
+        /// Zoom we last pushed into the canvas. Used to detect when we
+        /// need to rescale the display drawing.
+        var appliedZoom: CGFloat = 1.0
+        /// Set to true when we programmatically assign
+        /// `canvasView.drawing`, so the immediately-following
+        /// `canvasViewDrawingDidChange` callback doesn't echo the
+        /// scaled drawing back into the binding (which would
+        /// permanently scale persisted strokes on every zoom change).
+        var suppressNextDelegateChange = false
+        /// The base-coordinate `PKDrawing` we most recently either
+        /// (a) published up to the binding via the delegate, or
+        /// (b) pushed into the canvas via `updateUIView`.
+        ///
+        /// We compare incoming binding values against this so we can
+        /// tell "the binding changed because of our own delegate echo"
+        /// (skip — canvas is already correct) from "the binding changed
+        /// because of an external mutation like a page swap or undo"
+        /// (reassign the canvas drawing). Without this distinction the
+        /// round-trip
+        ///   canvas → ×(1/zoom) → binding → ×zoom → canvas
+        /// causes floating-point drift that makes the canvas content
+        /// never byte-equal what we'd recompute, so a naive `!=` check
+        /// would reassign every stroke and flicker the ink.
+        var lastPublishedBaseDrawing: PKDrawing?
 
         init(_ parent: PencilCanvasView) {
             self.parent = parent
@@ -193,8 +273,20 @@ struct PencilCanvasView: UIViewRepresentable {
         }
 
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
-            if parent.drawing != canvasView.drawing {
-                parent.drawing = canvasView.drawing
+            if suppressNextDelegateChange {
+                suppressNextDelegateChange = false
+                return
+            }
+            // Map the canvas's drawing (in scaled coords) back to base
+            // coords before publishing — so the view model always holds
+            // base-coordinate strokes regardless of the current zoom.
+            let inverse = 1.0 / max(0.0001, appliedZoom)
+            let baseDrawing = canvasView.drawing.transformed(
+                using: CGAffineTransform(scaleX: inverse, y: inverse)
+            )
+            lastPublishedBaseDrawing = baseDrawing
+            if parent.drawing != baseDrawing {
+                parent.drawing = baseDrawing
             }
         }
 

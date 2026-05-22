@@ -19,7 +19,16 @@ import UIKit
 
 struct NoteOverlayLayer: View {
     let overlays: [NotePageOverlay]
+    /// **Scaled** page size — `baseLogicalPageSize * canvasZoom`.
+    /// Overlay positions are stored in normalized [0..1] coordinates so
+    /// multiplying by the scaled page size scales them with zoom for
+    /// free. Text font size scales explicitly via `zoomScale` below so
+    /// SwiftUI re-rasterises labels at the new scale instead of
+    /// bitmap-stretching them.
     let pageSize: CGSize
+    /// Current page zoom (1.0 = fit). Used to scale text font sizes so
+    /// inline text overlays stay sharp at high zoom.
+    var zoomScale: CGFloat = 1.0
     let noteId: String
     /// When true (Select tool), overlays accept finger and Pencil for
     /// tap-to-select and drag-to-move.
@@ -54,6 +63,7 @@ struct NoteOverlayLayer: View {
                     overlay: overlay,
                     pageSize: pageSize,
                     manipulationMode: manipulationMode,
+                    zoomScale: zoomScale,
                     isSelected: overlay.id == selectedId,
                     isEditing: overlay.id == editingId,
                     noteId: noteId,
@@ -103,6 +113,7 @@ private struct NoteOverlayItem: View {
     let overlay: NotePageOverlay
     let pageSize: CGSize
     let manipulationMode: Bool
+    let zoomScale: CGFloat
     let isSelected: Bool
     let isEditing: Bool
     let noteId: String
@@ -297,14 +308,20 @@ private struct NoteOverlayItem: View {
     @ViewBuilder
     private var textContent: some View {
         let textColor = Color(hex: overlay.colorHex) ?? NoteEditorTheme.textPrimary
-        let textFont = Font.system(size: overlay.fontSize ?? 18, weight: .medium)
+        // Scale point size by zoom so the text actually renders at the
+        // resolution corresponding to its on-screen size — SwiftUI then
+        // rasterises it crisply instead of bitmap-stretching a fixed-
+        // size label.
+        let scaledFontSize = max(2, (overlay.fontSize ?? 18) * zoomScale)
+        let textFont = Font.system(size: scaledFontSize, weight: .medium)
+        let scaledPadding: CGFloat = 8 * zoomScale
         if isEditing {
             TextField("Type text…", text: $draftText, axis: .vertical)
                 .font(textFont)
                 .foregroundStyle(textColor)
                 .focused($textFieldFocused)
                 .submitLabel(.done)
-                .padding(8)
+                .padding(scaledPadding)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .onAppear {
                     draftText = overlay.text ?? ""
@@ -329,7 +346,7 @@ private struct NoteOverlayItem: View {
                         : textColor.opacity(0.45)
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .padding(8)
+                .padding(scaledPadding)
         }
     }
 
@@ -686,18 +703,18 @@ private struct ImageOverlayAdjustToolbar: View {
 
 // MARK: - Image content (lazy loader)
 
-/// Loads the image bytes once and caches the decoded `UIImage` so a busy
-/// page doesn't re-decode on every gesture frame.
+/// Loads the image bytes through a process-wide cache so a busy page
+/// doesn't re-decode on every gesture frame. The cache survives
+/// SwiftUI view-tree rebuilds (which happen on every zoom step), so
+/// the placeholder doesn't flash back in when the parent re-emits.
 private struct ImageOverlayContent: View {
     let noteId: String
     let filename: String
     let provider: (String) -> Data?
 
-    @State private var image: UIImage?
-
     var body: some View {
         Group {
-            if let image {
+            if let image = OverlayImageCache.shared.image(for: cacheKey, provider: { provider(filename) }) {
                 Image(uiImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
@@ -706,12 +723,9 @@ private struct ImageOverlayContent: View {
                 placeholder
             }
         }
-        .task(id: filename) {
-            if let data = provider(filename), let img = UIImage(data: data) {
-                self.image = img
-            }
-        }
     }
+
+    private var cacheKey: String { "\(noteId)/\(filename)" }
 
     private var placeholder: some View {
         ZStack {
@@ -721,6 +735,32 @@ private struct ImageOverlayContent: View {
                 .font(.system(size: 18, weight: .medium))
                 .foregroundStyle(NoteEditorTheme.textMuted)
         }
+    }
+}
+
+/// Process-wide cache of decoded overlay `UIImage`s. Key: `noteId/filename`.
+/// Survives SwiftUI view-tree teardowns so zoom-induced rerenders don't
+/// flash the placeholder.
+final class OverlayImageCache {
+    static let shared = OverlayImageCache()
+    private let cache = NSCache<NSString, UIImage>()
+    private init() {
+        cache.countLimit = 256
+    }
+
+    func image(for key: String, provider: () -> Data?) -> UIImage? {
+        if let cached = cache.object(forKey: key as NSString) {
+            return cached
+        }
+        guard let data = provider(), let image = UIImage(data: data) else {
+            return nil
+        }
+        cache.setObject(image, forKey: key as NSString)
+        return image
+    }
+
+    func evict(key: String) {
+        cache.removeObject(forKey: key as NSString)
     }
 }
 

@@ -18,6 +18,12 @@ enum SupabaseConfig {
         URL(string: "\(functionsBase)/submit-onboarding")!
     }
 
+    /// `POST /confirm-password-reset` — verifies the recovery OTP and sets
+    /// the new password. Public (no user JWT); uses apikey only.
+    static var confirmPasswordResetURL: URL {
+        URL(string: "\(functionsBase)/confirm-password-reset")!
+    }
+
     /// `POST /submit-feedback` — persists a Profile → Feedback row
     /// after validating it. The client uploads photo bytes separately
     /// (out of scope for the first cut) and passes back the storage

@@ -54,4 +54,6 @@ pnpm-debug.log*
 
 #Backend Docs
 docs/backend/
+
+# Cursor — commit `.cursor/rules/` and `.cursorrules`; ignore local plans only
 .cursor/plans/

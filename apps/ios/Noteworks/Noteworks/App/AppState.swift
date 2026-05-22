@@ -46,6 +46,10 @@ final class AppState: ObservableObject {
     /// without `isAuthenticated` flipping them sideways.
     @Published var resumeOnboardingAtCollege: Bool = false
 
+    /// True when the Supabase session has Google/Apple identities only (no
+    /// email-password provider). Profile hides Security Settings for these users.
+    @Published private(set) var isOAuthSignIn: Bool = false
+
     /// True while the user is inside the note editor. `MainTabView`
     /// watches this to hide the floating Home/Library/Community tab bar
     /// — when you're writing on a page, the tab pill at the bottom of
@@ -145,6 +149,8 @@ final class AppState: ObservableObject {
             creditsStore.activate(userId: restored.userId)
             notifications.activate(userId: restored.userId)
 
+            isOAuthSignIn = await authService.isOAuthSignIn()
+
             do {
                 let fetched = try await authService.getUserProfile(accessToken: restored.accessToken)
                 profile = fetched
@@ -184,6 +190,16 @@ final class AppState: ObservableObject {
         notesStore.activate(userId: result.userId)
         creditsStore.activate(userId: result.userId)
         notifications.activate(userId: result.userId, freshSession: true)
+        Task { isOAuthSignIn = await authService.isOAuthSignIn() }
+    }
+
+    /// Re-reads Supabase Auth identities (google / apple / email providers).
+    func refreshSignInMethod() async {
+        guard isAuthenticated else {
+            isOAuthSignIn = false
+            return
+        }
+        isOAuthSignIn = await authService.isOAuthSignIn()
     }
 
     /// Re-fetches `profile`. Called after onboarding submit and whenever
@@ -266,5 +282,6 @@ final class AppState: ObservableObject {
         isAuthenticated = false
         resumeOnboardingAtCollege = false
         isGuestMode = false
+        isOAuthSignIn = false
     }
 }

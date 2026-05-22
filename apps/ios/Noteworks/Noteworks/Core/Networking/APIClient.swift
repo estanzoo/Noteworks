@@ -92,6 +92,19 @@ actor APIClient {
         return try await performJSON(url: url, method: "POST", body: data, accessToken: accessToken)
     }
 
+    /// Edge Functions with `verify_jwt = false` (e.g. password reset confirm).
+    /// Sends only the project anon key — no user session.
+    func postPublic<T: Decodable>(_ url: URL, body: some Encodable) async throws -> T {
+        let data = try JSONEncoder().encode(body)
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue(SupabaseConfig.anonKey, forHTTPHeaderField: "apikey")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = data
+        return try await perform(request)
+    }
+
     func patch<T: Decodable>(_ url: URL, body: some Encodable, accessToken: String) async throws -> T {
         let data = try JSONEncoder().encode(body)
         return try await performJSON(url: url, method: "PATCH", body: data, accessToken: accessToken)

@@ -2,10 +2,37 @@
 //  ZoomablePageScrollView.swift
 //  Noteworks
 //
-//  UIScrollView-backed zoom + pan host for the note page. The page card
-//  (background → overlays → PencilKit) lives in one `UIHostingController`.
-//  `contentStamp` gates `rootView` updates so overlay drag frames do not
-//  rebuild the tree (which caused snap-back / bounce).
+//  Zoom + pan host for the note page.
+//
+//  Architecture (rewritten to fix vector-content blur at zoom > 1):
+//
+//  The previous design parked the page card in a `UIHostingController`
+//  and let `UIScrollView.zoomScale` apply a `CATransform3D` scale to it
+//  during pinch. UIKit does NOT re-render content under a transform —
+//  it just stretches the backing bitmap. PencilKit ink and SwiftUI
+//  `Canvas`-drawn backgrounds are vector / procedural, so they have
+//  no headroom and went visibly blurry at any zoom > 1.
+//
+//  The new design treats zoom as a content-size change instead of a
+//  transform. The scroll view's own zoom is disabled
+//  (`maximumZoomScale == minimumZoomScale == 1`). Our own pinch gesture
+//  drives an internal `currentZoom` state; on each pinch update we:
+//    1. Recompute the page's logical size = baseSize * currentZoom.
+//    2. Resize the host view and `scrollView.contentSize` accordingly.
+//    3. Publish the new logical size through a `Binding<CGFloat>`
+//       (`zoom`) so `NoteEditorView` rebuilds its `pageCard` with the
+//       scaled `logicalPageSize`. SwiftUI in turn lays out
+//       `PencilCanvasView` and `BackgroundPatternUIView` at the real,
+//       native pixel size — PencilKit renders strokes into a layer
+//       that is genuinely 4x bigger, and the pattern view's `draw(_:)`
+//       runs at the new size — so both stay vector-crisp at every
+//       zoom level.
+//
+//  Pan, page-swipe, double-tap, and overlay-tap behaviour are
+//  preserved 1:1. The scroll view still owns pan (works for free at
+//  any contentSize). The page-swipe pan only fires when `currentZoom`
+//  is at baseline. The single-finger tap callback still reports
+//  normalised page coordinates (its math just divides out the zoom).
 //
 
 import SwiftUI
@@ -14,8 +41,10 @@ import PencilKit
 
 struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
 
-    let contentSize: CGSize
-    var maxScale: CGFloat = 8.0
+    /// Size of the page card at zoom 1 (i.e. the size SwiftUI computes
+    /// from the available viewport, before any pinch zoom is applied).
+    let baseContentSize: CGSize
+    var maxZoom: CGFloat = 8.0
     var doubleTapZoomScale: CGFloat = 2.5
     var nextSwipeCreatesPage: Bool = false
     var atFirstPage: Bool = false
@@ -26,17 +55,53 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
     var onSwipeNext: (() -> Void)? = nil
     var onSwipePrevious: (() -> Void)? = nil
     /// Fired on a single-finger tap. `nil` means the grey margin outside
-    /// the page card; a point means page-content coordinates (top-left of
-    /// the hosted page). Used for overlay select / deselect without
-    /// putting tap targets on the image body (which would steal pinch).
+    /// the page card; a `CGPoint` means **base-coordinate** page
+    /// position (i.e. divided by the current zoom). The caller can use
+    /// it directly against the unzoomed `pageSize`.
     var onPageFingerTap: ((CGPoint?) -> Void)? = nil
+    /// Reports the current zoom factor (1.0 = fit). The caller multiplies
+    /// the logical page size by this to drive its SwiftUI layout.
+    @Binding var zoom: CGFloat
     @ViewBuilder var content: () -> Content
+
+    init(
+        baseContentSize: CGSize,
+        maxZoom: CGFloat = 8.0,
+        doubleTapZoomScale: CGFloat = 2.5,
+        nextSwipeCreatesPage: Bool = false,
+        atFirstPage: Bool = false,
+        blocksPageGestures: Bool = false,
+        contentStamp: Int = 0,
+        onSwipeNext: (() -> Void)? = nil,
+        onSwipePrevious: (() -> Void)? = nil,
+        onPageFingerTap: ((CGPoint?) -> Void)? = nil,
+        zoom: Binding<CGFloat>,
+        @ViewBuilder content: @escaping () -> Content
+    ) {
+        self.baseContentSize = baseContentSize
+        self.maxZoom = maxZoom
+        self.doubleTapZoomScale = doubleTapZoomScale
+        self.nextSwipeCreatesPage = nextSwipeCreatesPage
+        self.atFirstPage = atFirstPage
+        self.blocksPageGestures = blocksPageGestures
+        self.contentStamp = contentStamp
+        self.onSwipeNext = onSwipeNext
+        self.onSwipePrevious = onSwipePrevious
+        self.onPageFingerTap = onPageFingerTap
+        self._zoom = zoom
+        self.content = content
+    }
+
+    // MARK: - UIViewRepresentable
 
     func makeUIView(context: Context) -> UIScrollView {
         let scrollView = UIScrollView()
         scrollView.delegate = context.coordinator
-        scrollView.maximumZoomScale = maxScale
-        scrollView.bouncesZoom = true
+        // Built-in zoom is disabled — we drive zoom ourselves via a
+        // custom pinch recognizer that resizes the content view.
+        scrollView.minimumZoomScale = 1
+        scrollView.maximumZoomScale = 1
+        scrollView.bouncesZoom = false
         scrollView.showsVerticalScrollIndicator = true
         scrollView.showsHorizontalScrollIndicator = true
         scrollView.indicatorStyle = .default
@@ -44,44 +109,29 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         scrollView.keyboardDismissMode = .interactive
         scrollView.decelerationRate = .normal
         scrollView.backgroundColor = .clear
-
         scrollView.bounces = false
         scrollView.alwaysBounceVertical = false
         scrollView.alwaysBounceHorizontal = false
-
-        // Critical for finger-drag on overlays (image / text / shape).
-        // Without these, `UIScrollView` swallows the touch before the
-        // SwiftUI `DragGesture` on the overlay can recognize:
-        //   - `delaysContentTouches = true` (default) makes the scroll
-        //     view sit on the touch for ~150ms before delivering it down,
-        //     long enough for its pan recognizer to be the first to see
-        //     the user's movement.
-        //   - `canCancelContentTouches = true` (default) lets the scroll
-        //     view yank the touch back from a subview that has already
-        //     started tracking it, so even a winning SwiftUI drag gets
-        //     cancelled mid-gesture once the scroll view's pan kicks in.
-        // The previous workaround was to flip `blocksPageGestures` to
-        // true whenever an overlay was selected — but that meant the
-        // very first finger drag on an unselected image always lost to
-        // the scroll view, exactly the bug we just hit. Disabling both
-        // hands every touch directly to whichever child claims it
-        // first; empty-canvas pan/scroll still works because the canvas
-        // doesn't claim those touches (its drawing recognizer is
-        // pencil-only), so the scroll view's pan gets them by default.
         scrollView.delaysContentTouches = false
         scrollView.canCancelContentTouches = false
         scrollView.isMultipleTouchEnabled = true
         scrollView.isScrollEnabled = true
-        scrollView.pinchGestureRecognizer?.isEnabled = true
 
-        // Pinch-to-zoom needs two fingers exclusively — if the built-in
-        // pan recognizer also accepts 2 touches it wins the gesture
-        // race and page zoom silently stops working.
         scrollView.panGestureRecognizer.minimumNumberOfTouches = 1
         scrollView.panGestureRecognizer.maximumNumberOfTouches = 1
         scrollView.panGestureRecognizer.allowedTouchTypes = [
             NSNumber(value: UITouch.TouchType.direct.rawValue)
         ]
+
+        // Our own pinch recognizer — drives content-size zoom instead
+        // of CATransform3D scale.
+        let pinch = UIPinchGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handlePinch(_:))
+        )
+        pinch.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        pinch.delegate = context.coordinator
+        scrollView.addGestureRecognizer(pinch)
 
         let pagePan = UIPanGestureRecognizer(
             target: context.coordinator,
@@ -118,29 +168,32 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         host.view.backgroundColor = .clear
         host.view.isMultipleTouchEnabled = true
 
-        let contentRoot = PinchPassthroughContentView(frame: CGRect(origin: .zero, size: contentSize))
+        let contentRoot = PinchPassthroughContentView(frame: CGRect(origin: .zero, size: baseContentSize))
         contentRoot.isMultipleTouchEnabled = true
         contentRoot.hostingView = host.view
         contentRoot.addSubview(host.view)
         host.view.frame = contentRoot.bounds
         host.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         scrollView.addSubview(contentRoot)
-        scrollView.contentSize = contentSize
+        scrollView.contentSize = baseContentSize
 
         context.coordinator.host = host
         context.coordinator.contentRoot = contentRoot
         context.coordinator.contentStamp = contentStamp
-        context.coordinator.maxZoom = maxScale
+        context.coordinator.maxZoom = maxZoom
         context.coordinator.doubleTapZoomScale = doubleTapZoomScale
-        context.coordinator.contentSize = contentSize
+        context.coordinator.baseContentSize = baseContentSize
+        context.coordinator.currentZoom = max(1, zoom)
         context.coordinator.onSwipeNext = onSwipeNext
         context.coordinator.onSwipePrevious = onSwipePrevious
         context.coordinator.nextSwipeCreatesPage = nextSwipeCreatesPage
         context.coordinator.atFirstPage = atFirstPage
         context.coordinator.pagePanGesture = pagePan
+        context.coordinator.pinchGesture = pinch
         context.coordinator.canvasTapGesture = canvasTap
         context.coordinator.blocksPageGestures = blocksPageGestures
         context.coordinator.onPageFingerTap = onPageFingerTap
+        context.coordinator.zoomBinding = $zoom
 
         DispatchQueue.main.async {
             context.coordinator.configureInitialDisplayIfNeeded(scrollView)
@@ -149,7 +202,7 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
     }
 
     func updateUIView(_ scrollView: UIScrollView, context: Context) {
-        context.coordinator.maxZoom = maxScale
+        context.coordinator.maxZoom = maxZoom
         context.coordinator.doubleTapZoomScale = doubleTapZoomScale
         context.coordinator.onSwipeNext = onSwipeNext
         context.coordinator.onSwipePrevious = onSwipePrevious
@@ -158,84 +211,131 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         context.coordinator.blocksPageGestures = blocksPageGestures
         context.coordinator.onPageFingerTap = onPageFingerTap
         context.coordinator.canvasTapGesture?.isEnabled = onPageFingerTap != nil
-        // IMPORTANT: never set `scrollView.isScrollEnabled = false` based
-        // on `blocksPageGestures`. That flag also disables the scroll
-        // view's built-in pinch / double-tap zoom recognizers, which is
-        // the "can't zoom in after importing an image" bug. We suppress
-        // only the horizontal page-swipe gesture (handled surgically in
-        // `gestureRecognizerShouldBegin(_:)`) so the user can still
-        // pinch-zoom freely with an overlay selected.
+        context.coordinator.zoomBinding = $zoom
 
-        if context.coordinator.contentStamp != contentStamp {
-            context.coordinator.host?.rootView = content()
-            context.coordinator.contentStamp = contentStamp
+        // Always push the fresh rootView — SwiftUI's hosting controller
+        // diffs internally, so this is cheap, and it ensures zoom-driven
+        // size changes in the caller (e.g. `pageCard(logicalPageSize:
+        // base * zoom)`) actually propagate. The earlier stamp-gated
+        // path missed zoom updates because zoom isn't part of
+        // `contentStamp`.
+        context.coordinator.host?.rootView = content()
+        context.coordinator.contentStamp = contentStamp
+
+        // If the caller drove the zoom binding from outside our pinch
+        // recognizer (e.g. resetting to 1.0 on page change), pick it
+        // up and re-apply the content-size update.
+        if abs(context.coordinator.currentZoom - zoom) > 0.0005 {
+            context.coordinator.currentZoom = max(1, min(maxZoom, zoom))
         }
 
-        if context.coordinator.contentSize != contentSize {
-            scrollView.zoomScale = 1.0
+        context.coordinator.isApplyingFromSwiftUI = true
+        defer { context.coordinator.isApplyingFromSwiftUI = false }
+
+        if context.coordinator.baseContentSize != baseContentSize {
+            context.coordinator.baseContentSize = baseContentSize
             context.coordinator.resetInitialFillZoom()
-            context.coordinator.contentRoot?.frame = CGRect(origin: .zero, size: contentSize)
-            context.coordinator.contentRoot?.hostingView = context.coordinator.host?.view
-            context.coordinator.host?.view.frame = context.coordinator.contentRoot?.bounds ?? CGRect(origin: .zero, size: contentSize)
-            scrollView.contentSize = contentSize
-            context.coordinator.contentSize = contentSize
-            context.coordinator.host?.rootView = content()
-            context.coordinator.contentStamp = contentStamp
+            context.coordinator.applyZoom(to: scrollView, animated: false)
             DispatchQueue.main.async {
                 context.coordinator.configureInitialDisplayIfNeeded(scrollView)
             }
-        } else {
-            context.coordinator.updateZoomLimits(scrollView)
+        } else if !context.coordinator.isPinching {
+            // Skip layout work mid-pinch — the live `CGAffineTransform`
+            // on `contentRoot` is handling the visual scale, and any
+            // `recenter` call here would reset the content insets in
+            // response to the transformed view's bounding box, which
+            // makes the page jitter under the user's fingers.
+            context.coordinator.applyZoom(to: scrollView, animated: false)
             context.coordinator.recenter(scrollView)
         }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
+    // MARK: - Coordinator
+
     final class Coordinator: NSObject, UIScrollViewDelegate, UIGestureRecognizerDelegate {
         var host: UIHostingController<Content>?
         weak var contentRoot: PinchPassthroughContentView?
-        var contentSize: CGSize = .zero
+        /// Base (zoom == 1) size of the page card. The on-screen size is
+        /// `baseContentSize * currentZoom`.
+        var baseContentSize: CGSize = .zero
         var contentStamp: Int = 0
         var maxZoom: CGFloat = 8.0
         var doubleTapZoomScale: CGFloat = 2.5
-        var fitEntirePageScale: CGFloat = 1.0
+        var currentZoom: CGFloat = 1.0
         var onSwipeNext: (() -> Void)?
         var onSwipePrevious: (() -> Void)?
         var nextSwipeCreatesPage: Bool = false
         var atFirstPage: Bool = false
         var blocksPageGestures: Bool = false
         var onPageFingerTap: ((CGPoint?) -> Void)?
+        var zoomBinding: Binding<CGFloat>?
         weak var pagePanGesture: UIPanGestureRecognizer?
+        weak var pinchGesture: UIPinchGestureRecognizer?
         weak var canvasTapGesture: UITapGestureRecognizer?
         private var isSlidingPage = false
         private var didFireBoundaryHaptic = false
         private var didConfigureInitialDisplay = false
         private var configuredLayoutBounds: CGSize = .zero
-        private(set) var baselineZoomScale: CGFloat = 1.0
         private let minLayoutWidth: CGFloat = 200
         private let minLayoutHeight: CGFloat = 150
+        /// Zoom captured at pinch `.began` so we can compute the new
+        /// zoom as `pinchStartZoom * gesture.scale` (rather than
+        /// accumulating per-frame deltas, which drifts).
+        private var pinchStartZoom: CGFloat = 1.0
+        /// The content-coordinate point under the two-finger focal at
+        /// `.began`. Pinned under the live focal location on every
+        /// `.changed` frame so the page tracks the user's fingers.
+        private var pinchAnchorInContent: CGPoint = .zero
+        /// True while a pinch is in progress (.began through .ended).
+        /// `updateUIView` consults this so it doesn't re-run layout in
+        /// the middle of a pinch — the live `CGAffineTransform` on
+        /// `contentRoot` is doing the visual work, and any layout
+        /// reset would jitter the page under the user's fingers.
+        fileprivate var isPinching: Bool = false
+        /// Focal location in scrollView coordinates at `.began`, used
+        /// as the anchor point for the live-pinch `CGAffineTransform`
+        /// so the page appears to scale from the pinch focus point
+        /// rather than from the origin.
+        private var pinchFocalInScroll: CGPoint = .zero
+        /// Most-recent focal location during `.changed`. We can't
+        /// just call `gesture.location(in:)` again at `.ended`: the
+        /// gesture's `.ended` event fires the moment one of the two
+        /// touches lifts, and `location(in:)` then returns the
+        /// midpoint of whichever touches the recognizer still
+        /// considers active — which has visibly moved from the
+        /// two-finger midpoint the user was looking at the instant
+        /// before. Re-anchoring against that stale post-lift
+        /// midpoint pulls the page systematically toward the screen
+        /// centre on every release.
+        private var lastFocalInScroll: CGPoint = .zero
+        /// Live zoom factor applied as a `CGAffineTransform` during a
+        /// pinch in progress. When the gesture ends we collapse this
+        /// transform into a real content-size resize (`applyZoom`),
+        /// which is what makes vector content (ink, pattern) sharp at
+        /// the new zoom. During the gesture the transform causes some
+        /// short-lived bitmap stretching, which is the right tradeoff:
+        /// reassigning `PKCanvasView.drawing` 60×/sec mid-pinch makes
+        /// PencilKit re-rasterise from scratch every frame and produces
+        /// the bad "strokes flicker / lag behind" effect the user is
+        /// reporting.
+        private var liveZoomScale: CGFloat = 1.0
 
-        func viewForZooming(in scrollView: UIScrollView) -> UIView? {
-            contentRoot ?? host?.view
-        }
-
-        func scrollViewDidZoom(_ scrollView: UIScrollView) {
-            recenter(scrollView)
-            applyCanvasResolution(for: scrollView.zoomScale)
-        }
-
-        func scrollViewDidEndZooming(
-            _ scrollView: UIScrollView,
-            with view: UIView?,
-            atScale scale: CGFloat
-        ) {
-            snapToBaselineZoomIfNeeded(scrollView)
-            recenter(scrollView)
-            applyCanvasResolution(for: scrollView.zoomScale)
-        }
+        // MARK: Layout
 
         func scrollViewDidLayoutSubviews(_ scrollView: UIScrollView) {
+            // While we're mid-pinch (or just landed from one), the
+            // pinch handler is the sole authority on
+            // contentInset/contentOffset. Letting `recenter` run
+            // re-asserts a centered inset, which makes UIScrollView
+            // silently clamp the offset we just set, and the page
+            // visibly snaps away from where the user's fingers left
+            // it. The recenter logic is still invoked explicitly
+            // from `applyZoom`, so we don't lose it — we just stop
+            // running it on every layout pass during the transition.
+            if isPinching { return }
+
             let bounds = scrollView.bounds.size
             if didConfigureInitialDisplay, configuredLayoutBounds.width > 0 {
                 let widthGrowth = bounds.width / configuredLayoutBounds.width
@@ -244,10 +344,404 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
                     didConfigureInitialDisplay = false
                 }
             }
-            updateZoomLimits(scrollView)
             configureInitialDisplayIfNeeded(scrollView)
             recenter(scrollView)
         }
+
+        func configureInitialDisplayIfNeeded(_ scrollView: UIScrollView) {
+            guard !didConfigureInitialDisplay,
+                  baseContentSize.width > 0, baseContentSize.height > 0 else { return }
+            let bounds = scrollView.bounds.size
+            guard bounds.width >= minLayoutWidth, bounds.height >= minLayoutHeight else { return }
+
+            didConfigureInitialDisplay = true
+            configuredLayoutBounds = bounds
+            currentZoom = 1
+            applyZoom(to: scrollView, animated: false)
+            if !isApplyingFromSwiftUI,
+               let binding = zoomBinding,
+               abs(binding.wrappedValue - 1) > 0.0005 {
+                binding.wrappedValue = 1
+            }
+            recenter(scrollView)
+            // Initial offset: place the page centred in the
+            // viewport. The inset is now a generous neutral scroll
+            // headroom (not a centering tool), so we have to do the
+            // centering math explicitly here.
+            let zoomedWidth = baseContentSize.width * currentZoom
+            let zoomedHeight = baseContentSize.height * currentZoom
+            let centeredX = (zoomedWidth - scrollView.bounds.width) * 0.5
+            let centeredY = (zoomedHeight - scrollView.bounds.height) * 0.5
+            scrollView.setContentOffset(
+                CGPoint(x: centeredX, y: centeredY),
+                animated: false
+            )
+        }
+
+        func resetInitialFillZoom() {
+            didConfigureInitialDisplay = false
+            configuredLayoutBounds = .zero
+            currentZoom = 1
+            if !isApplyingFromSwiftUI,
+               let binding = zoomBinding,
+               abs(binding.wrappedValue - 1) > 0.0005 {
+                binding.wrappedValue = 1
+            }
+        }
+
+        /// Pushes `currentZoom` into the live `contentSize` + host frame.
+        /// This is the heart of the architecture — by genuinely changing
+        /// the page's size, SwiftUI rebuilds the page card at the new
+        /// dimensions and PencilKit + the pattern UIView render at
+        /// native resolution.
+        ///
+        /// Only mutates view frames when they actually differ from the
+        /// target — re-assigning the same frames every `updateUIView`
+        /// pass was tripping SwiftUI into reinstantiating leaf views
+        /// (notably `ImageOverlayContent`, which lost its `@State image`
+        /// every frame and never finished decoding).
+        func applyZoom(to scrollView: UIScrollView, animated: Bool) {
+            let scaled = CGSize(
+                width: baseContentSize.width * currentZoom,
+                height: baseContentSize.height * currentZoom
+            )
+            guard scaled.width > 0, scaled.height > 0 else { return }
+            let currentFrame = contentRoot?.frame.size ?? .zero
+            let needsResize = abs(currentFrame.width - scaled.width) > 0.5
+                || abs(currentFrame.height - scaled.height) > 0.5
+            let apply = {
+                self.contentRoot?.frame = CGRect(origin: .zero, size: scaled)
+                self.host?.view.frame = CGRect(origin: .zero, size: scaled)
+                scrollView.contentSize = scaled
+                self.recenter(scrollView)
+            }
+            if needsResize {
+                if animated {
+                    UIView.animate(
+                        withDuration: 0.22,
+                        delay: 0,
+                        options: [.curveEaseInOut],
+                        animations: apply
+                    )
+                } else {
+                    apply()
+                }
+            }
+            // Only publish the binding when it actually changed, and
+            // never from inside `updateUIView` (which is signalled by
+            // `isApplyingFromSwiftUI`) — pushing the same value back
+            // mid-render would cause a runaway re-render loop.
+            if !isApplyingFromSwiftUI,
+               let binding = zoomBinding,
+               abs(binding.wrappedValue - currentZoom) > 0.0005 {
+                binding.wrappedValue = currentZoom
+            }
+        }
+        /// Set to true while `updateUIView` is mid-flight so
+        /// `applyZoom` knows not to write back to the binding.
+        fileprivate var isApplyingFromSwiftUI = false
+
+        func recenter(_ scrollView: UIScrollView) {
+            // Previous implementation force-centered the page (via
+            // huge symmetric insets) whenever the zoomed page was
+            // smaller than the viewport. That collapsed the legal
+            // contentOffset range to a single value, so the
+            // post-pinch `setContentOffset` would silently get
+            // clamped back to centre — the page visibly snapped
+            // away from wherever the user's fingers had left it.
+            //
+            // Replace the forced-centering with a generous, neutral
+            // inset that just lets the user scroll the page right
+            // up to either viewport edge (keeping a small `keep`
+            // strip on-screen so the page never goes completely
+            // out of view). The user is the one who positions the
+            // page; we don't second-guess them.
+            let keep: CGFloat = 24
+            let horizontal = max(scrollView.bounds.width - keep, 0)
+            let vertical = max(scrollView.bounds.height - keep, 0)
+
+            scrollView.contentInset = UIEdgeInsets(
+                top: vertical,
+                left: horizontal,
+                bottom: vertical,
+                right: horizontal
+            )
+        }
+
+        // MARK: Pinch
+
+        @objc func handlePinch(_ gesture: UIPinchGestureRecognizer) {
+            guard let scrollView = gesture.view as? UIScrollView,
+                  let contentRoot else { return }
+            switch gesture.state {
+            case .began:
+                isPinching = true
+                pinchStartZoom = currentZoom
+                pinchFocalInScroll = gesture.location(in: scrollView)
+                lastFocalInScroll = pinchFocalInScroll
+                pinchAnchorInContent = scrollView.convert(pinchFocalInScroll, to: contentRoot)
+                liveZoomScale = 1.0
+                // Disable scroll-view pan during pinch so a small finger
+                // drift in the focal point doesn't fight our manual
+                // offset adjustment.
+                scrollView.panGestureRecognizer.isEnabled = false
+                // Also disable the page-swipe pan during pinch.
+                // Otherwise, when the user lifts one of their two
+                // pinching fingers, the pan recognizer can latch onto
+                // the remaining finger, fire its `handlePagePan` after
+                // we've bumped `currentZoom` past the swipe threshold,
+                // and call `resetPageSlide(animated: true)` — which
+                // animates `contentRoot.transform` to identity over
+                // 0.18s, dragging the page away from where the user's
+                // fingers left it.
+                pagePanGesture?.isEnabled = false
+            case .changed:
+                let proposedTotal = pinchStartZoom * gesture.scale
+                let clampedTotal = min(maxZoom, max(1, proposedTotal))
+                let live = clampedTotal / max(0.0001, pinchStartZoom)
+                liveZoomScale = live
+                // Cache the focal *while both fingers are still
+                // down*. We'll re-anchor against this in `.ended`
+                // rather than re-asking the gesture, which would
+                // give us the post-lift (centre-biased) midpoint.
+                lastFocalInScroll = gesture.location(in: scrollView)
+
+                // Apply a transform around the focal anchor so the page
+                // visually scales from where the fingers are. This is
+                // O(1) per frame — no per-stroke re-rasterisation, so
+                // PencilKit ink doesn't flicker. Final-quality crisp
+                // rendering is committed in `.ended` by collapsing the
+                // transform into a real content-size resize.
+                applyLivePinchTransform(in: scrollView, contentRoot: contentRoot)
+            case .ended, .cancelled, .failed:
+                // Snapshot the world AS THE USER SAW IT just before we
+                // started rewriting it. Everything from here on has
+                // to be expressed relative to these snapshots — we
+                // can't trust `scrollView.contentOffset` after
+                // `applyZoom`, because the contentInset change inside
+                // `recenter` causes UIScrollView to silently mutate
+                // contentOffset to keep it in legal range, which
+                // shifts our reference frame and produces a wrong
+                // landing point.
+                //
+                // Use the focal we cached during the LAST `.changed`
+                // event, not `gesture.location(in:)` queried now.
+                // The latter sees the post-lift state of the touches
+                // and reports a midpoint that has drifted toward
+                // screen centre, which makes the re-anchor math
+                // place the page systematically off-centre — i.e.
+                // the page snaps toward the middle on every release.
+                let focalAtEnd = lastFocalInScroll
+                let offsetAtEnd = scrollView.contentOffset
+                let startZoom = pinchStartZoom
+                let anchorBeforeResize = pinchAnchorInContent
+                let finalZoom = min(maxZoom, max(1, pinchStartZoom * liveZoomScale))
+
+                // Where the finger lived in SCREEN space at release.
+                // Screen-space derivation:
+                //   screen(P, offset) = scrollView.frame.origin
+                //                       + P            (content-space point)
+                //                       - offset       (scrollView.contentOffset)
+                // The `scrollView.frame.origin` term cancels out below
+                // because the scrollView itself does not move, so we
+                // can work in scrollView-bounds space directly:
+                //   finger_screen_relative = focalAtEnd - offsetAtEnd
+                let fingerScreenRelative = CGPoint(
+                    x: focalAtEnd.x - offsetAtEnd.x,
+                    y: focalAtEnd.y - offsetAtEnd.y
+                )
+
+                // Collapse the live transform into a real
+                // content-size resize so PencilKit + the pattern view
+                // re-rasterise at the new native dimensions.
+                //
+                // Everything below this point — the transform reset,
+                // contentSize/contentInset update, AND the
+                // re-anchored contentOffset — has to commit to
+                // CoreAnimation as a single atomic transaction.
+                // Otherwise the user sees a frame in between where
+                // the page has been resized but the offset hasn't
+                // been corrected yet, which is the snap they were
+                // reporting. `CATransaction.setDisableActions(true)`
+                // suppresses the implicit animation UIScrollView
+                // would otherwise interpolate across that gap.
+                let zoomRatio = finalZoom / max(0.0001, startZoom)
+                let anchorInNewBounds = CGPoint(
+                    x: anchorBeforeResize.x * zoomRatio,
+                    y: anchorBeforeResize.y * zoomRatio
+                )
+
+                // Snapshot the live-transform rendering of the scroll
+                // view (i.e. the page exactly as the user is looking
+                // at it the instant before release) and place it as
+                // a sibling of the scroll view. While the snapshot
+                // hangs over the screen we can:
+                //   - reset the live transform to identity,
+                //   - resize contentRoot / contentSize / contentInset,
+                //   - re-anchor contentOffset,
+                //   - push the new zoom value down through the SwiftUI
+                //     binding (which schedules `updateUIView` to
+                //     re-rasterise PencilKit ink + the pattern view
+                //     at the new native size on the next runloop)
+                // …all hidden from the user. Once SwiftUI has
+                // propagated the new zoom down to PencilKit and the
+                // pattern view (next runloop tick or two), we
+                // cross-fade the snapshot out. The cross-fade lands
+                // on identical pixels (the page's visual size and
+                // position are unchanged between snapshot and final
+                // state) so the user sees no flash.
+                //
+                // The snapshot is parented to `scrollView.superview`
+                // — NOT to the scroll view itself — so scrolling
+                // beneath it doesn't drag the cover off-screen.
+                let snapshot = scrollView.snapshotView(afterScreenUpdates: false)
+                if let snapshot, let parent = scrollView.superview {
+                    snapshot.frame = scrollView.frame
+                    snapshot.isUserInteractionEnabled = false
+                    parent.insertSubview(snapshot, aboveSubview: scrollView)
+                }
+
+                UIView.performWithoutAnimation {
+                    CATransaction.begin()
+                    CATransaction.setDisableActions(true)
+
+                    contentRoot.transform = .identity
+                    currentZoom = finalZoom
+                    applyZoom(to: scrollView, animated: false)
+                    liveZoomScale = 1.0
+                    scrollView.panGestureRecognizer.isEnabled = true
+                    pagePanGesture?.isEnabled = true
+
+                    // Solve for the contentOffset that lands
+                    // `anchorInNewBounds` (in content space) at the
+                    // same SCREEN position the finger was at on
+                    // release:
+                    //   anchorInNewBounds - newOffset == fingerScreenRelative
+                    //   newOffset = anchorInNewBounds - fingerScreenRelative
+                    var offset = CGPoint(
+                        x: anchorInNewBounds.x - fingerScreenRelative.x,
+                        y: anchorInNewBounds.y - fingerScreenRelative.y
+                    )
+                    clampOffset(&offset, in: scrollView)
+                    scrollView.setContentOffset(offset, animated: false)
+
+                    CATransaction.commit()
+                }
+
+                // Keep `isPinching` true through any follow-up layout
+                // passes that UIScrollView schedules synchronously
+                // before yielding the runloop — they would otherwise
+                // re-run `recenter` and re-clamp our offset. The next
+                // runloop tick is safe: the layout has settled, and
+                // SwiftUI will have rebuilt the page card at the new
+                // logical size, so subsequent `recenter` calls produce
+                // the same inset we just set.
+                DispatchQueue.main.async { [weak self] in
+                    self?.isPinching = false
+                }
+
+                // Remove the snapshot only after BOTH (a) one runloop
+                // tick has elapsed and (b) one display refresh has
+                // rendered the underlying view. By that point SwiftUI
+                // has propagated the new zoom down to PencilKit and
+                // the pattern view, so the underlying view shows the
+                // same pixels as the snapshot. Double-async is a
+                // cheap way to wait two runloop hops without relying
+                // on `CADisplayLink`. We fade rather than yank so any
+                // residual mismatch (e.g. PKCanvasView re-rasterising
+                // its ink) is hidden by the cross-fade.
+                if let snapshot {
+                    DispatchQueue.main.async {
+                        DispatchQueue.main.async {
+                            UIView.animate(
+                                withDuration: 0.08,
+                                delay: 0,
+                                options: [.curveEaseOut, .allowUserInteraction]
+                            ) {
+                                snapshot.alpha = 0
+                            } completion: { _ in
+                                snapshot.removeFromSuperview()
+                            }
+                        }
+                    }
+                }
+            default:
+                break
+            }
+        }
+
+        /// During pinch `.changed`: apply a `CGAffineTransform` to the
+        /// content root so the bounds-coord point under the user's
+        /// fingers at `.began` stays glued to the user's current
+        /// finger position throughout the gesture. The transform is
+        /// **temporary** — collapsed into a real content-size resize
+        /// on `.ended`.
+        ///
+        /// Math (default anchorPoint 0.5, 0.5):
+        ///
+        /// A point `q` in `contentRoot`'s bounds renders at screen
+        /// position `center + T(q - center)` where `center` is the
+        /// view's centre in bounds coords and `T` is the affine
+        /// transform (`T.a == T.d == scale`, plus a translation `(tx,
+        /// ty)`). For a fixed point `p` (the focal-content anchor) we
+        /// want:
+        ///
+        ///     center + scale * (p - center) + (tx, ty) == focalNow - viewOrigin
+        ///
+        /// where `viewOrigin` is contentRoot's frame origin in
+        /// scrollView coords AT THE START of the pinch. Solving:
+        ///
+        ///     (tx, ty) = (focalNow - viewOrigin) - center - scale * (p - center)
+        ///
+        /// Using a `CGAffineTransform(a:b:c:d:tx:ty)` directly avoids
+        /// the order-of-operations subtlety with `translatedBy` /
+        /// `scaledBy`, which compose into the view's pre-transform
+        /// coordinate space and were producing the wrong focal point.
+        private func applyLivePinchTransform(
+            in scrollView: UIScrollView,
+            contentRoot: UIView
+        ) {
+            let scale = liveZoomScale
+            let focal = pinchAnchorInContent
+
+            // contentRoot.bounds is the *un-transformed* bounds, which
+            // is what bounds-coord points like `pinchAnchorInContent`
+            // were captured in.
+            let bounds = contentRoot.bounds
+            let center = CGPoint(x: bounds.midX, y: bounds.midY)
+
+            // Where the view's frame origin lives in scrollView coords
+            // at the start of the pinch. Because the gesture pan is
+            // disabled during pinch, scrollView.contentOffset doesn't
+            // drift — but we still translate by it so the transform
+            // works regardless of where the page sits on screen.
+            let focalNow = pinchGesture?.location(in: scrollView) ?? pinchFocalInScroll
+            // We want the focal point to track `focalNow` rather than
+            // `pinchFocalInScroll`. The delta is just an extra screen
+            // translation we add on top of the focal-preserving math.
+            let dx = focalNow.x - pinchFocalInScroll.x
+            let dy = focalNow.y - pinchFocalInScroll.y
+
+            let tx = (1 - scale) * (focal.x - center.x) + dx
+            let ty = (1 - scale) * (focal.y - center.y) + dy
+
+            contentRoot.transform = CGAffineTransform(
+                a: scale, b: 0,
+                c: 0, d: scale,
+                tx: tx, ty: ty
+            )
+        }
+
+        private func clampOffset(_ offset: inout CGPoint, in scrollView: UIScrollView) {
+            let minX = -scrollView.contentInset.left
+            let minY = -scrollView.contentInset.top
+            let maxX = max(minX, scrollView.contentSize.width - scrollView.bounds.width + scrollView.contentInset.right)
+            let maxY = max(minY, scrollView.contentSize.height - scrollView.bounds.height + scrollView.contentInset.bottom)
+            offset.x = max(minX, min(maxX, offset.x))
+            offset.y = max(minY, min(maxY, offset.y))
+        }
+
+        // MARK: Taps
 
         @objc func handleCanvasFingerTap(_ gesture: UITapGestureRecognizer) {
             guard gesture.state == .ended,
@@ -262,30 +756,73 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
                 onPageFingerTap(nil)
                 return
             }
-            let local = scrollView.convert(location, to: contentView)
+            let localScaled = scrollView.convert(location, to: contentView)
+            // Map back to base coordinates so the caller's hit-test
+            // math against `pageSize` (which is the *unzoomed* logical
+            // size) lines up.
+            let local = CGPoint(
+                x: localScaled.x / currentZoom,
+                y: localScaled.y / currentZoom
+            )
             onPageFingerTap(local)
         }
 
         @objc func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
             guard let scrollView = gesture.view as? UIScrollView else { return }
-            let location = gesture.location(in: scrollView)
-            let baseline = baselineZoomScale > 0 ? baselineZoomScale : 1.0
-            let isZoomedIn = scrollView.zoomScale > baseline * 1.12
-            let targetScale: CGFloat
+            let tapLocationInScroll = gesture.location(in: scrollView)
+            let isZoomedIn = currentZoom > 1.12
+            let targetZoom: CGFloat
             if isZoomedIn {
-                targetScale = baseline
+                targetZoom = 1
             } else {
-                targetScale = min(doubleTapZoomScale, scrollView.maximumZoomScale)
+                targetZoom = min(doubleTapZoomScale, maxZoom)
             }
-            let clamped = min(max(targetScale, scrollView.minimumZoomScale), scrollView.maximumZoomScale)
-            let rect = zoomRect(for: clamped, center: location, in: scrollView)
-            scrollView.zoom(to: rect, animated: true)
+
+            // Capture the content point under the tap BEFORE resizing.
+            let previousZoom = currentZoom
+            let anchorInContent: CGPoint
+            if let contentRoot {
+                anchorInContent = scrollView.convert(tapLocationInScroll, to: contentRoot)
+            } else {
+                anchorInContent = .zero
+            }
+
+            currentZoom = targetZoom
+            applyZoom(to: scrollView, animated: true)
+
+            // After the content size has been updated (immediate, even
+            // when frames animate via the easeInOut wrapper), shift
+            // the offset so the tapped content point lands under the
+            // tap's scroll-coord location.
+            DispatchQueue.main.async { [weak self, weak scrollView] in
+                guard let self, let scrollView, let contentRoot = self.contentRoot else { return }
+                let zoomRatio = self.currentZoom / max(0.0001, previousZoom)
+                let scaledAnchorInContent = CGPoint(
+                    x: anchorInContent.x * zoomRatio,
+                    y: anchorInContent.y * zoomRatio
+                )
+                let anchorInScroll = contentRoot.convert(scaledAnchorInContent, to: scrollView)
+                let dx = anchorInScroll.x - tapLocationInScroll.x
+                let dy = anchorInScroll.y - tapLocationInScroll.y
+                var offset = scrollView.contentOffset
+                offset.x += dx
+                offset.y += dy
+                let minX = -scrollView.contentInset.left
+                let minY = -scrollView.contentInset.top
+                let maxX = max(minX, scrollView.contentSize.width - scrollView.bounds.width + scrollView.contentInset.right)
+                let maxY = max(minY, scrollView.contentSize.height - scrollView.bounds.height + scrollView.contentInset.bottom)
+                offset.x = max(minX, min(maxX, offset.x))
+                offset.y = max(minY, min(maxY, offset.y))
+                scrollView.setContentOffset(offset, animated: true)
+            }
         }
+
+        // MARK: Page swipe (only at fit zoom)
 
         @objc func handlePagePan(_ sender: UIPanGestureRecognizer) {
             guard let scrollView = sender.view as? UIScrollView,
                   let pageView = contentRoot ?? host?.view,
-                  scrollView.zoomScale <= 1.08 else {
+                  currentZoom <= 1.08 else {
                 resetPageSlide(animated: true)
                 return
             }
@@ -346,7 +883,7 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
                 let shouldGoNext = translation.x < -distanceThreshold || velocity.x < -velocityThreshold
                 let shouldGoPrevious = translation.x > distanceThreshold || velocity.x > velocityThreshold
                 if shouldGoNext || shouldGoPrevious {
-                    let offscreen = (shouldGoNext ? -1 : 1) * max(width, contentSize.width)
+                    let offscreen = (shouldGoNext ? -1 : 1) * max(width, baseContentSize.width)
                     UIView.animate(withDuration: 0.18, delay: 0, options: [.curveEaseOut]) {
                         pageView.transform = CGAffineTransform(translationX: offscreen, y: 0)
                     } completion: { [weak self] _ in
@@ -374,129 +911,14 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
             return offset >= 0 ? damped : -damped
         }
 
-        func gestureRecognizer(
-            _ gestureRecognizer: UIGestureRecognizer,
-            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
-        ) -> Bool {
-            true
-        }
-
-        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            // Only the horizontal page-swipe pan is suppressed while an
-            // overlay is selected. Double-tap zoom (the other recognizer
-            // delegated to this Coordinator) stays live; the scroll
-            // view's built-in pinch is unaffected because it isn't
-            // delegated through here.
-            if gestureRecognizer === pagePanGesture {
-                if blocksPageGestures { return false }
-                guard let pan = gestureRecognizer as? UIPanGestureRecognizer,
-                      let scrollView = pan.view as? UIScrollView else {
-                    return true
-                }
-                guard scrollView.zoomScale <= 1.08 else { return false }
-                let velocity = pan.velocity(in: scrollView)
-                return abs(velocity.x) > abs(velocity.y) * 1.35
-            }
-            return true
-        }
-
-        func updateZoomLimits(_ scrollView: UIScrollView) {
-            guard contentSize.width > 0, contentSize.height > 0,
-                  scrollView.bounds.width > 0, scrollView.bounds.height > 0 else { return }
-
-            let fitW = scrollView.bounds.width / contentSize.width
-            let fitH = scrollView.bounds.height / contentSize.height
-            fitEntirePageScale = min(fitW, fitH)
-
-            let baseline = baselineZoomScale > 0 ? baselineZoomScale : 1.0
-            scrollView.minimumZoomScale = baseline
-            scrollView.maximumZoomScale = maxZoom
-
-            if scrollView.zoomScale < baseline - 0.01, !scrollView.isZooming {
-                scrollView.setZoomScale(baseline, animated: false)
-            }
-        }
-
-        func snapToBaselineZoomIfNeeded(_ scrollView: UIScrollView) {
-            let baseline = baselineZoomScale > 0 ? baselineZoomScale : 1.0
-            guard scrollView.zoomScale < baseline - 0.008 else { return }
-            scrollView.setZoomScale(baseline, animated: true)
-        }
-
-        func resetInitialFillZoom() {
-            didConfigureInitialDisplay = false
-            configuredLayoutBounds = .zero
-            baselineZoomScale = 1.0
-        }
-
-        func configureInitialDisplayIfNeeded(_ scrollView: UIScrollView) {
-            guard !didConfigureInitialDisplay,
-                  contentSize.width > 0, contentSize.height > 0 else { return }
-            let bounds = scrollView.bounds.size
-            guard bounds.width >= minLayoutWidth, bounds.height >= minLayoutHeight else { return }
-
-            scrollView.zoomScale = 1.0
-            baselineZoomScale = 1.0
-            didConfigureInitialDisplay = true
-            configuredLayoutBounds = bounds
-
-            updateZoomLimits(scrollView)
-            applyCanvasResolution(for: 1.0)
-            recenter(scrollView)
-            scrollView.setContentOffset(
-                CGPoint(x: -scrollView.contentInset.left, y: -scrollView.contentInset.top),
-                animated: false
-            )
-        }
-
-        func recenter(_ scrollView: UIScrollView) {
-            guard let view = contentRoot ?? host?.view else { return }
-            let zoomedWidth = view.frame.width
-            let zoomedHeight = view.frame.height
-            let minVerticalMargin: CGFloat = 24
-            let xOffset = max((scrollView.bounds.width - zoomedWidth) * 0.5, 0)
-
-            let top: CGFloat
-            let bottom: CGFloat
-            if zoomedHeight + minVerticalMargin * 2 <= scrollView.bounds.height {
-                let vertical = max((scrollView.bounds.height - zoomedHeight) * 0.5, minVerticalMargin)
-                top = vertical
-                bottom = vertical
-            } else {
-                top = minVerticalMargin
-                bottom = minVerticalMargin
-            }
-
-            scrollView.contentInset = UIEdgeInsets(
-                top: top,
-                left: xOffset,
-                bottom: bottom,
-                right: xOffset
-            )
-        }
-
-        func applyCanvasResolution(for zoomScale: CGFloat) {
-            guard let canvas = findCanvas(in: host?.view) else { return }
-            let rasterScale = UIScreen.main.scale * min(maxZoom, max(1, zoomScale) * 2)
-            if abs(canvas.contentScaleFactor - rasterScale) > 0.01 {
-                canvas.contentScaleFactor = rasterScale
-            }
-        }
-
-        private func zoomRect(for scale: CGFloat, center: CGPoint, in scrollView: UIScrollView) -> CGRect {
-            let size = CGSize(
-                width: scrollView.bounds.width / scale,
-                height: scrollView.bounds.height / scale
-            )
-            let origin = CGPoint(
-                x: center.x - size.width * 0.5,
-                y: center.y - size.height * 0.5
-            )
-            return CGRect(origin: origin, size: size)
-        }
-
         private func resetPageSlide(animated: Bool) {
             guard let pageView = contentRoot ?? host?.view else { return }
+            // A no-op transform reset still pushes an implicit CALayer
+            // animation; if it happens to overlap with a pinch's
+            // transform write, the live pinch reads stale interpolated
+            // values and the page visibly jitters. Skip when the
+            // transform is already identity.
+            if pageView.transform.isIdentity { return }
             let changes = { pageView.transform = .identity }
             if animated {
                 UIView.animate(withDuration: 0.18, delay: 0, options: [.curveEaseOut], animations: changes)
@@ -505,36 +927,42 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
             }
         }
 
-        private func findCanvas(in view: UIView?) -> PKCanvasView? {
-            guard let view else { return nil }
-            if let canvas = view as? PKCanvasView { return canvas }
-            for sub in view.subviews {
-                if let canvas = findCanvas(in: sub) { return canvas }
+        // MARK: Gesture delegate
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            true
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            if gestureRecognizer === pagePanGesture {
+                if blocksPageGestures { return false }
+                guard let pan = gestureRecognizer as? UIPanGestureRecognizer,
+                      let scrollView = pan.view as? UIScrollView else {
+                    return true
+                }
+                guard currentZoom <= 1.08 else { return false }
+                let velocity = pan.velocity(in: scrollView)
+                return abs(velocity.x) > abs(velocity.y) * 1.35
             }
-            return nil
+            return true
         }
     }
 }
 
 /// Host wrapper for the SwiftUI page card. Yields finger / multi-touch
-/// sequences to the outer `UIScrollView` so pinch-to-zoom is never
-/// swallowed by the `UIHostingController` subtree, and passes through
-/// taps on visually empty regions of the page card.
+/// sequences to the outer `UIScrollView` so pinch is never swallowed by
+/// the `UIHostingController` subtree, and passes through taps on
+/// visually empty regions of the page card.
 final class PinchPassthroughContentView: UIView {
-    /// The `UIHostingController` root — when every SwiftUI child is
-    /// non-interactive (normal canvas mode), UIKit still returns this
-    /// view from `hitTest`, which prevents the scroll view's pinch
-    /// recognizer from tracking both fingers. We yield to the scroll
-    /// view instead.
     weak var hostingView: UIView?
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         let hit = super.hitTest(point, with: event)
         if hit === self { return nil }
 
-        // When every SwiftUI child is non-interactive, UIKit returns the
-        // hosting root. Yield finger touches to the scroll view for pinch,
-        // but still route Apple Pencil to the canvas beneath.
         if hit === hostingView, let hostingView {
             if let canvas = findCanvas(in: hostingView) {
                 let local = convert(point, to: canvas)

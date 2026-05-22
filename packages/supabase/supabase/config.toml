@@ -50,6 +50,10 @@ enable_refresh_token_rotation = true
 refresh_token_reuse_interval = 10
 enable_signup = true
 
+[auth.email.template.recovery]
+subject = "Reset your NoteWorks password"
+content_path = "./supabase/templates/recovery.html"
+
 [auth.external.apple]
 enabled = true
 client_id = "env(APPLE_CLIENT_ID)"
@@ -62,6 +66,9 @@ secret = "env(GOOGLE_SECRET)"
 
 [edge_runtime]
 enabled = true
+
+[functions.confirm-password-reset]
+verify_jwt = false
 
 [functions.submit-onboarding]
 verify_jwt = true

@@ -23,28 +23,37 @@ enum NotePageBackgroundDrawing {
 
     // MARK: - CGContext (PDF export)
 
+    /// `scale` multiplies every page-relative metric (spacing, inset,
+    /// dot radius, line width) so the pattern stays at a fixed density
+    /// in PAGE coordinates regardless of how big `rect` is. PDF export
+    /// passes `scale == 1` (rect already equals base page size); the
+    /// on-screen pattern view passes the current zoom so a 2x-zoomed
+    /// page draws dots 2x further apart in screen points, which means
+    /// they sit at the same page positions as at zoom 1.
     static func draw(
         _ background: NotePageBackground,
         in rect: CGRect,
-        context cg: CGContext
+        context cg: CGContext,
+        scale: CGFloat = 1.0
     ) {
+        let s = max(0.0001, scale)
         switch background {
         case .blank:
             break
         case .dots:
-            drawDotGrid(in: rect, context: cg)
+            drawDotGrid(in: rect, context: cg, scale: s)
         case .singleColumn:
-            drawRuled(in: rect, context: cg)
+            drawRuled(in: rect, context: cg, scale: s)
         case .grid:
-            drawGrid(in: rect, context: cg)
+            drawGrid(in: rect, context: cg, scale: s)
         case .cornell:
-            drawCornell(in: rect, context: cg)
+            drawCornell(in: rect, context: cg, scale: s)
         }
     }
 
-    private static func drawDotGrid(in rect: CGRect, context cg: CGContext) {
-        let spacing = NotePageBackgroundMetrics.gridSpacing
-        let radius: CGFloat = 1
+    private static func drawDotGrid(in rect: CGRect, context cg: CGContext, scale: CGFloat) {
+        let spacing = NotePageBackgroundMetrics.gridSpacing * scale
+        let radius: CGFloat = max(0.5, 1 * scale)
         cg.saveGState()
         cg.setFillColor(UIColor.black.withAlphaComponent(0.18).cgColor)
         var y = spacing
@@ -61,12 +70,12 @@ enum NotePageBackgroundDrawing {
         cg.restoreGState()
     }
 
-    private static func drawRuled(in rect: CGRect, context cg: CGContext) {
-        let inset = NotePageBackgroundMetrics.pageInset
-        let spacing = NotePageBackgroundMetrics.ruledSpacing
+    private static func drawRuled(in rect: CGRect, context cg: CGContext, scale: CGFloat) {
+        let inset = NotePageBackgroundMetrics.pageInset * scale
+        let spacing = NotePageBackgroundMetrics.ruledSpacing * scale
         cg.saveGState()
         cg.setStrokeColor(UIColor.black.withAlphaComponent(NotePageBackgroundMetrics.lineOpacity).cgColor)
-        cg.setLineWidth(1)
+        cg.setLineWidth(max(0.5, 1 * scale))
         var y = inset + spacing
         while y < rect.height - inset {
             cg.move(to: CGPoint(x: inset, y: y))
@@ -77,12 +86,12 @@ enum NotePageBackgroundDrawing {
         cg.restoreGState()
     }
 
-    private static func drawGrid(in rect: CGRect, context cg: CGContext) {
-        let spacing = NotePageBackgroundMetrics.gridSpacing
-        let inset = NotePageBackgroundMetrics.pageInset
+    private static func drawGrid(in rect: CGRect, context cg: CGContext, scale: CGFloat) {
+        let spacing = NotePageBackgroundMetrics.gridSpacing * scale
+        let inset = NotePageBackgroundMetrics.pageInset * scale
         cg.saveGState()
         cg.setStrokeColor(UIColor.black.withAlphaComponent(NotePageBackgroundMetrics.lineOpacity).cgColor)
-        cg.setLineWidth(1)
+        cg.setLineWidth(max(0.5, 1 * scale))
         var x = inset
         while x <= rect.width - inset {
             cg.move(to: CGPoint(x: x, y: inset))
@@ -100,15 +109,15 @@ enum NotePageBackgroundDrawing {
         cg.restoreGState()
     }
 
-    private static func drawCornell(in rect: CGRect, context cg: CGContext) {
-        let inset = NotePageBackgroundMetrics.pageInset
-        let spacing = NotePageBackgroundMetrics.ruledSpacing
+    private static func drawCornell(in rect: CGRect, context cg: CGContext, scale: CGFloat) {
+        let inset = NotePageBackgroundMetrics.pageInset * scale
+        let spacing = NotePageBackgroundMetrics.ruledSpacing * scale
         let cueX = rect.width * NotePageBackgroundMetrics.cornellCueWidthFraction
         let summaryTop = rect.height * (1 - NotePageBackgroundMetrics.cornellSummaryHeightFraction)
         let notesBottom = summaryTop - spacing
 
         cg.saveGState()
-        cg.setLineWidth(1)
+        cg.setLineWidth(max(0.5, 1 * scale))
 
         cg.setStrokeColor(UIColor.black.withAlphaComponent(NotePageBackgroundMetrics.dividerOpacity).cgColor)
         cg.move(to: CGPoint(x: cueX, y: inset))
