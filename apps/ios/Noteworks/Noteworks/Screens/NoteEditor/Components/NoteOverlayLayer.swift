@@ -102,8 +102,51 @@ struct NoteOverlayLayer: View {
             }
         }
         .frame(width: pageSize.width, height: pageSize.height, alignment: .topLeading)
-        .clipped()
+        // Do not clip the layer — the floating adjust toolbar sits
+        // above the sticker (negative Y offset) and corner handles
+        // extend outside the sticker bounds. Clipping here made those
+        // controls invisible to hit-testing even when drawn on screen.
         .allowsHitTesting(manipulationMode || selectedId != nil || editingId != nil)
+    }
+}
+
+// MARK: - Image adjust toolbar geometry (shared with editor + scroll view)
+
+/// Buttons on the floating image adjust toolbar (left → right).
+enum ImageOverlayAdjustToolbarButton: Int, CaseIterable {
+    case crop = 0
+    case lasso = 1
+    case cut = 2
+    case duplicate = 3
+    case delete = 4
+    case more = 5
+}
+
+enum ImageOverlayAdjustToolbarMetrics {
+    static let width: CGFloat = 280
+    /// Matches padded toolbar chrome (icons + vertical padding).
+    static let height: CGFloat = 48
+    /// Distance from the sticker's top edge to the toolbar's top edge.
+    static let gapAboveSticker: CGFloat = 52
+    static let buttonCount = 6
+
+    /// Base-coordinate rect for the floating toolbar above a sticker.
+    static func frame(above stickerFrame: CGRect) -> CGRect {
+        CGRect(
+            x: stickerFrame.midX - width / 2,
+            y: stickerFrame.minY - gapAboveSticker,
+            width: width,
+            height: height
+        )
+    }
+
+    /// Maps a page-coordinate touch to a toolbar button (equal-width slots).
+    static func button(at point: CGPoint, in toolbarFrame: CGRect) -> ImageOverlayAdjustToolbarButton? {
+        guard toolbarFrame.contains(point) else { return nil }
+        let localX = point.x - toolbarFrame.minX
+        let slotWidth = toolbarFrame.width / CGFloat(buttonCount)
+        let index = min(buttonCount - 1, max(0, Int(localX / slotWidth)))
+        return ImageOverlayAdjustToolbarButton(rawValue: index)
     }
 }
 
@@ -203,8 +246,18 @@ private struct NoteOverlayItem: View {
         }
     }
 
-    /// Image / text / shape drawing — hit-testable in Select mode and
-    /// during text inline edit so stickers can be tapped and moved.
+    /// Image / text / shape drawing.
+    ///
+    /// MOVE and RESIZE are driven by a UIKit pan recognizer wired up
+    /// inside `ZoomablePageScrollView` (see `onOverlayManipulation`).
+    /// SwiftUI's `DragGesture` attached here lost the gesture race
+    /// against the outer `UIScrollView`'s pan recognizer (the page
+    /// panned instead of the sticker moving), so the body is left
+    /// non-interactive at the SwiftUI layer and the scroll-view-
+    /// level recognizer dispatches the deltas back through the
+    /// `NotesStore`. Text overlays still keep SwiftUI hit-testing
+    /// while inline-editing so the `TextField` actually receives
+    /// keystrokes.
     private var pageVisual: some View {
         ZStack {
             content
@@ -217,9 +270,7 @@ private struct NoteOverlayItem: View {
         .frame(width: liveSize.width, height: liveSize.height)
         .rotationEffect(.degrees(usesFullTransformChrome ? overlay.rotationDegrees : 0))
         .offset(x: liveOrigin.x, y: liveOrigin.y)
-        .contentShape(Rectangle())
-        .allowsHitTesting((manipulationMode && !isEditing) || (isEditing && overlay.kind == .text))
-        .gesture(manipulationBodyGesture, including: manipulationMode && !isEditing ? .all : .subviews)
+        .allowsHitTesting(isEditing && overlay.kind == .text)
     }
 
     /// Corner handles + floating toolbars — small targets only; the
@@ -229,14 +280,17 @@ private struct NoteOverlayItem: View {
             fourCornerHandles
 
             if usesFullTransformChrome {
-                ImageOverlayAdjustToolbar(
-                    onCrop: isImage ? onCropImage : {},
-                    onLasso: onSelectLasso,
-                    onCut: onDelete,
-                    onDuplicate: { onDuplicate(overlay) },
-                    onDelete: onDelete
+                ImageOverlayAdjustToolbar()
+                .offset(
+                    x: max(0, (liveSize.width - ImageOverlayAdjustToolbarMetrics.width) / 2),
+                    y: -ImageOverlayAdjustToolbarMetrics.gapAboveSticker
                 )
-                .offset(x: max(0, (liveSize.width - 280) / 2), y: -52)
+                .zIndex(20)
+                // Taps are handled by a UIKit recognizer on the outer
+                // scroll view (`onOverlayAdjustToolbarTap`) — SwiftUI
+                // buttons here never receive touches because
+                // `PencilCanvasView` sits above this layer in the ZStack.
+                .allowsHitTesting(false)
             }
 
             if overlay.kind == .text {
@@ -379,14 +433,17 @@ private struct NoteOverlayItem: View {
     // MARK: Handles
 
     /// Four blue corner handles — shared by text and image overlays.
+    /// Visual only; the actual drag-to-resize is driven by the UIKit
+    /// pan recognizer in `ZoomablePageScrollView` (the touch point
+    /// is hit-tested against the handle bounding boxes there).
     private var fourCornerHandles: some View {
         ZStack(alignment: .topLeading) {
             ForEach(OverlayCorner.allCases, id: \.self) { corner in
                 resizeHandle
                     .offset(handleOffset(for: corner))
-                    .gesture(resizeGesture(for: corner))
             }
         }
+        .allowsHitTesting(false)
     }
 
     private func handleOffset(for corner: OverlayCorner) -> CGSize {
@@ -417,81 +474,14 @@ private struct NoteOverlayItem: View {
 
     // MARK: Gestures
 
-    /// Tap-to-select and drag-to-move when Select mode is active.
-    private var manipulationBodyGesture: some Gesture {
-        DragGesture(minimumDistance: 4)
-            .onChanged { value in
-                if !isSelected {
-                    onSelect()
-                }
-                moveTranslation = value.translation
-                onDragChanged(true)
-            }
-            .onEnded { value in
-                commitMove(translation: value.translation)
-                moveTranslation = .zero
-                onDragChanged(false)
-            }
-            .simultaneously(with:
-                TapGesture(count: 1)
-                    .onEnded {
-                        if isSelected {
-                            if overlay.kind == .text {
-                                onStartEditing()
-                            } else if overlay.kind == .image {
-                                onDeselect()
-                            }
-                        } else {
-                            onSelect()
-                        }
-                    }
-            )
-    }
-
-    private func commitMove(translation: CGSize) {
-        let newOrigin = CGPoint(
-            x: max(0, min(pageSize.width - liveSize.width, basePoint.x + translation.width)),
-            y: max(0, min(pageSize.height - liveSize.height, basePoint.y + translation.height))
-        )
-        var updated = overlay
-        updated.normX = newOrigin.x / pageSize.width
-        updated.normY = newOrigin.y / pageSize.height
-        onUpdate(updated)
-    }
-
-    /// Drag from a corner handle — resizes anchored at the opposite side.
-    /// Images preserve aspect ratio; text overlays free-scale.
-    private func resizeGesture(for corner: OverlayCorner) -> some Gesture {
-        DragGesture(minimumDistance: 0)
-            .onChanged { value in
-                activeResizeCorner = corner
-                activeResizeEdge = nil
-                resizeTranslation = value.translation
-            }
-            .onEnded { value in
-                let (newOrigin, newSize) = resized(corner: corner, edge: nil, translation: value.translation)
-                resizeTranslation = .zero
-                activeResizeCorner = nil
-                activeResizeEdge = nil
-                commitResize(origin: newOrigin, size: newSize)
-            }
-    }
-
-    private func resizeGesture(for edge: OverlayEdge) -> some Gesture {
-        DragGesture(minimumDistance: 0)
-            .onChanged { value in
-                activeResizeEdge = edge
-                activeResizeCorner = nil
-                resizeTranslation = value.translation
-            }
-            .onEnded { value in
-                let (newOrigin, newSize) = resized(corner: nil, edge: edge, translation: value.translation)
-                resizeTranslation = .zero
-                activeResizeCorner = nil
-                activeResizeEdge = nil
-                commitResize(origin: newOrigin, size: newSize)
-            }
-    }
+    // SwiftUI move/resize gestures used to live here; they consistently
+    // lost the gesture race against the outer scroll view's pan
+    // recognizer, leaving stickers unmovable. Manipulation is now
+    // driven by a UIKit `UIPanGestureRecognizer` in
+    // `ZoomablePageScrollView` and routed through
+    // `NoteEditorView.handleOverlayManipulation`. This view stays
+    // pure presentation so the SwiftUI tree never claims a touch the
+    // scroll view also wants.
 
     private func activeResizeGeometry(for translation: CGSize) -> (origin: CGPoint, size: CGSize) {
         if let corner = activeResizeCorner {
@@ -503,20 +493,10 @@ private struct NoteOverlayItem: View {
         return (basePoint, baseSize)
     }
 
-    private func commitResize(origin: CGPoint, size: CGSize) {
-        let clampedOrigin = CGPoint(
-            x: max(0, min(pageSize.width - size.width, origin.x)),
-            y: max(0, min(pageSize.height - size.height, origin.y))
-        )
-        var updated = overlay
-        updated.normX = clampedOrigin.x / pageSize.width
-        updated.normY = clampedOrigin.y / pageSize.height
-        updated.normW = size.width / pageSize.width
-        updated.normH = size.height / pageSize.height
-        onUpdate(updated)
-    }
-
-    /// Geometry math for a corner- or edge-anchored resize.
+    /// Geometry math kept for the (still-SwiftUI-driven) pinch-to-
+    /// resize gesture path, which is not yet exercised by the new
+    /// UIKit pan flow. Left in place so re-introducing pinch-to-
+    /// resize doesn't require rewriting the math from scratch.
     private func resized(corner: OverlayCorner?, edge: OverlayEdge?, translation: CGSize) -> (CGPoint, CGSize) {
         var newOriginX = basePoint.x
         var newOriginY = basePoint.y
@@ -651,24 +631,21 @@ private struct SimpleTextOverlayToolbar: View {
 
 // MARK: - Image adjust toolbar (GoodNotes-style)
 
+/// Visual-only chrome; taps are routed through UIKit on the scroll view.
 private struct ImageOverlayAdjustToolbar: View {
-    var onCrop: () -> Void
-    var onLasso: () -> Void
-    var onCut: () -> Void
-    var onDuplicate: () -> Void
-    var onDelete: () -> Void
-
     var body: some View {
         HStack(spacing: 4) {
-            toolbarIcon("crop", action: onCrop, accessibilityLabel: "Crop")
-            toolbarIcon("lasso", action: onLasso, accessibilityLabel: "Lasso")
-            toolbarIcon("scissors", action: onCut, accessibilityLabel: "Cut")
-            toolbarIcon("plus.square.on.square", action: onDuplicate, accessibilityLabel: "Duplicate")
-            toolbarIcon("trash", action: onDelete, tint: NoteEditorTheme.danger, accessibilityLabel: "Delete")
-            toolbarIcon("ellipsis", action: {}, accessibilityLabel: "More")
+            toolbarIcon("crop", accessibilityLabel: "Crop")
+            toolbarIcon("lasso", accessibilityLabel: "Lasso")
+            toolbarIcon("scissors", accessibilityLabel: "Cut")
+            toolbarIcon("plus.square.on.square", accessibilityLabel: "Duplicate")
+            toolbarIcon("trash", tint: NoteEditorTheme.danger, accessibilityLabel: "Delete")
+            toolbarIcon("ellipsis", accessibilityLabel: "More")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
+        .frame(width: ImageOverlayAdjustToolbarMetrics.width)
+        .contentShape(Rectangle())
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(.ultraThinMaterial)
@@ -686,18 +663,14 @@ private struct ImageOverlayAdjustToolbar: View {
 
     private func toolbarIcon(
         _ symbol: String,
-        action: @escaping () -> Void,
         tint: Color = NoteEditorTheme.textPrimary,
         accessibilityLabel: String? = nil
     ) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(tint)
-                .frame(width: 36, height: 32)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(accessibilityLabel ?? symbol)
+        Image(systemName: symbol)
+            .font(.system(size: 15, weight: .medium))
+            .foregroundStyle(tint)
+            .frame(width: 36, height: 32)
+            .accessibilityLabel(accessibilityLabel ?? symbol)
     }
 }
 

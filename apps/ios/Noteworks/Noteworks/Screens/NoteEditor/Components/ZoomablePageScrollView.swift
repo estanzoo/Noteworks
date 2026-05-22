@@ -39,6 +39,14 @@ import SwiftUI
 import UIKit
 import PencilKit
 
+/// Phase signal for `ZoomablePageScrollView.onOverlayManipulation`.
+enum OverlayManipulationPhase {
+    case began
+    case changed
+    case ended
+    case cancelled
+}
+
 struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
 
     /// Size of the page card at zoom 1 (i.e. the size SwiftUI computes
@@ -59,6 +67,29 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
     /// position (i.e. divided by the current zoom). The caller can use
     /// it directly against the unzoomed `pageSize`.
     var onPageFingerTap: ((CGPoint?) -> Void)? = nil
+    /// Single-finger pan driver used while an overlay is selected, fired
+    /// in BASE (unzoomed) page coordinates. The caller (NoteEditorView)
+    /// resolves which overlay the touch started on (body vs. corner
+    /// handle) and applies the delta to the overlay's normalized rect.
+    /// Wired to a UIKit `UIPanGestureRecognizer` because SwiftUI
+    /// gestures attached inside a `UIHostingController` hosted in a
+    /// `UIScrollView` consistently lose the gesture race against the
+    /// scroll view's pan — even with that pan disabled — which is what
+    /// caused the "page pans instead of sticker moves" bug.
+    ///
+    /// Only enabled while `blocksPageGestures` is true (i.e. when the
+    /// caller has marked an overlay as selected / editing / dragging).
+    var onOverlayManipulation: ((OverlayManipulationPhase, CGPoint, CGSize) -> Void)? = nil
+    /// Base-coordinate rects where the overlay pan must not begin (e.g.
+    /// the floating image adjust toolbar) so toolbar buttons receive taps.
+    var overlayInteractionExclusionRects: [CGRect] = []
+    /// Base-coordinate rect of the image adjust toolbar while selected.
+    /// A dedicated `UITapGestureRecognizer` hit-tests this region and
+    /// fires `onOverlayAdjustToolbarTap` — SwiftUI `Button`s on the
+    /// toolbar never receive touches because `PencilCanvasView` sits
+    /// above the overlay layer in the page ZStack.
+    var overlayAdjustToolbarRect: CGRect? = nil
+    var onOverlayAdjustToolbarTap: ((ImageOverlayAdjustToolbarButton) -> Void)? = nil
     /// Reports the current zoom factor (1.0 = fit). The caller multiplies
     /// the logical page size by this to drive its SwiftUI layout.
     @Binding var zoom: CGFloat
@@ -75,6 +106,10 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         onSwipeNext: (() -> Void)? = nil,
         onSwipePrevious: (() -> Void)? = nil,
         onPageFingerTap: ((CGPoint?) -> Void)? = nil,
+        onOverlayManipulation: ((OverlayManipulationPhase, CGPoint, CGSize) -> Void)? = nil,
+        overlayInteractionExclusionRects: [CGRect] = [],
+        overlayAdjustToolbarRect: CGRect? = nil,
+        onOverlayAdjustToolbarTap: ((ImageOverlayAdjustToolbarButton) -> Void)? = nil,
         zoom: Binding<CGFloat>,
         @ViewBuilder content: @escaping () -> Content
     ) {
@@ -88,6 +123,10 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         self.onSwipeNext = onSwipeNext
         self.onSwipePrevious = onSwipePrevious
         self.onPageFingerTap = onPageFingerTap
+        self.onOverlayManipulation = onOverlayManipulation
+        self.overlayInteractionExclusionRects = overlayInteractionExclusionRects
+        self.overlayAdjustToolbarRect = overlayAdjustToolbarRect
+        self.onOverlayAdjustToolbarTap = onOverlayAdjustToolbarTap
         self._zoom = zoom
         self.content = content
     }
@@ -164,6 +203,46 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         scrollView.addGestureRecognizer(canvasTap)
         canvasTap.require(toFail: doubleTap)
 
+        let toolbarTap = UITapGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleOverlayAdjustToolbarTap(_:))
+        )
+        toolbarTap.numberOfTapsRequired = 1
+        toolbarTap.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        toolbarTap.cancelsTouchesInView = false
+        toolbarTap.delegate = context.coordinator
+        scrollView.addGestureRecognizer(toolbarTap)
+        toolbarTap.require(toFail: doubleTap)
+        canvasTap.require(toFail: toolbarTap)
+
+        // Drives image / text / shape sticker manipulation (move +
+        // corner-handle resize). Only ever recognizes when an overlay
+        // is selected (gated by `blocksPageGestures` in
+        // `gestureRecognizerShouldBegin`). Reports pan deltas in BASE
+        // (unzoomed) page coordinates back through
+        // `onOverlayManipulation` so the caller can update the
+        // overlay's normalized rect. Lives at the scroll-view level
+        // (rather than as a SwiftUI gesture on the overlay body)
+        // because SwiftUI gestures lost the gesture race against the
+        // scroll view's own pan recognizer, leaving stickers
+        // unmovable.
+        let overlayPan = UIPanGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleOverlayPan(_:))
+        )
+        overlayPan.minimumNumberOfTouches = 1
+        overlayPan.maximumNumberOfTouches = 1
+        overlayPan.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        overlayPan.cancelsTouchesInView = false
+        overlayPan.delegate = context.coordinator
+        scrollView.addGestureRecognizer(overlayPan)
+        // When the overlay pan begins, the scroll view's pan + the
+        // page-swipe pan must defer so the overlay drag is the only
+        // recognizer driving the motion.
+        scrollView.panGestureRecognizer.require(toFail: overlayPan)
+        pagePan.require(toFail: overlayPan)
+        canvasTap.require(toFail: overlayPan)
+
         let host = UIHostingController(rootView: content())
         host.view.backgroundColor = .clear
         host.view.isMultipleTouchEnabled = true
@@ -191,8 +270,14 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         context.coordinator.pagePanGesture = pagePan
         context.coordinator.pinchGesture = pinch
         context.coordinator.canvasTapGesture = canvasTap
+        context.coordinator.overlayPanGesture = overlayPan
+        context.coordinator.toolbarTapGesture = toolbarTap
         context.coordinator.blocksPageGestures = blocksPageGestures
         context.coordinator.onPageFingerTap = onPageFingerTap
+        context.coordinator.onOverlayManipulation = onOverlayManipulation
+        context.coordinator.overlayInteractionExclusionRects = overlayInteractionExclusionRects
+        context.coordinator.overlayAdjustToolbarRect = overlayAdjustToolbarRect
+        context.coordinator.onOverlayAdjustToolbarTap = onOverlayAdjustToolbarTap
         context.coordinator.zoomBinding = $zoom
 
         DispatchQueue.main.async {
@@ -211,7 +296,26 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         context.coordinator.blocksPageGestures = blocksPageGestures
         context.coordinator.onPageFingerTap = onPageFingerTap
         context.coordinator.canvasTapGesture?.isEnabled = onPageFingerTap != nil
+        context.coordinator.onOverlayManipulation = onOverlayManipulation
+        context.coordinator.overlayInteractionExclusionRects = overlayInteractionExclusionRects
+        context.coordinator.overlayAdjustToolbarRect = overlayAdjustToolbarRect
+        context.coordinator.onOverlayAdjustToolbarTap = onOverlayAdjustToolbarTap
+        context.coordinator.toolbarTapGesture?.isEnabled = onOverlayAdjustToolbarTap != nil
         context.coordinator.zoomBinding = $zoom
+
+        // Suppress the scroll view's built-in single-finger pan while
+        // an overlay (image / text / shape sticker) is selected or
+        // being dragged. Without this, the scroll-pan recognizer
+        // wins the gesture race against the SwiftUI drag gesture on
+        // the overlay body — the user sees the page pan instead of
+        // the sticker moving, even though the hit-test lands cleanly
+        // on the overlay. Pinch lives on a separate recognizer and
+        // stays enabled so two-finger zoom continues to work with a
+        // sticker selected.
+        let scrollPanEnabled = !blocksPageGestures
+        if scrollView.panGestureRecognizer.isEnabled != scrollPanEnabled {
+            scrollView.panGestureRecognizer.isEnabled = scrollPanEnabled
+        }
 
         // Always push the fresh rootView — SwiftUI's hosting controller
         // diffs internally, so this is cheap, and it ensures zoom-driven
@@ -270,10 +374,22 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         var atFirstPage: Bool = false
         var blocksPageGestures: Bool = false
         var onPageFingerTap: ((CGPoint?) -> Void)?
+        var onOverlayManipulation: ((OverlayManipulationPhase, CGPoint, CGSize) -> Void)?
+        var overlayInteractionExclusionRects: [CGRect] = []
+        var overlayAdjustToolbarRect: CGRect?
+        var onOverlayAdjustToolbarTap: ((ImageOverlayAdjustToolbarButton) -> Void)?
         var zoomBinding: Binding<CGFloat>?
         weak var pagePanGesture: UIPanGestureRecognizer?
         weak var pinchGesture: UIPinchGestureRecognizer?
         weak var canvasTapGesture: UITapGestureRecognizer?
+        weak var toolbarTapGesture: UITapGestureRecognizer?
+        weak var overlayPanGesture: UIPanGestureRecognizer?
+        /// Captured at `.began` so `.changed` / `.ended` can report
+        /// translations in BASE (unzoomed) page coordinates regardless
+        /// of any zoom change mid-drag (which shouldn't happen, but is
+        /// defensive).
+        private var overlayPanStartLocationInContent: CGPoint = .zero
+        private var overlayPanStartZoom: CGFloat = 1.0
         private var isSlidingPage = false
         private var didFireBoundaryHaptic = false
         private var didConfigureInitialDisplay = false
@@ -609,7 +725,11 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
                     currentZoom = finalZoom
                     applyZoom(to: scrollView, animated: false)
                     liveZoomScale = 1.0
-                    scrollView.panGestureRecognizer.isEnabled = true
+                    // Don't blindly re-enable the scroll-pan: while an
+                    // overlay is selected the SwiftUI sticker-drag
+                    // gesture needs to win, and `updateUIView` is the
+                    // sole authority for that flag.
+                    scrollView.panGestureRecognizer.isEnabled = !blocksPageGestures
                     pagePanGesture?.isEnabled = true
 
                     // Solve for the contentOffset that lands
@@ -741,7 +861,82 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
             offset.y = max(minY, min(maxY, offset.y))
         }
 
+        // MARK: Overlay manipulation
+
+        /// UIKit-driven single-finger pan that moves / resizes the
+        /// currently-selected sticker. Reports start point AND running
+        /// translation in BASE (unzoomed) page coordinates so the
+        /// caller can hit-test against the overlay's normalized rect
+        /// and apply the delta directly.
+        @objc func handleOverlayPan(_ gesture: UIPanGestureRecognizer) {
+            guard let onOverlayManipulation,
+                  let scrollView = gesture.view as? UIScrollView,
+                  let contentView = contentRoot ?? host?.view else { return }
+
+            switch gesture.state {
+            case .began:
+                let startInScroll = gesture.location(in: scrollView)
+                overlayPanStartLocationInContent = scrollView.convert(startInScroll, to: contentView)
+                overlayPanStartZoom = max(0.0001, currentZoom)
+                let baseStart = CGPoint(
+                    x: overlayPanStartLocationInContent.x / overlayPanStartZoom,
+                    y: overlayPanStartLocationInContent.y / overlayPanStartZoom
+                )
+                onOverlayManipulation(.began, baseStart, .zero)
+
+            case .changed:
+                let translationInScroll = gesture.translation(in: scrollView)
+                let baseStart = CGPoint(
+                    x: overlayPanStartLocationInContent.x / overlayPanStartZoom,
+                    y: overlayPanStartLocationInContent.y / overlayPanStartZoom
+                )
+                let baseTranslation = CGSize(
+                    width: translationInScroll.x / overlayPanStartZoom,
+                    height: translationInScroll.y / overlayPanStartZoom
+                )
+                onOverlayManipulation(.changed, baseStart, baseTranslation)
+
+            case .ended:
+                let translationInScroll = gesture.translation(in: scrollView)
+                let baseStart = CGPoint(
+                    x: overlayPanStartLocationInContent.x / overlayPanStartZoom,
+                    y: overlayPanStartLocationInContent.y / overlayPanStartZoom
+                )
+                let baseTranslation = CGSize(
+                    width: translationInScroll.x / overlayPanStartZoom,
+                    height: translationInScroll.y / overlayPanStartZoom
+                )
+                onOverlayManipulation(.ended, baseStart, baseTranslation)
+
+            case .cancelled, .failed:
+                onOverlayManipulation(.cancelled, .zero, .zero)
+
+            default:
+                break
+            }
+        }
+
         // MARK: Taps
+
+        @objc func handleOverlayAdjustToolbarTap(_ gesture: UITapGestureRecognizer) {
+            guard gesture.state == .ended,
+                  let onOverlayAdjustToolbarTap,
+                  let toolbarRect = overlayAdjustToolbarRect,
+                  let scrollView = gesture.view as? UIScrollView,
+                  let contentView = contentRoot ?? host?.view else { return }
+
+            let location = gesture.location(in: scrollView)
+            let localScaled = scrollView.convert(location, to: contentView)
+            let zoom = max(0.0001, currentZoom)
+            let localBase = CGPoint(
+                x: localScaled.x / zoom,
+                y: localScaled.y / zoom
+            )
+            guard let button = ImageOverlayAdjustToolbarMetrics.button(at: localBase, in: toolbarRect) else {
+                return
+            }
+            onOverlayAdjustToolbarTap(button)
+        }
 
         @objc func handleCanvasFingerTap(_ gesture: UITapGestureRecognizer) {
             guard gesture.state == .ended,
@@ -937,6 +1132,49 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         }
 
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            if gestureRecognizer === toolbarTapGesture {
+                guard let toolbarRect = overlayAdjustToolbarRect,
+                      let tap = gestureRecognizer as? UITapGestureRecognizer,
+                      let scrollView = tap.view as? UIScrollView,
+                      let contentView = contentRoot ?? host?.view else {
+                    return false
+                }
+                let location = tap.location(in: scrollView)
+                let localScaled = scrollView.convert(location, to: contentView)
+                let zoom = max(0.0001, currentZoom)
+                let localBase = CGPoint(
+                    x: localScaled.x / zoom,
+                    y: localScaled.y / zoom
+                )
+                return toolbarRect.contains(localBase)
+            }
+            if gestureRecognizer === overlayPanGesture {
+                // Only meaningful while an overlay is selected
+                // (`blocksPageGestures == true` is set in
+                // `NoteEditorView` exactly when there's a sticker
+                // selected / being edited / mid-drag) and only when
+                // the touch lands on the page card itself (not the
+                // grey margin around it).
+                guard blocksPageGestures,
+                      let pan = gestureRecognizer as? UIPanGestureRecognizer,
+                      let scrollView = pan.view as? UIScrollView,
+                      let contentView = contentRoot ?? host?.view else {
+                    return false
+                }
+                let location = pan.location(in: scrollView)
+                let pageFrame = contentView.convert(contentView.bounds, to: scrollView)
+                guard pageFrame.contains(location) else { return false }
+                let localScaled = scrollView.convert(location, to: contentView)
+                let zoom = max(0.0001, currentZoom)
+                let localBase = CGPoint(
+                    x: localScaled.x / zoom,
+                    y: localScaled.y / zoom
+                )
+                for rect in overlayInteractionExclusionRects where rect.contains(localBase) {
+                    return false
+                }
+                return true
+            }
             if gestureRecognizer === pagePanGesture {
                 if blocksPageGestures { return false }
                 guard let pan = gestureRecognizer as? UIPanGestureRecognizer,
@@ -952,10 +1190,23 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
     }
 }
 
-/// Host wrapper for the SwiftUI page card. Yields finger / multi-touch
-/// sequences to the outer `UIScrollView` so pinch is never swallowed by
-/// the `UIHostingController` subtree, and passes through taps on
-/// visually empty regions of the page card.
+/// Host wrapper for the SwiftUI page card.
+///
+/// Touch routing is a 3-way split, decided per `hitTest`:
+///   1. PKCanvasView wants the touch (Pencil ink, eraser etc.) → return
+///      that canvas hit so PencilKit gets it.
+///   2. Multi-touch is in flight → return nil so the outer
+///      `UIScrollView`'s pinch recognizer can grab both fingers
+///      (PencilKit's canvas is non-pinchable, and the hosting view
+///      doesn't yield multi-touch sequences cleanly).
+///   3. Single-finger touch on an "empty" area of the SwiftUI tree
+///      (where `super.hitTest` returns the hosting view itself) →
+///      return the hosting view. SwiftUI attaches its gesture
+///      recognizers to that root, so returning it is what lets
+///      overlay drag / tap gestures (move + resize the image / text
+///      stickers) actually fire. Returning `nil` here — the previous
+///      behaviour — silently ate every single-finger gesture on the
+///      overlay layer, which is why images couldn't be moved.
 final class PinchPassthroughContentView: UIView {
     weak var hostingView: UIView?
 
@@ -970,7 +1221,13 @@ final class PinchPassthroughContentView: UIView {
                     return canvasHit
                 }
             }
-            return nil
+            // Multi-touch (pinch) → yield to the scroll view so its
+            // pinch recognizer can track both fingers. Single touch →
+            // hand the hit back to the hosting view so SwiftUI's
+            // overlay-drag / tap gestures can recognize it.
+            let touchCount = event?.allTouches?.count ?? 0
+            if touchCount >= 2 { return nil }
+            return hostingView
         }
         return hit
     }

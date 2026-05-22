@@ -1181,9 +1181,22 @@ final class NotesStore: ObservableObject {
     }
 
     /// Duplicates an overlay. Image overlays get a fresh copy of the PNG.
+    /// The copy is appended to the page's overlay list so it renders in
+    /// front of the original. `pageSize` + `offsetPoints` position the
+    /// duplicate down and to the right of the source (overlapping).
     @discardableResult
-    func duplicateOverlay(_ overlay: NotePageOverlay, in noteId: String) -> NotePageOverlay? {
-        var copy = overlay.duplicate()
+    func duplicateOverlay(
+        _ overlay: NotePageOverlay,
+        in noteId: String,
+        pageSize: CGSize,
+        offsetPoints: CGSize = CGSize(width: 24, height: 24)
+    ) -> NotePageOverlay? {
+        guard pageSize.width > 0, pageSize.height > 0 else { return nil }
+        let offsetNorm = CGSize(
+            width: offsetPoints.width / pageSize.width,
+            height: offsetPoints.height / pageSize.height
+        )
+        var copy = overlay.duplicate(offsetNorm: offsetNorm)
         if overlay.kind == .image,
            let filename = overlay.imageFilename,
            let data = loadOverlayImageData(for: noteId, filename: filename) {

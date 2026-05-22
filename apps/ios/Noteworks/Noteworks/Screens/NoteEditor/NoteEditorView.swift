@@ -28,6 +28,16 @@ import SwiftUI
 import PencilKit
 import PhotosUI
 
+/// Which corner the UIKit pan recognizer landed on. Used by
+/// `NoteEditorView` to decide whether a manipulation pan should move
+/// the whole overlay or resize it anchored at the opposite corner.
+enum OverlayResizeCorner {
+    case topLeading
+    case topTrailing
+    case bottomLeading
+    case bottomTrailing
+}
+
 struct NoteEditorView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var store: NotesStore
@@ -93,6 +103,15 @@ struct NoteEditorView: View {
     @State private var showSelectedPagesShare = false
     @State private var selectedPagesShareData = Data()
     @State private var isOverlayDragging = false
+
+    /// Snapshot of the overlay being moved / resized by the UIKit pan
+    /// recognizer in `ZoomablePageScrollView`. Captured at `.began`
+    /// so the running translation can be applied to a stable starting
+    /// rect (rather than the live, already-updated overlay) on every
+    /// `.changed` event.
+    @State private var manipulationOverlayId: String? = nil
+    @State private var manipulationStartRect: CGRect = .zero
+    @State private var manipulationCorner: OverlayResizeCorner? = nil
 
     /// True while an image / text / shape overlay is selected or being
     /// inline-edited, or actively dragged.
@@ -867,11 +886,324 @@ struct NoteEditorView: View {
         selectedOverlayId = nil
     }
 
+    /// Selected image/shape sticker used for toolbar hit-testing.
+    private func selectedAdjustToolbarOverlay(pageSize: CGSize) -> NotePageOverlay? {
+        guard let selectedId = selectedOverlayId else { return nil }
+        guard let overlay = viewModel.currentPageOverlays(store: store)
+            .first(where: { $0.id == selectedId }),
+              overlay.kind == .image || overlay.kind == .shape
+        else { return nil }
+        return overlay
+    }
+
+    /// Base-coordinate rect of the floating adjust toolbar (if any).
+    private func overlayAdjustToolbarRect(pageSize: CGSize) -> CGRect? {
+        guard let overlay = selectedAdjustToolbarOverlay(pageSize: pageSize) else { return nil }
+        return ImageOverlayAdjustToolbarMetrics.frame(
+            above: overlayRect(for: overlay, in: pageSize)
+        )
+    }
+
+    /// Base-coordinate rects where sticker drag must not steal touches
+    /// (floating image/shape adjust toolbar above the selection).
+    private func overlayToolbarExclusionRects(pageSize: CGSize) -> [CGRect] {
+        guard let rect = overlayAdjustToolbarRect(pageSize: pageSize) else { return [] }
+        return [rect]
+    }
+
+    /// UIKit toolbar tap → duplicate / delete / etc.
+    private func handleOverlayAdjustToolbarTap(
+        _ button: ImageOverlayAdjustToolbarButton,
+        pageSize: CGSize
+    ) {
+        guard let noteId = viewModel.noteId,
+              let overlay = selectedAdjustToolbarOverlay(pageSize: pageSize)
+        else { return }
+
+        switch button {
+        case .crop:
+            viewModel.flashStatus("Crop coming soon")
+        case .lasso:
+            viewModel.selectTool(.lasso)
+            selectedOverlayId = nil
+        case .cut:
+            deleteOverlay(overlay, noteId: noteId)
+        case .duplicate:
+            duplicateOverlay(overlay, noteId: noteId, pageSize: pageSize)
+        case .delete:
+            deleteOverlay(overlay, noteId: noteId)
+        case .more:
+            break
+        }
+    }
+
+    /// Removes the overlay and clears selection chrome.
+    private func deleteOverlay(_ overlay: NotePageOverlay, noteId: String) {
+        if editingOverlayId == overlay.id { editingOverlayId = nil }
+        if selectedOverlayId == overlay.id { selectedOverlayId = nil }
+        store.removeOverlay(id: overlay.id, from: noteId)
+        manipulationOverlayId = nil
+        manipulationCorner = nil
+        isOverlayDragging = false
+    }
+
+    /// Duplicates the overlay with a down-right offset; the copy is
+    /// appended so it draws in front of the original.
+    private func duplicateOverlay(
+        _ overlay: NotePageOverlay,
+        noteId: String,
+        pageSize: CGSize
+    ) {
+        guard let copy = store.duplicateOverlay(
+            overlay,
+            in: noteId,
+            pageSize: pageSize,
+            offsetPoints: CGSize(width: 24, height: 24)
+        ) else { return }
+        selectedOverlayId = copy.id
+        editingOverlayId = nil
+        viewModel.flashStatus("Duplicated")
+    }
+
+    /// Single-finger drag on the page while an overlay is selected.
+    /// Decides whether the touch landed on a corner handle (resize) or
+    /// inside the overlay body (move), then applies the running
+    /// translation to the overlay's normalized rect on every frame.
+    /// All coords are in BASE (unzoomed) page coordinates and line up
+    /// with `pageSize` (the unzoomed logical page size).
+    ///
+    /// This handler is the UIKit counterpart to what used to be a
+    /// SwiftUI `DragGesture` inside `NoteOverlayLayer`. The SwiftUI
+    /// gesture lost the gesture race against the outer scroll view's
+    /// pan recognizer (the page panned instead of the sticker
+    /// moving), so manipulation is now driven entirely by the
+    /// scroll-view-level `UIPanGestureRecognizer` and routed back
+    /// here.
+    private func handleOverlayManipulation(
+        phase: OverlayManipulationPhase,
+        start: CGPoint,
+        translation: CGSize,
+        pageSize: CGSize
+    ) {
+        guard let noteId = viewModel.noteId else { return }
+        let overlays = viewModel.currentPageOverlays(store: store)
+
+        switch phase {
+        case .began:
+            // Find the selected overlay; if no selection yet, pick the
+            // top-most overlay under the touch and select it. This
+            // lets the user grab and drag in one motion without a
+            // separate tap-to-select step.
+            let activeId: String?
+            if let selId = selectedOverlayId,
+               overlays.contains(where: { $0.id == selId }) {
+                activeId = selId
+            } else {
+                activeId = topMostOverlay(at: start, in: overlays, pageSize: pageSize)?.id
+            }
+            guard let id = activeId,
+                  let overlay = overlays.first(where: { $0.id == id }) else {
+                manipulationOverlayId = nil
+                return
+            }
+
+            let rect = overlayRect(for: overlay, in: pageSize)
+            // Decide between resize (start inside a corner-handle hit
+            // zone, ~22 pt around each corner) and move (start
+            // anywhere else inside the body). The hit zone slightly
+            // overlaps the body but matches what the user sees as
+            // "blue circle".
+            let corner = cornerHit(at: start, rect: rect)
+
+            // If the touch is OUTSIDE the body AND not on a handle,
+            // treat as a deselect tap (handled by canvasTap) — don't
+            // start a manipulation.
+            if corner == nil && !rect.contains(start) {
+                manipulationOverlayId = nil
+                return
+            }
+
+            if selectedOverlayId != id { selectedOverlayId = id }
+            editingOverlayId = nil
+            manipulationOverlayId = id
+            manipulationStartRect = rect
+            manipulationCorner = corner
+            isOverlayDragging = true
+
+        case .changed:
+            guard let id = manipulationOverlayId,
+                  let overlay = overlays.first(where: { $0.id == id }) else { return }
+            let updated = applyTranslation(
+                translation,
+                to: overlay,
+                startRect: manipulationStartRect,
+                corner: manipulationCorner,
+                pageSize: pageSize
+            )
+            store.updateOverlay(updated, in: noteId)
+
+        case .ended:
+            guard let id = manipulationOverlayId,
+                  let overlay = overlays.first(where: { $0.id == id }) else {
+                isOverlayDragging = false
+                return
+            }
+            let updated = applyTranslation(
+                translation,
+                to: overlay,
+                startRect: manipulationStartRect,
+                corner: manipulationCorner,
+                pageSize: pageSize
+            )
+            store.updateOverlay(updated, in: noteId)
+            manipulationOverlayId = nil
+            manipulationCorner = nil
+            isOverlayDragging = false
+
+        case .cancelled:
+            manipulationOverlayId = nil
+            manipulationCorner = nil
+            isOverlayDragging = false
+        }
+    }
+
+    /// Top-most overlay containing `point`, searched in reverse
+    /// (last-added wins) so the sticker the user visually grabbed
+    /// is the one returned.
+    private func topMostOverlay(
+        at point: CGPoint,
+        in overlays: [NotePageOverlay],
+        pageSize: CGSize
+    ) -> NotePageOverlay? {
+        for overlay in overlays.reversed() {
+            if overlayRect(for: overlay, in: pageSize).contains(point) {
+                return overlay
+            }
+        }
+        return nil
+    }
+
+    private func overlayRect(for overlay: NotePageOverlay, in pageSize: CGSize) -> CGRect {
+        CGRect(
+            x: overlay.normX * pageSize.width,
+            y: overlay.normY * pageSize.height,
+            width: overlay.normW * pageSize.width,
+            height: overlay.normH * pageSize.height
+        )
+    }
+
+    /// Returns which corner-handle hit zone the touch landed in, or
+    /// `nil` for "no handle" (i.e. body move). Hit zone is a 36 pt
+    /// square centered on each corner — matching the visible handle
+    /// area in `NoteOverlayLayer.fourCornerHandles`.
+    private func cornerHit(at point: CGPoint, rect: CGRect) -> OverlayResizeCorner? {
+        let radius: CGFloat = 22
+        let corners: [(OverlayResizeCorner, CGPoint)] = [
+            (.topLeading, CGPoint(x: rect.minX, y: rect.minY)),
+            (.topTrailing, CGPoint(x: rect.maxX, y: rect.minY)),
+            (.bottomLeading, CGPoint(x: rect.minX, y: rect.maxY)),
+            (.bottomTrailing, CGPoint(x: rect.maxX, y: rect.maxY))
+        ]
+        for (corner, center) in corners {
+            let dx = point.x - center.x
+            let dy = point.y - center.y
+            if dx * dx + dy * dy <= radius * radius {
+                return corner
+            }
+        }
+        return nil
+    }
+
+    /// Applies the running pan translation to either move or resize
+    /// the overlay (depending on whether a corner was hit at `.began`).
+    /// Image overlays preserve aspect ratio during resize.
+    private func applyTranslation(
+        _ translation: CGSize,
+        to overlay: NotePageOverlay,
+        startRect: CGRect,
+        corner: OverlayResizeCorner?,
+        pageSize: CGSize
+    ) -> NotePageOverlay {
+        guard pageSize.width > 0, pageSize.height > 0 else { return overlay }
+        var rect = startRect
+        let minDim: CGFloat = 40
+
+        if let corner {
+            switch corner {
+            case .topLeading:
+                rect.origin.x += translation.width
+                rect.origin.y += translation.height
+                rect.size.width -= translation.width
+                rect.size.height -= translation.height
+            case .topTrailing:
+                rect.origin.y += translation.height
+                rect.size.width += translation.width
+                rect.size.height -= translation.height
+            case .bottomLeading:
+                rect.origin.x += translation.width
+                rect.size.width -= translation.width
+                rect.size.height += translation.height
+            case .bottomTrailing:
+                rect.size.width += translation.width
+                rect.size.height += translation.height
+            }
+            rect.size.width = max(minDim, rect.size.width)
+            rect.size.height = max(minDim, rect.size.height)
+
+            // Preserve aspect ratio for image overlays so a corner
+            // drag doesn't squash the photo.
+            if overlay.kind == .image, startRect.width > 0, startRect.height > 0 {
+                let aspect = startRect.width / startRect.height
+                let prefersWidth = abs(translation.width) >= abs(translation.height)
+                let newW: CGFloat
+                let newH: CGFloat
+                if prefersWidth {
+                    newW = rect.size.width
+                    newH = newW / aspect
+                } else {
+                    newH = rect.size.height
+                    newW = newH * aspect
+                }
+                switch corner {
+                case .topLeading:
+                    rect.origin.x = startRect.maxX - newW
+                    rect.origin.y = startRect.maxY - newH
+                case .topTrailing:
+                    rect.origin.y = startRect.maxY - newH
+                case .bottomLeading:
+                    rect.origin.x = startRect.maxX - newW
+                case .bottomTrailing:
+                    break
+                }
+                rect.size = CGSize(width: newW, height: newH)
+            }
+        } else {
+            rect.origin.x += translation.width
+            rect.origin.y += translation.height
+        }
+
+        rect.origin.x = max(0, min(pageSize.width - rect.size.width, rect.origin.x))
+        rect.origin.y = max(0, min(pageSize.height - rect.size.height, rect.origin.y))
+
+        var updated = overlay
+        updated.normX = rect.origin.x / pageSize.width
+        updated.normY = rect.origin.y / pageSize.height
+        updated.normW = rect.size.width / pageSize.width
+        updated.normH = rect.size.height / pageSize.height
+        return updated
+    }
+
     /// Single-finger tap on the page (handled by the outer scroll view so
     /// overlay bodies stay non-interactive and pinch always works).
     private func handlePageFingerTap(at point: CGPoint?, pageSize: CGSize) {
         guard let point else {
             deselectOverlays()
+            return
+        }
+
+        // Taps on the floating adjust toolbar are handled by its
+        // buttons — don't treat them as "tap off to deselect".
+        for rect in overlayToolbarExclusionRects(pageSize: pageSize) where rect.contains(point) {
             return
         }
 
@@ -950,6 +1282,21 @@ struct NoteEditorView: View {
                     // `point` arrives in BASE (unzoomed) coordinates so
                     // it lines up with `logicalPageSize`.
                     handlePageFingerTap(at: point, pageSize: logicalPageSize)
+                },
+                onOverlayManipulation: { phase, start, translation in
+                    handleOverlayManipulation(
+                        phase: phase,
+                        start: start,
+                        translation: translation,
+                        pageSize: logicalPageSize
+                    )
+                },
+                overlayInteractionExclusionRects: overlayToolbarExclusionRects(
+                    pageSize: logicalPageSize
+                ),
+                overlayAdjustToolbarRect: overlayAdjustToolbarRect(pageSize: logicalPageSize),
+                onOverlayAdjustToolbarTap: { button in
+                    handleOverlayAdjustToolbarTap(button, pageSize: logicalPageSize)
                 },
                 zoom: $canvasZoom
             ) {
@@ -1048,13 +1395,10 @@ struct NoteEditorView: View {
                             store.updateOverlay(updated, in: noteId)
                         },
                         onDelete: { overlay in
-                            store.removeOverlay(id: overlay.id, from: noteId)
+                            deleteOverlay(overlay, noteId: noteId)
                         },
                         onDuplicate: { overlay in
-                            if let copy = store.duplicateOverlay(overlay, in: noteId) {
-                                selectedOverlayId = copy.id
-                                viewModel.flashStatus("Duplicated")
-                            }
+                            duplicateOverlay(overlay, noteId: noteId, pageSize: logicalPageSize)
                         },
                         onSelectLasso: {
                             viewModel.selectTool(.lasso)
