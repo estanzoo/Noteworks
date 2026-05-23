@@ -311,8 +311,8 @@ struct NoteEditorView: View {
                         viewModel: viewModel,
                         creditsStore: appState.creditsStore,
                         currentNote: currentEditorNote,
-                        notes: store.notes,
                         accessToken: appState.accessToken ?? "",
+                        currentUserId: appState.currentUser?.id,
                         onClose: { viewModel.closeGapDetectionPopup() }
                     )
                     .frame(width: outerGeo.size.width, height: outerGeo.size.height)

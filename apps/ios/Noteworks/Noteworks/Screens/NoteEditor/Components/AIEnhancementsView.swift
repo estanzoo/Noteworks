@@ -13,6 +13,8 @@
 //
 
 import SwiftUI
+import PhotosUI
+import UniformTypeIdentifiers
 
 // MARK: - Pill
 
@@ -408,17 +410,19 @@ struct AIEnhancementProgressBar: View {
 struct GapDetectionPopup: View {
     @ObservedObject var viewModel: NoteEditorViewModel
     @ObservedObject var creditsStore: CreditsStore
-    @EnvironmentObject private var store: NotesStore
-    @Environment(\.scenePhase) private var scenePhase
     let currentNote: Note?
-    let notes: [Note]
     let accessToken: String
+    let currentUserId: String?
     let onClose: () -> Void
 
+    @Environment(\.scenePhase) private var scenePhase
     @State private var scrollResetToken = UUID()
+    @State private var showMaterialFileImporter = false
+    @State private var showMaterialPhotoPicker = false
+    @State private var materialPhotoSelection: [PhotosPickerItem] = []
 
-    private var selectedSources: Int { viewModel.selectedGapSourceIds.count }
-    private var materialCount: Int { viewModel.gapClassMaterialNames.count }
+    private var selectedSources: Int { viewModel.selectedGapPeerSourceIds.count }
+    private var materialCount: Int { viewModel.gapClassMaterials.count }
     private var creditBalance: Int { creditsStore.balance }
     private var estimatedCredits: Int { viewModel.estimatedGapDetectionCredits(currentNote: currentNote) }
     private var yourNotesPrice: Int {
@@ -444,11 +448,31 @@ struct GapDetectionPopup: View {
         .onAppear {
             dismissKeyboard()
             scrollResetToken = UUID()
+            viewModel.loadGapCommunitySourcesIfNeeded(
+                accessToken: accessToken,
+                currentUserId: currentUserId
+            )
         }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
             dismissKeyboard()
             scrollResetToken = UUID()
+        }
+        .fileImporter(
+            isPresented: $showMaterialFileImporter,
+            allowedContentTypes: [.pdf, .jpeg, .png, .heic, .image],
+            allowsMultipleSelection: true
+        ) { result in
+            handleMaterialFileImport(result)
+        }
+        .photosPicker(
+            isPresented: $showMaterialPhotoPicker,
+            selection: $materialPhotoSelection,
+            maxSelectionCount: max(1, 5 - viewModel.gapClassMaterials.count),
+            matching: .images
+        )
+        .onChange(of: materialPhotoSelection) { _, items in
+            handleMaterialPhotoPick(items)
         }
     }
 
@@ -645,6 +669,7 @@ struct GapDetectionPopup: View {
                 }
                 Spacer()
                 Button("Browse in Community posts") {
+                    viewModel.gapCommunityRequireCourseMatch = !(currentNote?.courseId?.isEmpty ?? true)
                     viewModel.gapDetectionConfigPanel = .communityBrowser
                 }
                 .font(.system(size: 12, weight: .bold))
@@ -657,15 +682,36 @@ struct GapDetectionPopup: View {
             }
 
             VStack(spacing: 10) {
-                ForEach(recommendedNotes.prefix(4)) { note in
-                    gapCommunityNoteCard(note)
+                if viewModel.gapCommunityLoading && recommendedPeerSources.isEmpty {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                        Text("Loading community notes…")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(NoteEditorTheme.textSecondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 8)
+                } else if let error = viewModel.gapCommunityError, recommendedPeerSources.isEmpty {
+                    Text(error)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color(red: 0xC1/255, green: 0x60/255, blue: 0x60/255))
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if recommendedPeerSources.isEmpty {
+                    Text("No community NOTE posts with PDFs are available yet.")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(NoteEditorTheme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    ForEach(recommendedPeerSources.prefix(4)) { source in
+                        gapCommunityNoteCard(source)
+                    }
                 }
             }
 
-            if !viewModel.selectedGapSourceIds.isEmpty {
+            if !viewModel.selectedGapPeerSourceIds.isEmpty {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 8)], alignment: .leading, spacing: 8) {
-                    ForEach(recommendedNotes.filter { viewModel.selectedGapSourceIds.contains($0.id) }) { note in
-                        Text(note.title.isEmpty ? "Untitled Note" : note.title)
+                    ForEach(selectedPeerSources) { source in
+                        Text(source.displayTitle)
                             .font(.system(size: 12, weight: .bold))
                             .foregroundStyle(NoteEditorTheme.accent)
                             .padding(.horizontal, 10)
@@ -688,19 +734,27 @@ struct GapDetectionPopup: View {
                         .foregroundStyle(NoteEditorTheme.textSecondary)
                 }
                 Spacer()
-                Button("Upload files") {
-                    viewModel.toggleGapClassMaterialPlaceholder()
+                Menu {
+                    Button("Document or PDF") {
+                        showMaterialFileImporter = true
+                    }
+                    Button("Photo") {
+                        showMaterialPhotoPicker = true
+                    }
+                } label: {
+                    Text("Upload files")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(NoteEditorTheme.textPrimary)
+                        .padding(.horizontal, 12)
+                        .frame(height: 34)
+                        .background(Capsule().fill(Color.white.opacity(0.84)))
+                        .overlay(Capsule().strokeBorder(NoteEditorTheme.chromeBorder, lineWidth: 1))
                 }
-                .font(.system(size: 12, weight: .bold))
-                .foregroundStyle(NoteEditorTheme.textPrimary)
-                .padding(.horizontal, 12)
-                .frame(height: 34)
-                .background(Capsule().fill(Color.white.opacity(0.84)))
-                .overlay(Capsule().strokeBorder(NoteEditorTheme.chromeBorder, lineWidth: 1))
                 .buttonStyle(.plain)
+                .disabled(viewModel.gapClassMaterials.count >= 5)
             }
 
-            if viewModel.gapClassMaterialNames.isEmpty {
+            if viewModel.gapClassMaterials.isEmpty {
                 Text("No class materials attached yet.")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(NoteEditorTheme.textSecondary)
@@ -710,21 +764,20 @@ struct GapDetectionPopup: View {
                     .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(Color(red: 160/255, green: 177/255, blue: 194/255).opacity(0.76), style: StrokeStyle(lineWidth: 1, dash: [6, 5])))
             } else {
                 VStack(spacing: 10) {
-                    ForEach(viewModel.gapClassMaterialNames, id: \.self) { name in
+                    ForEach(viewModel.gapClassMaterials) { material in
                         HStack(spacing: 12) {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(name)
+                                Text(material.filename)
                                     .font(.system(size: 14, weight: .bold))
                                     .foregroundStyle(NoteEditorTheme.textPrimary)
                                     .lineLimit(1)
-                                Text("Class material")
+                                Text(material.kindLabel)
                                     .font(.system(size: 12, weight: .medium))
                                     .foregroundStyle(NoteEditorTheme.textSecondary)
                             }
                             Spacer()
                             Button {
-                                viewModel.gapClassMaterialNames.removeAll { $0 == name }
-                                viewModel.gapMaterialNotice = ""
+                                viewModel.removeGapClassMaterial(id: material.id)
                             } label: {
                                 Image(systemName: "xmark")
                                     .font(.system(size: 10, weight: .bold))
@@ -854,18 +907,39 @@ struct GapDetectionPopup: View {
 
             VStack(spacing: 12) {
                 HStack(spacing: 10) {
-                    filterBox(title: "School", value: "All schools")
-                    filterBox(title: "Course code", value: currentNote?.subject ?? "e.g. CHEM-204")
-                    filterBox(title: "Time", value: "Matching current note")
+                    filterBox(title: "School", value: "Your school first")
+                    Button {
+                        viewModel.gapCommunityRequireCourseMatch.toggle()
+                    } label: {
+                        filterBox(
+                            title: "Course code",
+                            value: viewModel.gapCommunityRequireCourseMatch
+                                ? (currentNote?.courseCode ?? currentNote?.subject ?? "Matching course")
+                                : "All courses"
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    filterBox(title: "Time", value: "Most recent first")
                 }
             }
 
-            if recommendedNotes.isEmpty {
+            if viewModel.gapCommunityLoading && browserPeerSources.isEmpty {
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("Loading community notes…")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(NoteEditorTheme.textSecondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 8)
+            } else if browserPeerSources.isEmpty {
                 VStack(spacing: 8) {
                     Text("No posts match these filters.")
                         .font(.system(size: 15, weight: .bold))
                         .foregroundStyle(NoteEditorTheme.textPrimary)
-                    Text("Try widening school or time, or leave course code empty.")
+                    Text(viewModel.gapCommunityRequireCourseMatch
+                         ? "Try turning off the course filter or browse all NOTE posts."
+                         : "Try again later when more NOTE posts are shared.")
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(NoteEditorTheme.textSecondary)
                 }
@@ -875,8 +949,8 @@ struct GapDetectionPopup: View {
                 .overlay(RoundedRectangle(cornerRadius: 22).strokeBorder(Color(red: 160/255, green: 177/255, blue: 194/255).opacity(0.72), style: StrokeStyle(lineWidth: 1, dash: [6, 5])))
             } else {
                 VStack(spacing: 10) {
-                    ForEach(recommendedNotes) { note in
-                        gapCommunityNoteCard(note, compact: true)
+                    ForEach(browserPeerSources) { source in
+                        gapCommunityNoteCard(source, compact: true)
                     }
                 }
             }
@@ -897,8 +971,8 @@ struct GapDetectionPopup: View {
                 }
             }
 
-            if let note = previewNote ?? recommendedNotes.first {
-                sourcePreviewCard(note)
+            if let source = previewPeerSource ?? recommendedPeerSources.first {
+                sourcePreviewCard(source)
             }
         }
     }
@@ -996,18 +1070,24 @@ struct GapDetectionPopup: View {
         }
     }
 
-    private var recommendedNotes: [Note] {
-        notes
-            .filter { $0.id != currentNote?.id }
-            .filter { note in
-                guard let subject = currentNote?.subject, !subject.isEmpty else { return true }
-                return note.subject == subject || note.tag == "Public" || note.tag == "Course"
-            }
+    private var recommendedPeerSources: [GapCommunityPeerSource] {
+        viewModel.rankedGapPeerSources(limit: nil, requireCourseMatch: false)
     }
 
-    private var previewNote: Note? {
-        guard let id = viewModel.gapPreviewNoteId else { return nil }
-        return notes.first { $0.id == id }
+    private var browserPeerSources: [GapCommunityPeerSource] {
+        viewModel.rankedGapPeerSources(
+            limit: nil,
+            requireCourseMatch: viewModel.gapCommunityRequireCourseMatch
+        )
+    }
+
+    private var selectedPeerSources: [GapCommunityPeerSource] {
+        viewModel.selectedGapPeerSourceIds.compactMap { viewModel.gapPeerSource(id: $0) }
+    }
+
+    private var previewPeerSource: GapCommunityPeerSource? {
+        guard let id = viewModel.gapPreviewPeerSourceId else { return nil }
+        return viewModel.gapPeerSource(id: id)
     }
 
     private var selectedSourceTitle: String {
@@ -1069,16 +1149,16 @@ struct GapDetectionPopup: View {
         .disabled(action == nil)
     }
 
-    private func gapCommunityNoteCard(_ note: Note, compact: Bool = false) -> some View {
-        let selected = viewModel.selectedGapSourceIds.contains(note.id)
-        let price = max(4, min(12, note.pageSettings.count + 3))
+    private func gapCommunityNoteCard(_ source: GapCommunityPeerSource, compact: Bool = false) -> some View {
+        let selected = viewModel.selectedGapPeerSourceIds.contains(source.id)
+        let price = 6
         return Button {
-            viewModel.pushGapPreview(noteId: note.id)
+            viewModel.pushGapPreview(peerSourceId: source.id)
         } label: {
             HStack(alignment: .center, spacing: 14) {
                 VStack(alignment: .leading, spacing: 7) {
                     HStack(spacing: 8) {
-                        Text(note.title.isEmpty ? "Untitled Note" : note.title)
+                        Text(source.displayTitle)
                             .font(.system(size: compact ? 14 : 15, weight: .bold))
                             .foregroundStyle(NoteEditorTheme.textPrimary)
                             .lineLimit(1)
@@ -1089,15 +1169,26 @@ struct GapDetectionPopup: View {
                             .padding(.vertical, 4)
                             .background(Capsule().fill(NoteEditorTheme.accent.opacity(0.12)))
                     }
-                    Text([note.subject, note.tag, note.formattedDate].compactMap { $0 }.joined(separator: " · "))
+                    Text(
+                        [
+                            source.authorName,
+                            source.authorSchool,
+                            formattedPeerDate(source.createdAt)
+                        ]
+                        .compactMap { value in
+                            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+                            return trimmed?.isEmpty == false ? trimmed : nil
+                        }
+                        .joined(separator: " · ")
+                    )
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(NoteEditorTheme.textSecondary)
                         .lineLimit(1)
                     if !compact {
                         HStack(spacing: 6) {
-                            gapChip(note.subject ?? "Same course")
-                            gapChip("Recent")
-                            gapChip("\(note.pageSettings.count) pages")
+                            gapChip(source.authorSchool ?? "Community")
+                            gapChip("NOTE")
+                            gapChip(source.attachment.hasPdf ? "PDF" : "Note")
                         }
                     }
                 }
@@ -1113,8 +1204,8 @@ struct GapDetectionPopup: View {
         .buttonStyle(.plain)
     }
 
-    private func sourcePreviewCard(_ note: Note) -> some View {
-        let selected = viewModel.selectedGapSourceIds.contains(note.id)
+    private func sourcePreviewCard(_ source: GapCommunityPeerSource) -> some View {
+        let selected = viewModel.selectedGapPeerSourceIds.contains(source.id)
         return VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 6) {
@@ -1122,18 +1213,29 @@ struct GapDetectionPopup: View {
                         .font(.system(size: 11, weight: .heavy))
                         .tracking(1.1)
                         .foregroundStyle(NoteEditorTheme.textMuted)
-                    Text(note.title.isEmpty ? "Untitled Note" : note.title)
+                    Text(source.displayTitle)
                         .font(.system(size: 19, weight: .heavy))
                         .tracking(-0.5)
                         .foregroundStyle(NoteEditorTheme.textPrimary)
                         .lineLimit(2)
-                    Text([note.subject, note.tag, note.formattedDate].compactMap { $0 }.joined(separator: " · "))
+                    Text(
+                        [
+                            source.authorName,
+                            source.authorSchool,
+                            formattedPeerDate(source.createdAt)
+                        ]
+                        .compactMap { value in
+                            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+                            return trimmed?.isEmpty == false ? trimmed : nil
+                        }
+                        .joined(separator: " · ")
+                    )
                         .font(.system(size: 12.5, weight: .semibold))
                         .foregroundStyle(NoteEditorTheme.textSecondary)
                         .lineLimit(2)
                 }
                 Spacer(minLength: 8)
-                Text("\(max(4, min(12, note.pageSettings.count + 3))) Credits")
+                Text("6 Credits")
                     .font(.system(size: 12, weight: .black))
                     .foregroundStyle(NoteEditorTheme.accent)
                     .padding(.horizontal, 12)
@@ -1141,11 +1243,10 @@ struct GapDetectionPopup: View {
                     .background(Capsule().fill(NoteEditorTheme.accent.opacity(0.12)))
             }
 
-            LocalNotePDFPreview(
-                store: store,
-                note: note,
-                livePage: note.id == viewModel.noteId ? viewModel.currentPage : nil,
-                liveDrawing: note.id == viewModel.noteId ? viewModel.drawing : nil,
+            CommunityNotePDFPreview(
+                noteId: source.attachment.noteId,
+                fileLabel: source.pdfFilename,
+                accessToken: accessToken,
                 minHeight: 280
             )
             .frame(height: 280)
@@ -1174,9 +1275,9 @@ struct GapDetectionPopup: View {
                 .buttonStyle(.plain)
                 Button(selected ? "Remove from this run" : "Use this note") {
                     if selected {
-                        viewModel.selectedGapSourceIds.remove(note.id)
+                        viewModel.selectedGapPeerSourceIds.remove(source.id)
                     } else {
-                        viewModel.selectedGapSourceIds.insert(note.id)
+                        viewModel.selectedGapPeerSourceIds.insert(source.id)
                     }
                 }
                 .font(.system(size: 13, weight: .bold))
@@ -1196,6 +1297,52 @@ struct GapDetectionPopup: View {
         .padding(20)
         .background(RoundedRectangle(cornerRadius: 24).fill(Color.white.opacity(0.56)))
         .overlay(RoundedRectangle(cornerRadius: 24).strokeBorder(NoteEditorTheme.glassBorder, lineWidth: 1))
+    }
+
+    private func formattedPeerDate(_ date: Date) -> String {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) { return "Today" }
+        if calendar.isDateInYesterday(date) { return "Yesterday" }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM d"
+        return formatter.string(from: date)
+    }
+
+    private func handleMaterialFileImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            for url in urls {
+                guard viewModel.gapClassMaterials.count < 5 else { break }
+                let needsScope = url.startAccessingSecurityScopedResource()
+                defer { if needsScope { url.stopAccessingSecurityScopedResource() } }
+                guard let data = try? Data(contentsOf: url) else { continue }
+                let isPDF = url.pathExtension.lowercased() == "pdf"
+                viewModel.addGapClassMaterial(
+                    filename: url.lastPathComponent,
+                    data: data,
+                    isPDF: isPDF
+                )
+            }
+        case .failure(let error):
+            viewModel.gapMaterialNotice = "Could not import file: \(error.localizedDescription)"
+        }
+    }
+
+    private func handleMaterialPhotoPick(_ items: [PhotosPickerItem]) {
+        guard !items.isEmpty else { return }
+        Task {
+            for item in items {
+                guard await MainActor.run(body: { viewModel.gapClassMaterials.count < 5 }) else { break }
+                guard let data = try? await item.loadTransferable(type: Data.self) else { continue }
+                let filename = "Photo-\(Int(Date().timeIntervalSince1970)).jpg"
+                await MainActor.run {
+                    viewModel.addGapClassMaterial(filename: filename, data: data, isPDF: false)
+                }
+            }
+            await MainActor.run {
+                materialPhotoSelection = []
+            }
+        }
     }
 
     private func priceRow(_ title: String, value: Int) -> some View {

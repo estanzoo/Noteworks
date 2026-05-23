@@ -15,6 +15,8 @@ interface GapDetectInput {
   source_title?: string
   comparison_title?: string
   course_context?: string
+  additional_pdfs_base64?: string[]
+  additional_filenames?: string[]
 }
 
 interface GapDetectionResponse {
@@ -82,6 +84,16 @@ function validate(raw: unknown): GapDetectInput | Response {
     return errorResponse('Validation failed', `Each PDF must be ${MAX_PDF_BYTES / 1024 / 1024} MB or less`, 400)
   }
 
+  const additional = Array.isArray(input.additional_pdfs_base64)
+    ? input.additional_pdfs_base64.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    : []
+  for (const pdf of additional) {
+    const bytes = estimateBase64Bytes(pdf)
+    if (bytes <= 0 || bytes > MAX_PDF_BYTES) {
+      return errorResponse('Validation failed', `Each additional PDF must be ${MAX_PDF_BYTES / 1024 / 1024} MB or less`, 400)
+    }
+  }
+
   return {
     source_pdf_base64: source,
     comparison_pdf_base64: comparison,
@@ -90,6 +102,8 @@ function validate(raw: unknown): GapDetectInput | Response {
     source_title: asString(input.source_title)?.slice(0, MAX_FILENAME),
     comparison_title: asString(input.comparison_title)?.slice(0, MAX_FILENAME),
     course_context: asString(input.course_context)?.slice(0, 500),
+    additional_pdfs_base64: additional.length > 0 ? additional : undefined,
+    additional_filenames: stringList(input.additional_filenames),
   }
 }
 
@@ -112,25 +126,35 @@ async function runGeminiComparisonWithModel(input: GapDetectInput, model: string
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`
   const prompt = buildPrompt(input)
 
+  const parts: Array<Record<string, unknown>> = [
+    { text: prompt },
+    {
+      inline_data: {
+        mime_type: 'application/pdf',
+        data: input.source_pdf_base64,
+      },
+    },
+    {
+      inline_data: {
+        mime_type: 'application/pdf',
+        data: input.comparison_pdf_base64,
+      },
+    },
+  ]
+  for (const pdf of input.additional_pdfs_base64 ?? []) {
+    parts.push({
+      inline_data: {
+        mime_type: 'application/pdf',
+        data: pdf,
+      },
+    })
+  }
+
   const body = {
     contents: [
       {
         role: 'user',
-        parts: [
-          { text: prompt },
-          {
-            inline_data: {
-              mime_type: 'application/pdf',
-              data: input.source_pdf_base64,
-            },
-          },
-          {
-            inline_data: {
-              mime_type: 'application/pdf',
-              data: input.comparison_pdf_base64,
-            },
-          },
-        ],
+        parts,
       },
     ],
     generationConfig: {
@@ -166,12 +190,14 @@ function buildPrompt(input: GapDetectInput): string {
 You are the Gap Detection engine for Noteworks.
 
 Compare PDF A, the student's current note, against PDF B, the comparison note or class material.
+Any additional PDFs are optional class materials that provide extra context.
 
 PDF A filename: ${input.source_filename}
 PDF A title: ${input.source_title ?? 'Current note'}
 PDF B filename: ${input.comparison_filename}
 PDF B title: ${input.comparison_title ?? 'Comparison PDF'}
 Course context: ${input.course_context ?? 'Unknown'}
+Additional class materials: ${(input.additional_filenames ?? []).join(', ') || 'None'}
 
 Return ONLY valid JSON with these snake_case keys:
 {

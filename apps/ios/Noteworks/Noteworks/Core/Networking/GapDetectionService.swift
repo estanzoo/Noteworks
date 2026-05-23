@@ -13,6 +13,8 @@ struct GapDetectionRequest: Encodable {
     let sourceTitle: String
     let comparisonTitle: String
     let courseContext: String?
+    let additionalPDFsBase64: [String]?
+    let additionalFilenames: [String]?
 
     private enum CodingKeys: String, CodingKey {
         case sourcePDFBase64 = "source_pdf_base64"
@@ -22,6 +24,8 @@ struct GapDetectionRequest: Encodable {
         case sourceTitle = "source_title"
         case comparisonTitle = "comparison_title"
         case courseContext = "course_context"
+        case additionalPDFsBase64 = "additional_pdfs_base64"
+        case additionalFilenames = "additional_filenames"
     }
 }
 
@@ -94,24 +98,34 @@ final class GapDetectionService: GapDetectionServiceProtocol {
             throw APIError.badRequest("Invalid Gemini model or API key.")
         }
 
+        var parts: [[String: Any]] = [
+            ["text": Self.prompt(for: request)],
+            [
+                "inline_data": [
+                    "mime_type": "application/pdf",
+                    "data": request.sourcePDFBase64
+                ]
+            ],
+            [
+                "inline_data": [
+                    "mime_type": "application/pdf",
+                    "data": request.comparisonPDFBase64
+                ]
+            ]
+        ]
+        for pdf in request.additionalPDFsBase64 ?? [] {
+            parts.append([
+                "inline_data": [
+                    "mime_type": "application/pdf",
+                    "data": pdf
+                ]
+            ])
+        }
+
         let body: [String: Any] = [
             "contents": [[
                 "role": "user",
-                "parts": [
-                    ["text": Self.prompt(for: request)],
-                    [
-                        "inline_data": [
-                            "mime_type": "application/pdf",
-                            "data": request.sourcePDFBase64
-                        ]
-                    ],
-                    [
-                        "inline_data": [
-                            "mime_type": "application/pdf",
-                            "data": request.comparisonPDFBase64
-                        ]
-                    ]
-                ]
+                "parts": parts
             ]],
             "generationConfig": [
                 "temperature": 0.25,
@@ -147,12 +161,14 @@ final class GapDetectionService: GapDetectionServiceProtocol {
         You are the Gap Detection engine for Noteworks.
 
         Compare PDF A, the student's current note, against PDF B, the comparison note or class material.
+        Any additional PDFs are optional class materials that provide extra context.
 
         PDF A filename: \(request.sourceFilename)
         PDF A title: \(request.sourceTitle)
         PDF B filename: \(request.comparisonFilename)
         PDF B title: \(request.comparisonTitle)
         Course context: \(request.courseContext ?? "Unknown")
+        Additional class materials: \((request.additionalFilenames ?? []).joined(separator: ", "))
 
         Return ONLY valid JSON with these snake_case keys:
         {

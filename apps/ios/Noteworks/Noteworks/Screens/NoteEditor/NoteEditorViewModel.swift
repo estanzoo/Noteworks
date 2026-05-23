@@ -425,9 +425,13 @@ final class NoteEditorViewModel: ObservableObject {
     @Published var gapConfigStep: GapDetectionConfigStep = .sources
     /// Panel to return to when leaving the peer-note preview (root vs community browser).
     @Published var gapPreviewReturnPanel: GapDetectionConfigPanel = .root
-    @Published var gapPreviewNoteId: String?
-    @Published var selectedGapSourceIds: Set<String> = []
-    @Published var gapClassMaterialNames: [String] = []
+    @Published var gapPreviewPeerSourceId: String?
+    @Published var selectedGapPeerSourceIds: Set<String> = []
+    @Published var gapCommunitySources: [GapCommunityPeerSource] = []
+    @Published var gapCommunityLoading: Bool = false
+    @Published var gapCommunityError: String?
+    @Published var gapCommunityRequireCourseMatch: Bool = false
+    @Published var gapClassMaterials: [GapClassMaterial] = []
     @Published var gapMaterialNotice: String = ""
     @Published var gapDetectionError: String?
     @Published var gapDetectionResponse: GapDetectionResponse?
@@ -437,8 +441,10 @@ final class NoteEditorViewModel: ObservableObject {
 
     private var gapJobTask: Task<Void, Never>?
     private var smartJobTask: Task<Void, Never>?
+    private var gapCommunityLoadTask: Task<Void, Never>?
     private let gapDetectionService: GapDetectionServiceProtocol
     private let smartOrganizationService: SmartOrganizationServiceProtocol
+    private let communityService: CommunityServiceProtocol
     private let aiSummaryHistoryStore: AISummaryHistoryStore
     private static let aiBusyMessage = "Another AI enhancement is already running. Please wait for it to finish first."
 
@@ -588,10 +594,12 @@ final class NoteEditorViewModel: ObservableObject {
     init(
         gapDetectionService: GapDetectionServiceProtocol = GapDetectionService.shared,
         smartOrganizationService: SmartOrganizationServiceProtocol = SmartOrganizationService.shared,
+        communityService: CommunityServiceProtocol = CommunityService.shared,
         aiSummaryHistoryStore: AISummaryHistoryStore = .shared
     ) {
         self.gapDetectionService = gapDetectionService
         self.smartOrganizationService = smartOrganizationService
+        self.communityService = communityService
         self.aiSummaryHistoryStore = aiSummaryHistoryStore
         // The eraser dropdown auto-disarms its "Clear page" button when the
         // tool changes — wire that here so the view doesn't have to.
@@ -630,8 +638,8 @@ final class NoteEditorViewModel: ObservableObject {
         let pages = ownNote?.pageSettings.count ?? totalPages
         return CreditPricing.gapDetection(
             yourNotePages: pages,
-            peerNoteCount: selectedGapSourceIds.count,
-            classMaterialCount: gapClassMaterialNames.count
+            peerNoteCount: selectedGapPeerSourceIds.count,
+            classMaterialCount: gapClassMaterials.count
         )
     }
 
@@ -1255,32 +1263,141 @@ final class NoteEditorViewModel: ObservableObject {
         gapDetectionConfigPanel = .root
         gapConfigStep = .sources
         gapPreviewReturnPanel = .root
-        gapPreviewNoteId = nil
+        gapPreviewPeerSourceId = nil
         gapDetectionError = nil
         flashStatus("Configure Gap Detection")
+    }
+
+    func loadGapCommunitySourcesIfNeeded(accessToken: String, currentUserId: String?) {
+        gapCommunityLoadTask?.cancel()
+        gapCommunityLoadTask = Task { @MainActor [weak self] in
+            await self?.loadGapCommunitySources(accessToken: accessToken, currentUserId: currentUserId)
+        }
+    }
+
+    func loadGapCommunitySources(accessToken: String, currentUserId: String?) async {
+        guard !accessToken.isEmpty else {
+            gapCommunityError = "Sign in to browse community notes."
+            gapCommunitySources = []
+            return
+        }
+
+        gapCommunityLoading = true
+        gapCommunityError = nil
+        defer { gapCommunityLoading = false }
+
+        do {
+            var collected: [GapCommunityPeerSource] = []
+            var cursor: String?
+            var pagesLoaded = 0
+
+            while pagesLoaded < 5 {
+                if Task.isCancelled { return }
+                let page = try await communityService.fetchFeed(
+                    filter: .publicFeed(postKind: .note),
+                    cursor: cursor,
+                    limit: 30,
+                    currentUserId: currentUserId,
+                    accessToken: accessToken
+                )
+
+                for post in page.posts where post.postKind == .note {
+                    if let currentUserId, post.userId == currentUserId { continue }
+                    for attachment in post.attachments where attachment.hasPdf {
+                        collected.append(
+                            GapCommunityPeerSource(
+                                id: GapCommunityPeerSource.makeId(postId: post.id, noteId: attachment.noteId),
+                                postId: post.id,
+                                attachment: attachment,
+                                postTitle: post.title,
+                                authorName: post.authorName,
+                                authorSchool: post.author?.school,
+                                courseId: post.courseId,
+                                createdAt: post.createdAt
+                            )
+                        )
+                    }
+                }
+
+                pagesLoaded += 1
+                guard let next = page.nextCursor else { break }
+                cursor = next
+            }
+
+            gapCommunitySources = collected
+        } catch {
+            if !Task.isCancelled {
+                gapCommunityError = error.localizedDescription
+            }
+        }
+    }
+
+    func rankedGapPeerSources(limit: Int? = nil, requireCourseMatch: Bool = false) -> [GapCommunityPeerSource] {
+        let courseId = noteId.flatMap { store?.note(id: $0)?.courseId }
+        var list = gapCommunitySources
+        if requireCourseMatch, let courseId, !courseId.isEmpty {
+            list = list.filter { $0.courseId == courseId }
+        }
+
+        let sorted = list.sorted { lhs, rhs in
+            let lhsCourse = (courseId != nil && lhs.courseId == courseId) ? 1 : 0
+            let rhsCourse = (courseId != nil && rhs.courseId == courseId) ? 1 : 0
+            if lhsCourse != rhsCourse { return lhsCourse > rhsCourse }
+            return lhs.createdAt > rhs.createdAt
+        }
+
+        if let limit {
+            return Array(sorted.prefix(limit))
+        }
+        return sorted
+    }
+
+    func gapPeerSource(id: String) -> GapCommunityPeerSource? {
+        gapCommunitySources.first { $0.id == id }
+    }
+
+    func addGapClassMaterial(filename: String, data: Data, isPDF: Bool) {
+        if gapClassMaterials.count >= 5 {
+            gapMaterialNotice = "You can attach up to five class materials."
+            return
+        }
+        gapClassMaterials.append(
+            GapClassMaterial(
+                id: UUID().uuidString,
+                filename: filename,
+                data: data,
+                isPDF: isPDF
+            )
+        )
+        gapMaterialNotice = ""
+    }
+
+    func removeGapClassMaterial(id: String) {
+        gapClassMaterials.removeAll { $0.id == id }
+        gapMaterialNotice = ""
     }
 
     func closeGapDetectionPopup() {
         showGapDetectionPopup = false
         gapDetectionConfigPanel = .root
         gapPreviewReturnPanel = .root
-        gapPreviewNoteId = nil
+        gapPreviewPeerSourceId = nil
         if !gapJob.isRunning {
             gapDetectionError = nil
         }
     }
 
     /// Opens the peer-note preview, remembering whether we came from root or the community browser.
-    func pushGapPreview(noteId: String) {
+    func pushGapPreview(peerSourceId: String) {
         gapPreviewReturnPanel = gapDetectionConfigPanel
-        gapPreviewNoteId = noteId
+        gapPreviewPeerSourceId = peerSourceId
         gapDetectionConfigPanel = .preview
     }
 
     /// Returns from preview to the panel that opened it.
     func popGapPreview() {
         gapDetectionConfigPanel = gapPreviewReturnPanel
-        gapPreviewNoteId = nil
+        gapPreviewPeerSourceId = nil
     }
 
     func minimizeGapDetectionPopup() {
@@ -1305,7 +1422,8 @@ final class NoteEditorViewModel: ObservableObject {
             flashStatus("Choose a source note")
             return
         }
-        let comparisonNote = gapComparisonNote(in: store) ?? sourceNote
+        let comparisonPeer = gapComparisonPeerSource()
+        let comparisonMaterialOnly = comparisonPeer == nil ? gapClassMaterials.first : nil
 
         let cost = estimatedGapDetectionCredits(currentNote: sourceNote)
         guard let creditsStore else {
@@ -1343,7 +1461,8 @@ final class NoteEditorViewModel: ObservableObject {
             guard let self else { return }
             await self.runGapDetection(
                 sourceNote: sourceNote,
-                comparisonNote: comparisonNote,
+                comparisonPeer: comparisonPeer,
+                comparisonMaterialOnly: comparisonMaterialOnly,
                 accessToken: accessToken,
                 store: store
             )
@@ -1521,19 +1640,11 @@ final class NoteEditorViewModel: ObservableObject {
         showSmartOrganizationPopup = false
     }
 
-    func toggleGapClassMaterialPlaceholder() {
-        if gapClassMaterialNames.count >= 5 {
-            gapMaterialNotice = "You can attach up to five class materials."
-            return
-        }
-        let next = "Class material \(gapClassMaterialNames.count + 1).pdf"
-        gapClassMaterialNames.append(next)
-        gapMaterialNotice = ""
-    }
 
     private func runGapDetection(
         sourceNote: Note,
-        comparisonNote: Note,
+        comparisonPeer: GapCommunityPeerSource?,
+        comparisonMaterialOnly: GapClassMaterial?,
         accessToken: String,
         store: NotesStore
     ) async {
@@ -1561,10 +1672,48 @@ final class NoteEditorViewModel: ObservableObject {
             flashStatus("Preparing comparison")
 
             let sourcePDF = exportPDFData(for: sourceNote, store: store)
-            let comparisonPDF = exportPDFData(for: comparisonNote, store: store)
-
             try validateGapPDF(sourcePDF, label: "Current note")
+
+            let comparisonPDF: Data
+            let comparisonFilename: String
+            let comparisonTitle: String
+
+            if let peer = comparisonPeer {
+                await animateGapProgress(from: gapJob.progress, to: 0.22, duration: 0.35)
+                flashStatus("Downloading peer note")
+                comparisonPDF = try await PDFStorageService.shared.downloadPDF(
+                    noteId: peer.attachment.noteId,
+                    accessToken: accessToken
+                )
+                comparisonFilename = peer.pdfFilename
+                comparisonTitle = peer.displayTitle
+            } else if let material = comparisonMaterialOnly {
+                await animateGapProgress(from: gapJob.progress, to: 0.22, duration: 0.25)
+                flashStatus("Preparing class material")
+                comparisonPDF = try material.pdfDataForComparison()
+                comparisonFilename = material.filename.lowercased().hasSuffix(".pdf")
+                    ? material.filename
+                    : "\(material.filename).pdf"
+                comparisonTitle = material.filename
+            } else {
+                comparisonPDF = sourcePDF
+                comparisonFilename = safePDFFilename(sourceNote.title, fallback: "current-note.pdf")
+                comparisonTitle = displayTitle(sourceNote)
+            }
+
             try validateGapPDF(comparisonPDF, label: "Comparison note")
+
+            let additionalMaterials: [GapClassMaterial]
+            if comparisonPeer != nil {
+                additionalMaterials = gapClassMaterials
+            } else if let comparisonMaterialOnly {
+                additionalMaterials = gapClassMaterials.filter { $0.id != comparisonMaterialOnly.id }
+            } else {
+                additionalMaterials = gapClassMaterials
+            }
+
+            let additionalPDFs = try additionalMaterials.map { try $0.pdfDataForComparison() }
+            let additionalFilenames = additionalMaterials.map(\.filename)
 
             await animateGapProgress(from: gapJob.progress, to: 0.28, duration: 0.35)
             flashStatus("Sending PDFs to Gemini")
@@ -1573,10 +1722,12 @@ final class NoteEditorViewModel: ObservableObject {
                 sourcePDFBase64: sourcePDF.base64EncodedString(),
                 comparisonPDFBase64: comparisonPDF.base64EncodedString(),
                 sourceFilename: safePDFFilename(sourceNote.title, fallback: "current-note.pdf"),
-                comparisonFilename: safePDFFilename(comparisonNote.title, fallback: "comparison-note.pdf"),
+                comparisonFilename: comparisonFilename,
                 sourceTitle: displayTitle(sourceNote),
-                comparisonTitle: displayTitle(comparisonNote),
-                courseContext: sourceNote.subject ?? comparisonNote.subject
+                comparisonTitle: comparisonTitle,
+                courseContext: sourceNote.subject ?? comparisonPeer?.attachment.title,
+                additionalPDFsBase64: additionalPDFs.isEmpty ? nil : additionalPDFs.map { $0.base64EncodedString() },
+                additionalFilenames: additionalFilenames.isEmpty ? nil : additionalFilenames
             )
 
             let creepTask = Task { @MainActor [weak self] in
@@ -1603,17 +1754,16 @@ final class NoteEditorViewModel: ObservableObject {
             await animateGapProgress(from: gapJob.progress, to: 0.92, duration: 0.35)
             flashStatus("Building summary")
 
-            let peerTitles = selectedGapSourceIds
+            let peerTitles = selectedGapPeerSourceIds
                 .sorted()
-                .compactMap { store.note(id: $0) }
-                .map { displayTitle($0) }
+                .compactMap { gapPeerSource(id: $0)?.displayTitle }
 
             let entry = AISummaryEntryFactory.gapEntry(
                 sourceNoteId: sourceNote.id,
                 sourceTitle: displayTitle(sourceNote),
                 response: response,
                 peerNoteTitles: peerTitles,
-                classMaterialNames: gapClassMaterialNames
+                classMaterialNames: gapClassMaterials.map(\.filename)
             )
 
             await animateGapProgress(from: gapJob.progress, to: 0.98, duration: 0.25)
@@ -1747,11 +1897,11 @@ final class NoteEditorViewModel: ObservableObject {
         return store.note(id: noteId)
     }
 
-    private func gapComparisonNote(in store: NotesStore) -> Note? {
-        selectedGapSourceIds
+    private func gapComparisonPeerSource() -> GapCommunityPeerSource? {
+        selectedGapPeerSourceIds
             .sorted()
-            .compactMap { store.note(id: $0) }
-            .first { $0.id != noteId }
+            .compactMap { gapPeerSource(id: $0) }
+            .first
     }
 
     private func displayTitle(_ note: Note) -> String {
