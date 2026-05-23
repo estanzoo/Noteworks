@@ -42,6 +42,12 @@ Deno.serve(async (req) => {
   const courseId = url.searchParams.get('course_id')
   const likedByMe = url.searchParams.get('liked_by_me') === 'true'
   const includeOwnPrivate = url.searchParams.get('include_own_private') === 'true'
+  const postKindRaw = url.searchParams.get('post_kind')
+  const POST_KINDS = ['note', 'study_questions', 'discussions'] as const
+  const postKindFilter =
+    postKindRaw && POST_KINDS.includes(postKindRaw as (typeof POST_KINDS)[number])
+      ? postKindRaw
+      : null
 
   const { phase: cursorPhase, ts: cursorTs } = parseCursor(cursorRaw)
 
@@ -146,6 +152,7 @@ Deno.serve(async (req) => {
     }
 
     if (courseId) q = q.eq('course_id', courseId)
+    if (postKindFilter) q = q.eq('post_kind', postKindFilter)
     if (hashtagPostIds) q = q.in('id', hashtagPostIds)
     if (likedPostIds) q = q.in('id', likedPostIds)
 

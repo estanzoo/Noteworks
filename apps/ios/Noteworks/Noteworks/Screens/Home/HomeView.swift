@@ -87,6 +87,7 @@ struct HomeView: View {
                 onAddBubble: handleAddBubble,
                 onAddNote: handleAddNote
             )
+            .tutorialHighlight(.homeFAB, activeTarget: appState.tutorialCoordinator.activeTarget)
             .padding(.trailing, 16)
             .padding(.bottom, 84)
         }
@@ -173,17 +174,24 @@ struct HomeView: View {
                     set: { if !$0 { bubbleEditorMode = nil } }
                 ),
                 mode: mode,
-                onSubmit: { name in
+                defaultDisplayMode: .code,
+                onSubmit: { name, courseDraft, displayMode in
                     switch mode {
                     case .create:
+                        guard let courseDraft, let displayMode else {
+                            return .failure(message: "Enter a course name.")
+                        }
                         var mutationError: String?
                         withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
-                            mutationError = store.addBubble(name: name)
+                            mutationError = store.addCourseBubble(draft: courseDraft, displayMode: displayMode)
                         }
                         if let mutationError {
                             return .failure(message: mutationError)
                         }
-                        resolveBubbleCourse(name)
+                        let normalized = courseDraft.normalized()
+                        if let label = normalized.bubbleLabel(for: displayMode) {
+                            resolveBubbleCourse(NotesStore.normalizeBubbleName(label))
+                        }
                     case .rename(let original):
                         var mutationError: String?
                         withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
@@ -301,6 +309,7 @@ struct HomeView: View {
                 }
 
                 ForEach(Array(bubbles.enumerated()), id: \.element.id) { index, course in
+                    let isUntitledBubble = course.name.caseInsensitiveCompare(NotesStore.initialGuestBubbleName) == .orderedSame
                     HomeBubbleCell(
                         course: course,
                         index: index,
@@ -309,8 +318,9 @@ struct HomeView: View {
                         hasManualOffset: store.bubble(named: course.name)?.manualOffsetX != nil,
                         isReservedName: Self.isReservedBubbleName(course.name),
                         canDelete: course.name.caseInsensitiveCompare(NotesStore.initialGuestBubbleName) != .orderedSame,
+                        isTutorialTarget: isUntitledBubble,
                         draggingName: $draggingName,
-                        onTap: { handleBubbleTap(course.name) },
+                        onTap: { handleBubbleTap(course.name, isUntitledBubble: isUntitledBubble) },
                         onRename: { handleRenameBubble(course.name) },
                         onMoveAll: { handleEnterEditMode() },
                         onResetPosition: { handleResetPosition(course.name) },
@@ -366,7 +376,7 @@ struct HomeView: View {
 
     // MARK: - Bubble actions
 
-    private func handleBubbleTap(_ name: String) {
+    private func handleBubbleTap(_ name: String, isUntitledBubble: Bool = false) {
         // Set the filter first so CourseSpaceView's `onChange(of:
         // store.libraryFilter)` (it now reacts even when not visible)
         // adopts the bubble. The tab cross-fade is owned by MainTabView's
@@ -516,6 +526,7 @@ struct HomeView: View {
 // by `HomeView`, so this struct can stay private to the file and
 // participate in #Preview without dragging extra dependencies in.
 private struct HomeBubbleCell: View {
+    @EnvironmentObject private var appState: AppState
     let course: CourseBubble
     let index: Int
     let geometry: CGSize
@@ -523,6 +534,7 @@ private struct HomeBubbleCell: View {
     let hasManualOffset: Bool
     let isReservedName: Bool
     let canDelete: Bool
+    var isTutorialTarget: Bool = false
     @Binding var draggingName: String?
 
     let onTap: () -> Void
@@ -633,6 +645,11 @@ private struct HomeBubbleCell: View {
                     // (and hit testing) match the bubble itself.
                     .contentShape(Circle())
                     .hoverEffect(.lift)
+                    .if(isTutorialTarget) { view in
+                        view
+                            .tutorialAnchor(.homeBubble)
+                            .tutorialHighlight(.homeBubble, activeTarget: appState.tutorialCoordinator.activeTarget)
+                    }
             }
             .buttonStyle(BubblePressStyle())
             .focusEffectDisabled()

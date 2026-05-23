@@ -115,7 +115,8 @@ final class CommunityViewModel: ObservableObject {
     @Published private(set) var isLoadingMore: Bool = false
     @Published var feedError: String?
 
-    @Published private(set) var filter: FeedFilter = .publicFeed
+    @Published private(set) var filter: FeedFilter = .publicFeed()
+    @Published private(set) var postKindFilter: PostKind? = nil
 
     // MARK: Dependencies
 
@@ -243,10 +244,20 @@ final class CommunityViewModel: ObservableObject {
         await loadInitialFeed()
     }
 
-    /// Reset to the default public feed.
+    /// Reset to the default public feed (keeping the active post-kind tab).
     func clearFilter() async {
         guard !filter.isDefault else { return }
-        filter = .publicFeed
+        filter = .publicFeed(postKind: postKindFilter)
+        nextCursor = nil
+        hasMore = true
+        await loadInitialFeed()
+    }
+
+    /// Switch the Explore / Note / Study Question / Discussion tab.
+    func selectPostKind(_ kind: PostKind?) async {
+        guard postKindFilter != kind || !filter.isDefault else { return }
+        postKindFilter = kind
+        filter = .publicFeed(postKind: kind)
         nextCursor = nil
         hasMore = true
         await loadInitialFeed()

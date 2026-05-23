@@ -85,8 +85,8 @@ enum PostKind: String, Codable, CaseIterable, Equatable {
     var label: String {
         switch self {
         case .note: return "Note"
-        case .studyQuestions: return "Study Questions"
-        case .discussions: return "Discussions"
+        case .studyQuestions: return "Study Question"
+        case .discussions: return "Discussion"
         }
     }
 
@@ -366,7 +366,8 @@ struct DeleteResponse: Codable, Equatable {
 /// What the user is currently looking at. Maps directly to the query
 /// parameters of `get-posts`.
 enum FeedFilter: Equatable {
-    case publicFeed
+    /// General community feed. `postKind == nil` is Explore (all kinds).
+    case publicFeed(postKind: PostKind? = nil)
     case hashtag(String)
     case course(String)
     case user(String)

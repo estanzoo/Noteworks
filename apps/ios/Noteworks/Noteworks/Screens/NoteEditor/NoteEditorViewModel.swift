@@ -266,6 +266,11 @@ enum GapDetectionConfigPanel: Equatable {
     case preview
 }
 
+enum GapDetectionConfigStep: Equatable {
+    case sources
+    case materials
+}
+
 enum GapDetectionOutputMode: String, Equatable, CaseIterable, Identifiable {
     case newNote
     case appendPages
@@ -413,25 +418,28 @@ final class NoteEditorViewModel: ObservableObject {
     @Published var aiEnhancementPanel: AIEnhancementPanel = .root
     @Published var aiEnhancementNotice: String = ""
     @Published var showGapDetectionPopup: Bool = false
+    @Published var showSmartOrganizationPopup: Bool = false
+    @Published var showAISummaryHistory: Bool = false
     @Published var gapDetectionMode: GapDetectionMode = .config
     @Published var gapDetectionConfigPanel: GapDetectionConfigPanel = .root
+    @Published var gapConfigStep: GapDetectionConfigStep = .sources
     /// Panel to return to when leaving the peer-note preview (root vs community browser).
     @Published var gapPreviewReturnPanel: GapDetectionConfigPanel = .root
-    @Published var gapOutputMode: GapDetectionOutputMode = .newNote
-    @Published var gapSelectedOwnNoteId: String?
-    @Published var gapOwnNotePickerOpen: Bool = false
     @Published var gapPreviewNoteId: String?
     @Published var selectedGapSourceIds: Set<String> = []
     @Published var gapClassMaterialNames: [String] = []
     @Published var gapMaterialNotice: String = ""
     @Published var gapDetectionError: String?
     @Published var gapDetectionResponse: GapDetectionResponse?
-    @Published var gapResultNoteId: String?
-    @Published var gapResultPage: Int?
+    @Published var activeGapSummary: AISummaryEntry?
+    @Published var activeSmartSummary: AISummaryEntry?
+    @Published private(set) var aiSummaryHistoryRevision: Int = 0
 
     private var gapJobTask: Task<Void, Never>?
     private var smartJobTask: Task<Void, Never>?
     private let gapDetectionService: GapDetectionServiceProtocol
+    private let smartOrganizationService: SmartOrganizationServiceProtocol
+    private let aiSummaryHistoryStore: AISummaryHistoryStore
     private static let aiBusyMessage = "Another AI enhancement is already running. Please wait for it to finish first."
 
     // MARK: - Overlay-action signals
@@ -577,8 +585,14 @@ final class NoteEditorViewModel: ObservableObject {
 
     // MARK: - Init
 
-    init(gapDetectionService: GapDetectionServiceProtocol = GapDetectionService.shared) {
+    init(
+        gapDetectionService: GapDetectionServiceProtocol = GapDetectionService.shared,
+        smartOrganizationService: SmartOrganizationServiceProtocol = SmartOrganizationService.shared,
+        aiSummaryHistoryStore: AISummaryHistoryStore = .shared
+    ) {
         self.gapDetectionService = gapDetectionService
+        self.smartOrganizationService = smartOrganizationService
+        self.aiSummaryHistoryStore = aiSummaryHistoryStore
         // The eraser dropdown auto-disarms its "Clear page" button when the
         // tool changes — wire that here so the view doesn't have to.
         $activeTool
@@ -611,8 +625,7 @@ final class NoteEditorViewModel: ObservableObject {
     }
 
     func estimatedGapDetectionCredits(currentNote: Note?) -> Int {
-        let ownNote = gapSelectedOwnNoteId.flatMap { id in store?.note(id: id) }
-            ?? currentNote
+        let ownNote = currentNote
             ?? noteId.flatMap { store?.note(id: $0) }
         let pages = ownNote?.pageSettings.count ?? totalPages
         return CreditPricing.gapDetection(
@@ -632,10 +645,6 @@ final class NoteEditorViewModel: ObservableObject {
     /// stroke can't bleed into the freshly-loaded one.
     func switchActiveNote(_ newNoteId: String?) {
         guard newNoteId != noteId else { return }
-        if newNoteId == gapResultNoteId, gapJob.isRunning || gapJob.isCompleted {
-            loadNote(newNoteId)
-            return
-        }
         if hasLoaded { flushPendingSave() }
         // Reset AI panel state — jobs are scoped to a single note.
         gapJobTask?.cancel()
@@ -644,6 +653,11 @@ final class NoteEditorViewModel: ObservableObject {
         smartJob = .idle
         aiEnhancementPanel = .root
         aiEnhancementNotice = ""
+        activeGapSummary = nil
+        activeSmartSummary = nil
+        showGapDetectionPopup = false
+        showSmartOrganizationPopup = false
+        showAISummaryHistory = false
         loadNote(newNoteId)
     }
 
@@ -1189,9 +1203,7 @@ final class NoteEditorViewModel: ObservableObject {
     /// the running progress panel; otherwise show the two-option root.
     func openAIEnhancements() {
         aiEnhancementNotice = ""
-        if smartJob.isRunning {
-            aiEnhancementPanel = .smartOrganization
-        } else if gapJob.isRunning {
+        if smartJob.isRunning || gapJob.isRunning {
             aiEnhancementPanel = .taskStatus
         } else {
             aiEnhancementPanel = .root
@@ -1241,8 +1253,8 @@ final class NoteEditorViewModel: ObservableObject {
         showGapDetectionPopup = true
         gapDetectionMode = .config
         gapDetectionConfigPanel = .root
+        gapConfigStep = .sources
         gapPreviewReturnPanel = .root
-        gapOwnNotePickerOpen = false
         gapPreviewNoteId = nil
         gapDetectionError = nil
         flashStatus("Configure Gap Detection")
@@ -1293,11 +1305,7 @@ final class NoteEditorViewModel: ObservableObject {
             flashStatus("Choose a source note")
             return
         }
-        guard let comparisonNote = gapComparisonNote(in: store) else {
-            gapDetectionError = "Choose at least one peer note to compare."
-            flashStatus("Choose a comparison note")
-            return
-        }
+        let comparisonNote = gapComparisonNote(in: store) ?? sourceNote
 
         let cost = estimatedGapDetectionCredits(currentNote: sourceNote)
         guard let creditsStore else {
@@ -1324,8 +1332,6 @@ final class NoteEditorViewModel: ObservableObject {
         aiEnhancementNotice = ""
         gapDetectionError = nil
         gapDetectionResponse = nil
-        gapResultNoteId = nil
-        gapResultPage = nil
         showGapDetectionPopup = true
         gapDetectionMode = .running
         aiEnhancementPanel = .taskStatus
@@ -1344,8 +1350,7 @@ final class NoteEditorViewModel: ObservableObject {
         }
     }
 
-    /// Smart Organization always shows the confirmation step first
-    /// (matches the JSX flow).
+    /// Opens the full Smart Organization modal (matches UI 5).
     func requestSmartOrganization() {
         if gapJob.isRunning {
             aiEnhancementNotice = Self.aiBusyMessage
@@ -1353,15 +1358,33 @@ final class NoteEditorViewModel: ObservableObject {
             flashStatus("Gap Detection is already running")
             return
         }
-        if smartJob.isRunning || smartJob.isCompleted {
-            aiEnhancementPanel = .smartOrganization
-            return
-        }
-        aiEnhancementPanel = .smartConfirm
         aiEnhancementNotice = ""
+        showSmartOrganizationPopup = true
+        if !smartJob.isRunning && !smartJob.isCompleted {
+            flashStatus("Configure Smart Organization")
+        }
     }
 
-    func confirmSmartOrganization() {
+    func closeSmartOrganizationPopup() {
+        if smartJob.isRunning { return }
+        showSmartOrganizationPopup = false
+        if smartJob.isCompleted {
+            smartJob = .idle
+        }
+    }
+
+    func minimizeSmartOrganizationPopup() {
+        showSmartOrganizationPopup = false
+        openAIEnhancements()
+    }
+
+    func finishSmartOrganizationPopup() {
+        smartJob = .idle
+        showSmartOrganizationPopup = false
+        aiEnhancementPanel = .root
+    }
+
+    func confirmSmartOrganization(accessToken: String) async {
         if gapJob.isRunning {
             aiEnhancementNotice = Self.aiBusyMessage
             aiEnhancementPanel = .taskStatus
@@ -1370,6 +1393,11 @@ final class NoteEditorViewModel: ObservableObject {
         }
         guard let store else {
             aiEnhancementNotice = "The note store is not ready yet."
+            flashStatus("Smart Organization unavailable")
+            return
+        }
+        guard let sourceNote = noteId.flatMap({ store.note(id: $0) }) else {
+            aiEnhancementNotice = "Open a saved note first."
             flashStatus("Smart Organization unavailable")
             return
         }
@@ -1384,7 +1412,7 @@ final class NoteEditorViewModel: ObservableObject {
             flashStatus("Not enough credits")
             return
         }
-        let noteTitle = noteId.flatMap { store.note(id: $0) }.map(displayTitle) ?? "Current note"
+        let noteTitle = displayTitle(sourceNote)
         guard creditsStore.spend(
             cost,
             feature: .smartOrganization,
@@ -1395,10 +1423,21 @@ final class NoteEditorViewModel: ObservableObject {
             flashStatus("Not enough credits")
             return
         }
-        aiEnhancementPanel = .smartOrganization
         aiEnhancementNotice = ""
-        flashStatus("Smart Organization started")
-        runFakeJob(.smart, statusName: "Smart Organization")
+        showSmartOrganizationPopup = true
+        aiEnhancementPanel = .taskStatus
+        smartJobTask?.cancel()
+        setJob(.smart, to: .running(progress: 0.05))
+        flashStatus("Exporting note PDF")
+
+        smartJobTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.runSmartOrganization(
+                sourceNote: sourceNote,
+                accessToken: accessToken,
+                store: store
+            )
+        }
     }
 
     func dismissSmartOrganization() {
@@ -1414,6 +1453,72 @@ final class NoteEditorViewModel: ObservableObject {
         showGapDetectionPopup = false
         aiEnhancementPanel = .root
         aiEnhancementNotice = ""
+    }
+
+    func finishGapDetectionPopup() {
+        acknowledgeGapJobResult()
+    }
+
+    func aiSummaryHistoryCount(for noteId: String?) -> Int {
+        guard let noteId else { return 0 }
+        return aiSummaryHistoryStore.entries(for: noteId).count
+    }
+
+    func aiSummaryHistory(for noteId: String?) -> [AISummaryEntry] {
+        guard let noteId else { return [] }
+        return aiSummaryHistoryStore.allEntries(for: noteId)
+    }
+
+    func openAISummaryHistory() {
+        showAISummaryHistory = true
+        flashStatus("Past AI summaries")
+    }
+
+    func closeAISummaryHistory() {
+        showAISummaryHistory = false
+    }
+
+    func openAISummaryEntry(_ entry: AISummaryEntry) {
+        closeAISummaryHistory()
+        switch entry.kind {
+        case .gap:
+            activeSmartSummary = nil
+            activeGapSummary = entry
+        case .smart:
+            activeGapSummary = nil
+            activeSmartSummary = entry
+        }
+        flashStatus("Summary opened")
+    }
+
+    func closeGapSummary() {
+        activeGapSummary = nil
+        if gapJob.isCompleted {
+            gapJob = .idle
+        }
+    }
+
+    func closeSmartSummary() {
+        activeSmartSummary = nil
+        if smartJob.isCompleted {
+            smartJob = .idle
+        }
+    }
+
+    private func recordGapSummary(_ entry: AISummaryEntry) {
+        aiSummaryHistoryStore.append(entry)
+        aiSummaryHistoryRevision &+= 1
+        activeSmartSummary = nil
+        activeGapSummary = entry
+        showGapDetectionPopup = false
+    }
+
+    private func recordSmartSummary(_ entry: AISummaryEntry) {
+        aiSummaryHistoryStore.append(entry)
+        aiSummaryHistoryRevision &+= 1
+        activeGapSummary = nil
+        activeSmartSummary = entry
+        showSmartOrganizationPopup = false
     }
 
     func toggleGapClassMaterialPlaceholder() {
@@ -1496,24 +1601,26 @@ final class NoteEditorViewModel: ObservableObject {
             gapDetectionResponse = response
 
             await animateGapProgress(from: gapJob.progress, to: 0.92, duration: 0.35)
-            flashStatus("Rendering summary")
+            flashStatus("Building summary")
 
-            let rendered = try GapSummaryRenderer.render(response)
+            let peerTitles = selectedGapSourceIds
+                .sorted()
+                .compactMap { store.note(id: $0) }
+                .map { displayTitle($0) }
+
+            let entry = AISummaryEntryFactory.gapEntry(
+                sourceNoteId: sourceNote.id,
+                sourceTitle: displayTitle(sourceNote),
+                response: response,
+                peerNoteTitles: peerTitles,
+                classMaterialNames: gapClassMaterialNames
+            )
 
             await animateGapProgress(from: gapJob.progress, to: 0.98, duration: 0.25)
-            flashStatus("Inserting summary")
-
-            insertGapSummary(rendered, store: store)
-
             setJob(.gap, to: .completed)
             gapDetectionMode = .completed
-            showGapDetectionPopup = true
+            recordGapSummary(entry)
             flashStatus("Gap Detection complete")
-            try? await Task.sleep(nanoseconds: 850_000_000)
-            if !Task.isCancelled {
-                acknowledgeGapJobResult()
-                flashStatus("Gap summary inserted")
-            }
         } catch {
             setJob(.gap, to: .idle)
             gapDetectionMode = .config
@@ -1521,6 +1628,98 @@ final class NoteEditorViewModel: ObservableObject {
             gapDetectionError = error.localizedDescription
             aiEnhancementNotice = error.localizedDescription
             flashStatus("Gap Detection failed")
+        }
+    }
+
+    private func runSmartOrganization(
+        sourceNote: Note,
+        accessToken: String,
+        store: NotesStore
+    ) async {
+        func setSmartProgress(_ value: Double) {
+            setJob(.smart, to: .running(progress: min(0.99, max(0, value))))
+        }
+
+        func animateSmartProgress(from start: Double, to end: Double, duration: TimeInterval) async {
+            guard end > start else {
+                setSmartProgress(end)
+                return
+            }
+            let steps = max(1, Int(duration / 0.12))
+            let stepDuration = duration / Double(steps)
+            for step in 1...steps {
+                if Task.isCancelled { return }
+                let t = Double(step) / Double(steps)
+                setSmartProgress(start + (end - start) * t)
+                try? await Task.sleep(nanoseconds: UInt64(stepDuration * 1_000_000_000))
+            }
+        }
+
+        do {
+            await animateSmartProgress(from: 0, to: 0.18, duration: 0.45)
+            flashStatus("Preparing note")
+
+            let pdf = exportPDFData(for: sourceNote, store: store)
+            try validateGapPDF(pdf, label: "Current note")
+
+            await animateSmartProgress(from: smartJob.progress, to: 0.32, duration: 0.35)
+            flashStatus("Sending PDF to Gemini")
+
+            let request = SmartOrganizationRequest(
+                notePDFBase64: pdf.base64EncodedString(),
+                filename: safePDFFilename(sourceNote.title, fallback: "current-note.pdf"),
+                noteTitle: displayTitle(sourceNote),
+                pageCount: max(1, sourceNote.pageSettings.count),
+                courseContext: sourceNote.subject
+            )
+
+            let creepTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                var value = self.smartJob.progress
+                while !Task.isCancelled && value < 0.88 {
+                    try? await Task.sleep(nanoseconds: 450_000_000)
+                    if Task.isCancelled { return }
+                    value = min(0.88, value + 0.018)
+                    setSmartProgress(value)
+                }
+            }
+
+            let response: SmartOrganizationResponse
+            do {
+                response = try await smartOrganizationService.organize(request, accessToken: accessToken)
+            } catch {
+                creepTask.cancel()
+                throw error
+            }
+            creepTask.cancel()
+
+            await animateSmartProgress(from: smartJob.progress, to: 0.95, duration: 0.35)
+            flashStatus("Building summary")
+
+            let sections = response.sections.map {
+                AISummarySection(heading: $0.heading, bullets: $0.bullets)
+            }
+            let resolvedSections = sections.isEmpty
+                ? AISummaryEntryFactory.fallbackSmartSections(
+                    pageCount: max(1, sourceNote.pageSettings.count),
+                    title: displayTitle(sourceNote)
+                )
+                : sections
+
+            let entry = AISummaryEntryFactory.smartEntry(
+                sourceNoteId: sourceNote.id,
+                sourceTitle: displayTitle(sourceNote),
+                sections: resolvedSections
+            )
+
+            setJob(.smart, to: .completed)
+            recordSmartSummary(entry)
+            flashStatus("Smart Organization complete")
+        } catch {
+            setJob(.smart, to: .idle)
+            showSmartOrganizationPopup = true
+            aiEnhancementNotice = error.localizedDescription
+            flashStatus("Smart Organization failed")
         }
     }
 
@@ -1543,68 +1742,16 @@ final class NoteEditorViewModel: ObservableObject {
         }
     }
 
-    private func insertGapSummary(_ rendered: GapSummaryRenderResult, store: NotesStore) {
-        switch gapOutputMode {
-        case .appendPages:
-            guard let id = noteId else { return }
-            flushPendingSave()
-            let page = store.addPage(noteId: id) ?? totalPages
-            totalPages = store.note(id: id)?.pageSettings.count ?? max(totalPages, page)
-            currentPage = page
-            if let setting = store.note(id: id)?.pageSettings[page - 1] {
-                applyPageSetting(setting)
-            }
-            loadDrawing(for: page)
-            saveGapImage(rendered, to: id, page: page, store: store)
-            if let setting = store.note(id: id)?.pageSettings[page - 1] {
-                applyPageSetting(setting)
-            }
-            gapResultNoteId = id
-            gapResultPage = page
-
-        case .newNote:
-            let generated = store.createDraftNote(
-                subject: subject,
-                title: "Gap Detection - \(noteTitle)"
-            )
-            saveGapImage(rendered, to: generated.id, page: 1, store: store)
-            gapResultNoteId = generated.id
-            gapResultPage = 1
-            store.openNoteInEditor(generated.id)
-            switchActiveNote(generated.id)
-        }
-    }
-
-    private func saveGapImage(
-        _ rendered: GapSummaryRenderResult,
-        to noteId: String,
-        page: Int,
-        store: NotesStore
-    ) {
-        let filename = "\(UUID().uuidString)-gap-summary.png"
-        store.saveOverlayImageData(rendered.data, for: noteId, filename: filename)
-        store.setPageBackgroundImage(
-            noteId: noteId,
-            page: page,
-            filename: filename,
-            aspectHeightOverWidth: rendered.pixelSize.height / max(1, rendered.pixelSize.width)
-        )
-    }
-
     private func gapSourceNote(in store: NotesStore) -> Note? {
-        if let id = gapSelectedOwnNoteId, let note = store.note(id: id) {
-            return note
-        }
         guard let noteId else { return nil }
         return store.note(id: noteId)
     }
 
     private func gapComparisonNote(in store: NotesStore) -> Note? {
-        let currentSourceId = gapSelectedOwnNoteId ?? noteId
-        return selectedGapSourceIds
+        selectedGapSourceIds
             .sorted()
             .compactMap { store.note(id: $0) }
-            .first { $0.id != currentSourceId }
+            .first { $0.id != noteId }
     }
 
     private func displayTitle(_ note: Note) -> String {
@@ -1732,12 +1879,7 @@ final class NoteEditorViewModel: ObservableObject {
         guard let noteId else { return nil }
         let filename = "\(UUID().uuidString).png"
         store.saveOverlayImageData(data, for: noteId, filename: filename)
-        let aspect: CGFloat = pixelSize.height > 0 ? pixelSize.width / pixelSize.height : 1.0
-        // Default to 50% of the page width; clamp the resulting height
-        // to 70% of the page so a portrait photo doesn't fill the canvas.
-        let normW: CGFloat = 0.5
-        let normH = min(0.7, normW / max(0.0001, aspect) * (1.4))   // page aspect is 1:1.4 portrait
-        let normRect = CGRect(x: 0.25, y: 0.3, width: normW, height: max(0.12, normH))
+        let normRect = defaultImageNormRect(for: pixelSize)
         let overlay = NotePageOverlay.image(
             page: currentPage,
             filename: filename,
@@ -1746,6 +1888,35 @@ final class NoteEditorViewModel: ObservableObject {
         store.addOverlay(overlay, to: noteId)
         flashStatus("Image added")
         return overlay.id
+    }
+
+    /// Largest axis-aligned rect (normalized to the page) that fits the
+    /// image inside the page while preserving aspect ratio.
+    private func defaultImageNormRect(for pixelSize: CGSize) -> CGRect {
+        let imageAspect = pixelSize.height > 0
+            ? pixelSize.width / pixelSize.height
+            : 1.0
+        let pageAspect = max(0.2, min(5.0, currentPageAspectHeightOverWidth))
+        let pageWidthOverHeight = 1 / pageAspect
+
+        let normW: CGFloat
+        let normH: CGFloat
+        if imageAspect > pageWidthOverHeight {
+            // Wider than the page — span full width.
+            normW = 1
+            normH = normW / (imageAspect * pageAspect)
+        } else {
+            // Taller than the page — span full height.
+            normH = 1
+            normW = normH * imageAspect * pageAspect
+        }
+
+        return CGRect(
+            x: (1 - normW) / 2,
+            y: (1 - normH) / 2,
+            width: normW,
+            height: normH
+        )
     }
 
     // MARK: - Internal helpers

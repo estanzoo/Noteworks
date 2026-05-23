@@ -14,11 +14,37 @@ import SwiftUI
 struct CommunityView: View {
     @Binding var selectedTab: AppTab?
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var tutorial: TutorialCoordinator
     @StateObject private var viewModel = CommunityViewModel()
-    @State private var activeTab: CommunityTab = .post
+    @State private var activeTab: CommunityTab = .explore
     @State private var showPostEditor = false
     @State private var showSearch = false
     @State private var showNotifications = false
+    @State private var tutorialAnchors: [TutorialTarget: CGRect] = [:]
+
+    private var isComposerTutorialStep: Bool {
+        tutorial.isActive && tutorial.currentStepId == "community-composer"
+    }
+
+    private var showsTutorialPostEditor: Bool {
+        showPostEditor || (tutorial.isActive && isComposerTutorialStep)
+    }
+
+    private var postEditorPresented: Binding<Bool> {
+        Binding(
+            get: { showsTutorialPostEditor },
+            set: { showPostEditor = $0 }
+        )
+    }
+
+    private var isCommunityNewPostTutorialStep: Bool {
+        tutorial.isActive && tutorial.currentStepId == "community-new-post"
+    }
+
+    private var isProfileEntryTutorialStep: Bool {
+        tutorial.isActive && tutorial.currentStepId == "profile-entry"
+    }
+
     @State private var activePostId: String? = nil
     /// Fallback storage for a post the user opened from the search
     /// popup that isn't (yet) in the loaded feed. The detail overlay
@@ -35,6 +61,29 @@ struct CommunityView: View {
     }
 
     var body: some View {
+        mainContent
+            .overlay { notificationsOverlay }
+            .overlay { searchOverlay }
+            .overlay { composerTutorialBackdropOverlay }
+            .overlay { postEditorOverlay }
+            .overlay { composerTutorialCoachOverlay }
+            .overlay { postDetailOverlay }
+            .overlay(alignment: .bottom) { feedErrorBanner }
+            .overlay { communityNewPostTutorialOverlay }
+            .overlay { profileEntryTutorialOverlay }
+            .modifier(CommunityViewLifecycleModifier(
+                appState: appState,
+                tutorial: tutorial,
+                viewModel: viewModel,
+                showPostEditor: $showPostEditor,
+                activePostId: $activePostId,
+                tutorialAnchors: $tutorialAnchors,
+                syncTutorialCommunityState: syncTutorialCommunityState,
+                consumePendingCommunityPost: consumePendingCommunityPost
+            ))
+    }
+
+    private var mainContent: some View {
         ZStack(alignment: .top) {
             OnboardingBackground()
                 .ignoresSafeArea()
@@ -49,63 +98,85 @@ struct CommunityView: View {
                     titleRow
                     tabSwitcher
 
-                    if !viewModel.filter.isDefault, let label = viewModel.filter.displayName {
-                        activeFilterPill(label: label)
-                            .padding(.horizontal, 32)
-                            .padding(.bottom, 12)
-                    }
-
-                    if activeTab == .post {
-                        postContent
-                    } else {
-                        notePlaceholder
-                    }
+                    postContent
                 }
             }
             .refreshable {
                 await viewModel.refresh()
             }
         }
-        .overlay { notificationsOverlay }
-        .overlay { searchOverlay }
-        .overlay { postEditorOverlay }
-        .overlay { postDetailOverlay }
-        .overlay(alignment: .bottom) { feedErrorBanner }
         .navigationBarHidden(true)
-        .task {
-            viewModel.configure(appState: appState)
-            if viewModel.posts.isEmpty {
-                await viewModel.loadInitialFeed()
-            }
+    }
+
+    @ViewBuilder
+    private var composerTutorialBackdropOverlay: some View {
+        if isComposerTutorialStep {
+            communityTutorialOverlay(
+                showsBackdrop: true,
+                showsCoachCard: false,
+                blocksBackgroundInteraction: false
+            )
+            .allowsHitTesting(false)
+            .zIndex(95)
         }
-        // Drain any post handed to us from another tab's search popup
-        // (Home / CourseSpace / Profile). We open it in the same detail
-        // overlay used for in-feed taps, then clear the inbox so the
-        // popup doesn't reopen on every state nudge.
-        .onChange(of: appState.pendingCommunityPost) { _, post in
-            guard let post else { return }
-            consumePendingCommunityPost(post)
+    }
+
+    @ViewBuilder
+    private var composerTutorialCoachOverlay: some View {
+        if isComposerTutorialStep {
+            communityTutorialOverlay(showsBackdrop: false, showsCoachCard: true)
+                .zIndex(110)
         }
-        .onAppear {
-            if let post = appState.pendingCommunityPost {
-                consumePendingCommunityPost(post)
-            }
-            // Initial paint: if we already have a profile, push it into
-            // every one of the user's own posts so the avatar is in sync
-            // even before the next refresh.
-            if let me = appState.profile {
-                viewModel.applyAvatar(for: me.id, name: me.displayName, avatarUrl: me.avatarUrl)
-            }
+    }
+
+    @ViewBuilder
+    private var communityNewPostTutorialOverlay: some View {
+        if isCommunityNewPostTutorialStep {
+            communityTutorialOverlay(showsBackdrop: true, showsCoachCard: true)
+                .zIndex(200)
         }
-        // Mirror any user-editable profile field (avatar, display name,
-        // ...) into the cached feed entries that belong to the current
-        // user, so a Profile edit shows up here immediately without a
-        // manual pull-to-refresh. Watches the whole `profile` object so
-        // future Profile-screen edits to fields that affect posts are
-        // picked up automatically.
-        .onChange(of: appState.profile) { _, newProfile in
-            guard let me = newProfile else { return }
-            viewModel.applyAvatar(for: me.id, name: me.displayName, avatarUrl: me.avatarUrl)
+    }
+
+    @ViewBuilder
+    private var profileEntryTutorialOverlay: some View {
+        if isProfileEntryTutorialStep {
+            communityTutorialOverlay(showsBackdrop: true, showsCoachCard: true)
+                .zIndex(200)
+        }
+    }
+
+    private func communityTutorialOverlay(
+        showsBackdrop: Bool,
+        showsCoachCard: Bool,
+        blocksBackgroundInteraction: Bool = true
+    ) -> some View {
+        TutorialOverlayView(
+            coordinator: tutorial,
+            firstName: tutorial.firstName(from: appState.profile),
+            targetFrames: tutorialAnchors,
+            showsBackdrop: showsBackdrop,
+            showsCoachCard: showsCoachCard,
+            blocksBackgroundInteraction: blocksBackgroundInteraction
+        )
+    }
+
+    private func syncTutorialCommunityState() {
+        guard tutorial.isActive else { return }
+        switch tutorial.currentStepId {
+        case "community-new-post", "profile-entry":
+            showPostEditor = false
+            activePostId = nil
+            activeTab = .explore
+        case "community-composer":
+            activeTab = .explore
+            activePostId = nil
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                showPostEditor = true
+            }
+        default:
+            break
         }
     }
 
@@ -168,6 +239,8 @@ struct CommunityView: View {
                         selectedTab = nil
                     }
                 }
+                .tutorialAnchor(.profileAvatar)
+                .tutorialHighlight(.profileAvatar, activeTarget: tutorial.activeTarget)
             }
         }
         .padding(.horizontal, 32)
@@ -175,23 +248,34 @@ struct CommunityView: View {
     }
 
     private var tabSwitcher: some View {
-        HStack(spacing: 0) {
-            CommunityTabButton(label: "POST", isActive: activeTab == .post) {
-                withAnimation(.easeInOut(duration: 0.2)) { activeTab = .post }
+        HStack {
+            HStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    ForEach(CommunityTab.allCases, id: \.self) { tab in
+                        CommunityTabButton(label: tab.label, isActive: activeTab == tab) {
+                            withAnimation(.easeInOut(duration: 0.2)) { activeTab = tab }
+                            Task { await viewModel.selectPostKind(tab.postKind) }
+                        }
+                    }
+                }
+                .padding(3)
+                .background(Color.white.opacity(0.2))
+                .background(.ultraThinMaterial.opacity(0.3))
+                .clipShape(Capsule())
+                .overlay {
+                    Capsule().strokeBorder(CommunityTheme.glassBorder, lineWidth: 1)
+                }
+
+                if !viewModel.filter.isDefault, let label = viewModel.filter.displayName {
+                    activeFilterPill(label: label)
+                        .padding(.leading, 12)
+                }
             }
-            CommunityTabButton(label: "NOTE", isActive: activeTab == .note) {
-                withAnimation(.easeInOut(duration: 0.2)) { activeTab = .note }
-            }
-        }
-        .padding(3)
-        .background(Color.white.opacity(0.2))
-        .background(.ultraThinMaterial.opacity(0.3))
-        .clipShape(Capsule())
-        .overlay {
-            Capsule().strokeBorder(CommunityTheme.glassBorder, lineWidth: 1)
+
+            Spacer()
         }
         .padding(.horizontal, 32)
-        .padding(.bottom, 24)
+        .padding(.bottom, 16)
     }
 
     private func activeFilterPill(label: String) -> some View {
@@ -228,10 +312,13 @@ struct CommunityView: View {
                 authorName: appState.profile?.displayName ?? "You",
                 authorAvatarUrl: appState.profile?.avatarUrl
             ) {
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                guard !tutorial.isActive else { return }
+                withAnimation(.easeInOut(duration: 0.22)) {
                     showPostEditor = true
                 }
             }
+            .tutorialAnchor(.communityNewPost)
+            .tutorialHighlight(.communityNewPost, activeTarget: tutorial.activeTarget)
 
             ForEach(viewModel.posts) { post in
                 PostCardView(
@@ -278,17 +365,6 @@ struct CommunityView: View {
         .frame(maxWidth: .infinity)
         .frame(minHeight: 220)
         .gridCellColumns(3)
-    }
-
-    private var notePlaceholder: some View {
-        VStack {
-            Spacer(minLength: 100)
-            Text("Shared notes coming soon.")
-                .font(.system(size: 17))
-                .foregroundStyle(CommunityTheme.textMuted)
-            Spacer(minLength: 100)
-        }
-        .frame(maxWidth: .infinity)
     }
 
     // MARK: - Overlays
@@ -385,10 +461,11 @@ struct CommunityView: View {
 
     @ViewBuilder
     private var postEditorOverlay: some View {
-        if showPostEditor {
+        if showsTutorialPostEditor {
             PostEditorPopup(
-                isPresented: $showPostEditor,
+                isPresented: postEditorPresented,
                 accessToken: appState.accessToken ?? "",
+                isTutorialStatic: isComposerTutorialStep,
                 onPublished: { post in
                     viewModel.upsert(post)
                     if !viewModel.posts.contains(where: { $0.id == post.id }) {
@@ -396,10 +473,11 @@ struct CommunityView: View {
                         // covers the edge case where the call returned but the
                         // upsert ran before insert.
                     }
+                },
+                submit: { request in
+                    try await viewModel.createPost(request)
                 }
-            ) { request in
-                try await viewModel.createPost(request)
-            }
+            )
             .transition(.opacity)
             .zIndex(100)
         }
@@ -463,8 +541,26 @@ struct CommunityView: View {
 
 // MARK: - Tab Enum
 
-enum CommunityTab {
-    case post, note
+enum CommunityTab: CaseIterable {
+    case explore, note, studyQuestion, discussion
+
+    var label: String {
+        switch self {
+        case .explore: return "EXPLORE"
+        case .note: return "NOTE"
+        case .studyQuestion: return "STUDY QUESTION"
+        case .discussion: return "DISCUSSION"
+        }
+    }
+
+    var postKind: PostKind? {
+        switch self {
+        case .explore: return nil
+        case .note: return .note
+        case .studyQuestion: return .studyQuestions
+        case .discussion: return .discussions
+        }
+    }
 }
 
 // MARK: - Badge
@@ -532,7 +628,7 @@ private struct CommunityTabButton: View {
                 .font(.system(size: 14, weight: .semibold))
                 .tracking(0.02 * 14)
                 .foregroundStyle(isActive ? CommunityTheme.textPrimary : CommunityTheme.textMuted)
-                .padding(.horizontal, 24)
+                .padding(.horizontal, 20)
                 .padding(.vertical, 8)
                 .background(isActive ? Color.white.opacity(0.6) : Color.clear)
                 .clipShape(Capsule())
@@ -765,6 +861,66 @@ struct CommunityGlassCardModifier: ViewModifier {
     }
 }
 
+// MARK: - Lifecycle
+
+private struct CommunityViewLifecycleModifier: ViewModifier {
+    @ObservedObject var appState: AppState
+    @ObservedObject var tutorial: TutorialCoordinator
+    @ObservedObject var viewModel: CommunityViewModel
+    @Binding var showPostEditor: Bool
+    @Binding var activePostId: String?
+    @Binding var tutorialAnchors: [TutorialTarget: CGRect]
+    let syncTutorialCommunityState: () -> Void
+    let consumePendingCommunityPost: (CommunityPost) -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .task {
+                viewModel.configure(appState: appState)
+                if viewModel.posts.isEmpty {
+                    await viewModel.loadInitialFeed()
+                }
+            }
+            .onChange(of: appState.pendingCommunityPost) { _, post in
+                guard let post else { return }
+                consumePendingCommunityPost(post)
+            }
+            .onAppear {
+                if let post = appState.pendingCommunityPost {
+                    consumePendingCommunityPost(post)
+                }
+                if let me = appState.profile {
+                    viewModel.applyAvatar(for: me.id, name: me.displayName, avatarUrl: me.avatarUrl)
+                }
+                syncTutorialCommunityState()
+            }
+            .onChange(of: appState.profile) { _, newProfile in
+                guard let me = newProfile else { return }
+                viewModel.applyAvatar(for: me.id, name: me.displayName, avatarUrl: me.avatarUrl)
+            }
+            .onChange(of: tutorial.tutorialCommunityComposerOpen) { _, shouldOpen in
+                if shouldOpen {
+                    showPostEditor = true
+                } else if tutorial.isActive {
+                    showPostEditor = false
+                }
+            }
+            .onChange(of: tutorial.isActive) { _, active in
+                if !active {
+                    showPostEditor = false
+                    activePostId = nil
+                }
+            }
+            .onChange(of: tutorial.currentStepId) { _, _ in
+                syncTutorialCommunityState()
+            }
+            .onChange(of: tutorial.stepIndex) { _, _ in
+                syncTutorialCommunityState()
+            }
+            .onPreferenceChange(TutorialAnchorKey.self) { tutorialAnchors = $0 }
+    }
+}
+
 // MARK: - Card Press Style
 
 struct CommunityCardPressStyle: ButtonStyle {
@@ -776,8 +932,10 @@ struct CommunityCardPressStyle: ButtonStyle {
 }
 
 #Preview {
-    NavigationStack {
+    let appState = AppState(notesStore: NotesStore.preview())
+    return NavigationStack {
         CommunityView(selectedTab: .constant(AppTab.people))
-            .environmentObject(AppState(notesStore: NotesStore.preview()))
+            .environmentObject(appState)
+            .environmentObject(appState.tutorialCoordinator)
     }
 }

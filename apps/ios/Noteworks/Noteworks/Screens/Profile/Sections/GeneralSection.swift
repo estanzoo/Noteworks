@@ -43,6 +43,39 @@ struct GeneralSection: View {
 
     // MARK: - Overview
 
+    private var replayTutorialRow: some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Replay Tutorial")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(ProfileTheme.textPrimary)
+                Text("Walk through Home, Library, notes, AI tools, Community, and Profile again.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(ProfileTheme.textSecondary)
+                    .lineSpacing(3)
+            }
+            Spacer(minLength: 8)
+            Button("Start Tutorial") {
+                appState.tutorialCoordinator.restartTutorial()
+            }
+            .font(.system(size: 12, weight: .heavy))
+            .foregroundStyle(ProfileTheme.textPrimary)
+            .padding(.horizontal, 12)
+            .frame(minHeight: 34)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.white.opacity(0.55))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(ProfileTheme.glassBorder, lineWidth: 1)
+            )
+            .buttonStyle(.plain)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .profileRowCard()
+    }
+
     private var overviewPanel: some View {
         VStack(alignment: .leading, spacing: 10) {
             ProfileSectionHeader(
@@ -86,6 +119,9 @@ struct GeneralSection: View {
                 viewModel.refreshStorageReport()
                 withAnimation { viewModel.generalPanel = .storage }
             }
+
+            replayTutorialRow
+                .padding(.top, 6)
 
             // Version number card
             VStack(alignment: .leading, spacing: 4) {

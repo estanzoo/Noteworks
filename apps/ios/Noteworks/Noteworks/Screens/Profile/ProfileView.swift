@@ -25,11 +25,17 @@ struct ProfileView: View {
 
     @State private var showSearch: Bool = false
     @State private var showNotifications: Bool = false
+    @State private var tutorialAnchors: [TutorialTarget: CGRect] = [:]
     /// Note id pushed onto the Profile nav stack when the user picks a
     /// note from the search popup. `nil` means "no editor on screen".
     @State private var searchedNoteId: String?
 
     private var unreadCount: Int { appState.notifications.unreadCount }
+
+    private var isProfileTutorialStep: Bool {
+        appState.tutorialCoordinator.isActive
+            && appState.tutorialCoordinator.currentStepId == "profile"
+    }
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -62,6 +68,17 @@ struct ProfileView: View {
         }
         .overlay { notificationsOverlay }
         .overlay { searchOverlay }
+        .overlay {
+            if isProfileTutorialStep {
+                TutorialOverlayView(
+                    coordinator: appState.tutorialCoordinator,
+                    firstName: appState.tutorialCoordinator.firstName(from: appState.profile),
+                    targetFrames: tutorialAnchors
+                )
+                .zIndex(200)
+            }
+        }
+        .onPreferenceChange(TutorialAnchorKey.self) { tutorialAnchors = $0 }
         .navigationDestination(item: $searchedNoteId) { noteId in
             NoteEditorView(noteId: noteId)
         }
@@ -312,6 +329,8 @@ struct ProfileView: View {
                 }
             }
         }
+        .tutorialAnchor(.profileSettingsNav)
+        .tutorialHighlight(.profileSettingsNav, activeTarget: appState.tutorialCoordinator.activeTarget)
     }
 
     private var detailPanel: some View {

@@ -407,6 +407,7 @@ struct CourseSpaceView: View {
                     }
                     return subject
                 }(),
+                forceMenuOpen: appState.tutorialCoordinator.currentStepId == "library-add-menu",
                 onNavigateToNewNote: { id in
                     newNoteId = id
                     navigateToNewNote = true
@@ -786,13 +787,21 @@ private func libraryNewNoteMenuRow(title: String, detail: String, systemImage: S
 
 private struct LibraryNewCard: View {
     @EnvironmentObject private var store: NotesStore
+    @EnvironmentObject private var appState: AppState
     let subjectForDraft: String?
+    var forceMenuOpen: Bool = false
     let onNavigateToNewNote: (String) -> Void
+    var onCardTap: (() -> Void)? = nil
 
     @State private var showCreateMenu = false
     @State private var showPDFImporter = false
     @State private var importErrorMessage: String?
     @State private var showImportError = false
+
+    private var isMenuTutorialStep: Bool {
+        appState.tutorialCoordinator.isActive
+            && appState.tutorialCoordinator.currentStepId == "library-add-menu"
+    }
 
     private var newCardChrome: some View {
         VStack {
@@ -848,6 +857,7 @@ private struct LibraryNewCard: View {
     var body: some View {
         ZStack(alignment: .center) {
             Button {
+                onCardTap?()
                 withAnimation(.spring(response: 0.24, dampingFraction: 0.86)) {
                     showCreateMenu.toggle()
                 }
@@ -855,15 +865,29 @@ private struct LibraryNewCard: View {
                 newCardChrome
             }
             .buttonStyle(CardPressStyle())
+            .tutorialAnchor(.libraryAddNote)
+            .tutorialHighlight(.libraryAddNote, activeTarget: appState.tutorialCoordinator.activeTarget)
 
             if showCreateMenu {
                 createMenu
                     .frame(width: 258)
                     .transition(.scale(scale: 0.96, anchor: .top).combined(with: .opacity))
                     .zIndex(20)
+                    .tutorialAnchor(.libraryAddMenu)
+                    .tutorialHighlight(.libraryAddMenu, activeTarget: appState.tutorialCoordinator.activeTarget)
             }
         }
-        .zIndex(showCreateMenu ? 20 : 0)
+        .zIndex(isMenuTutorialStep ? 250 : (showCreateMenu ? 20 : 0))
+        .onChange(of: forceMenuOpen) { _, open in
+            withAnimation(.spring(response: 0.24, dampingFraction: 0.86)) {
+                showCreateMenu = open
+            }
+        }
+        .onAppear {
+            if forceMenuOpen {
+                showCreateMenu = true
+            }
+        }
         .fileImporter(
             isPresented: $showPDFImporter,
             allowedContentTypes: [.pdf],

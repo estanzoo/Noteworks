@@ -161,10 +161,12 @@ struct OnboardingFlow: View {
                         onSave: { codes in
                             let safe = codes.isEmpty ? ["Untitled Bubble"] : codes
                             appState.notesStore.replaceBubbleNames(safe)
-                            step = .done
+                            appState.tutorialCoordinator.pendingAutoStart = true
+                            Task { await appState.refreshProfile() }
                         },
                         onSkip: {
                             appState.notesStore.replaceBubbleNames(["Untitled Bubble"])
+                            appState.tutorialCoordinator.pendingAutoStart = true
                             Task { await appState.refreshProfile() }
                         },
                         onBack: { step = .interests }

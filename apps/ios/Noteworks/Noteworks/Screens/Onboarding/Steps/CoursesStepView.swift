@@ -592,15 +592,26 @@ struct CourseDraft: Identifiable, Equatable {
         let trimmedCode = code.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let preferName = noCode || displayMode == .name
+        let label: String?
         if preferName {
-            if !trimmedName.isEmpty { return trimmedName }
-            if !trimmedCode.isEmpty { return trimmedCode }
-            return nil
+            if !trimmedName.isEmpty { label = trimmedName }
+            else if !trimmedCode.isEmpty { label = trimmedCode }
+            else { label = nil }
         } else {
-            if !trimmedCode.isEmpty { return trimmedCode }
-            if !trimmedName.isEmpty { return trimmedName }
-            return nil
+            if !trimmedCode.isEmpty { label = trimmedCode }
+            else if !trimmedName.isEmpty { label = trimmedName }
+            else { label = nil }
         }
+        guard let label else { return nil }
+        return String(label.prefix(Self.nameMaxChars))
+    }
+
+    func normalized() -> CourseDraft {
+        var copy = self
+        copy.code = noCode ? "" : NotesStore.normalizeCourseCode(code)
+        copy.name = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(Self.nameMaxChars))
+        copy.noCode = noCode
+        return copy
     }
 }
 

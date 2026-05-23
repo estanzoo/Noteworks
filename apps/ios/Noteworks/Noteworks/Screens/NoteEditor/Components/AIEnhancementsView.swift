@@ -109,6 +109,8 @@ struct AIEnhancementsPill: View {
 struct AIEnhancementsDropdown: View {
     @ObservedObject var viewModel: NoteEditorViewModel
     @ObservedObject var creditsStore: CreditsStore
+    @EnvironmentObject private var appState: AppState
+    let noteId: String?
     var dismiss: () -> Void
 
     var body: some View {
@@ -142,8 +144,7 @@ struct AIEnhancementsDropdown: View {
                     switch viewModel.aiEnhancementPanel {
                     case .root: rootPanel
                     case .taskStatus: taskStatusPanel
-                    case .smartConfirm: smartConfirmPanel
-                    case .smartOrganization: smartOrgPanel
+                    case .smartConfirm, .smartOrganization: rootPanel
                     }
                 }
                 .padding(.horizontal, 12)
@@ -154,18 +155,58 @@ struct AIEnhancementsDropdown: View {
     // MARK: Root — both feature buttons stacked
 
     private var rootPanel: some View {
-        VStack(spacing: 10) {
+        let historyCount = viewModel.aiSummaryHistoryCount(for: noteId)
+        return VStack(spacing: 10) {
             AIEnhancementFeatureCard(
                 title: "Gap Detection",
                 subtitle: "Compare this note with peer notes and class materials.",
                 accent: viewModel.gapJob.isCompleted ? .ready : .neutral
             ) { viewModel.showGapDetectionConfigurator() }
+            .tutorialAnchor(.aiGapOption)
+            .tutorialHighlight(.aiGapOption, activeTarget: appState.tutorialCoordinator.activeTarget)
 
             AIEnhancementFeatureCard(
                 title: "Smart Organization",
                 subtitle: "Tidy sections and bring related ideas closer together.",
                 accent: viewModel.smartJob.isCompleted ? .ready : .neutral
-            ) { viewModel.requestSmartOrganization() }
+            ) {
+                dismiss()
+                viewModel.requestSmartOrganization()
+            }
+            .tutorialAnchor(.aiSmartOption)
+            .tutorialHighlight(.aiSmartOption, activeTarget: appState.tutorialCoordinator.activeTarget)
+
+            Button {
+                dismiss()
+                viewModel.openAISummaryHistory()
+            } label: {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Past AI Summaries")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(NoteEditorTheme.textPrimary)
+                        Text("Gap Detection + Smart Organization runs for this note.")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(NoteEditorTheme.textSecondary)
+                            .multilineTextAlignment(.leading)
+                    }
+                    Spacer()
+                    Text("\(historyCount)")
+                        .font(.system(size: 12, weight: .heavy))
+                        .foregroundStyle(NoteEditorTheme.accent)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(Color.white.opacity(0.78))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16)
+                        .strokeBorder(NoteEditorTheme.chromeBorder, lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -178,9 +219,16 @@ struct AIEnhancementsDropdown: View {
                 job: viewModel.gapJob
             ) {
                 if viewModel.gapJob.isRunning {
-                    viewModel.selectAIEnhancementPanel(.taskStatus)
+                    viewModel.showGapDetectionPopup = true
+                    viewModel.gapDetectionMode = .running
+                    dismiss()
                 } else if viewModel.gapJob.isCompleted {
-                    viewModel.acknowledgeGapJobResult()
+                    if let entry = viewModel.activeGapSummary {
+                        viewModel.openAISummaryEntry(entry)
+                    } else if let latest = viewModel.aiSummaryHistory(for: noteId).first(where: { $0.kind == .gap }) {
+                        viewModel.openAISummaryEntry(latest)
+                    }
+                    viewModel.gapJob = .idle
                     dismiss()
                 } else {
                     viewModel.startGapDetection()
@@ -191,149 +239,21 @@ struct AIEnhancementsDropdown: View {
                 title: "Smart Organization",
                 job: viewModel.smartJob
             ) {
-                if viewModel.smartJob.isRunning || viewModel.smartJob.isCompleted {
-                    viewModel.selectAIEnhancementPanel(.smartOrganization)
+                if viewModel.smartJob.isRunning {
+                    dismiss()
+                    viewModel.showSmartOrganizationPopup = true
+                } else if viewModel.smartJob.isCompleted {
+                    if let entry = viewModel.activeSmartSummary {
+                        viewModel.openAISummaryEntry(entry)
+                    } else if let latest = viewModel.aiSummaryHistory(for: noteId).first(where: { $0.kind == .smart }) {
+                        viewModel.openAISummaryEntry(latest)
+                    }
+                    viewModel.smartJob = .idle
+                    dismiss()
                 } else {
+                    dismiss()
                     viewModel.requestSmartOrganization()
                 }
-            }
-        }
-    }
-
-    // MARK: Smart Organization confirmation
-
-    private var smartConfirmPanel: some View {
-        let cost = viewModel.estimatedSmartOrganizationCredits
-        let balance = creditsStore.balance
-        let canConfirm = cost <= balance
-
-        return VStack(alignment: .leading, spacing: 12) {
-            Text("Smart Organization")
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(NoteEditorTheme.textPrimary)
-            Text("Organize this note into cleaner sections and improve its structure.")
-                .font(.system(size: 12))
-                .foregroundStyle(NoteEditorTheme.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            HStack {
-                Text("Estimated cost")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(NoteEditorTheme.textSecondary)
-                Spacer()
-                Text("\(cost) Credits")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(NoteEditorTheme.accent)
-            }
-
-            if !canConfirm {
-                Text("You only have \(balance) credits available right now.")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color(red: 0xC1/255, green: 0x60/255, blue: 0x60/255))
-            }
-
-            HStack(spacing: 10) {
-                Button {
-                    viewModel.selectAIEnhancementPanel(.root)
-                } label: {
-                    Text("Cancel")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(NoteEditorTheme.textPrimary)
-                        .frame(maxWidth: .infinity, minHeight: 38)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12)
-                                .fill(Color.white.opacity(0.78))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12)
-                                .strokeBorder(NoteEditorTheme.chromeBorder, lineWidth: 1)
-                        )
-                }
-                .buttonStyle(.plain)
-
-                Button {
-                    viewModel.confirmSmartOrganization()
-                } label: {
-                    Text("Confirm")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(canConfirm ? .white : NoteEditorTheme.textMuted)
-                        .frame(maxWidth: .infinity, minHeight: 38)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12)
-                                .fill(
-                                    canConfirm
-                                        ? AnyShapeStyle(LinearGradient(
-                                            colors: [NoteEditorTheme.accent, Color(red: 0x7C/255, green: 0xC4/255, blue: 0xE4/255)],
-                                            startPoint: .topLeading,
-                                            endPoint: .bottomTrailing
-                                        ))
-                                        : AnyShapeStyle(Color.black.opacity(0.06))
-                                )
-                        )
-                }
-                .disabled(!canConfirm)
-                .buttonStyle(.plain)
-            }
-        }
-    }
-
-    // MARK: Smart Organization in-progress / completed
-
-    private var smartOrgPanel: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 10) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Smart Organization")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(NoteEditorTheme.textPrimary)
-                    Text(viewModel.smartJob.isCompleted
-                         ? "Your note structure has been tidied up."
-                         : "Reorganizing sections and bringing related ideas closer together.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(NoteEditorTheme.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 4)
-                Button {
-                    if viewModel.smartJob.isCompleted {
-                        viewModel.selectAIEnhancementPanel(.root)
-                    } else {
-                        viewModel.selectAIEnhancementPanel(.taskStatus)
-                    }
-                } label: {
-                    Image(systemName: viewModel.smartJob.isCompleted ? "chevron.left" : "xmark")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(NoteEditorTheme.textPrimary)
-                        .frame(width: 28, height: 28)
-                        .background(Circle().fill(Color.white.opacity(0.92)))
-                        .overlay(Circle().strokeBorder(NoteEditorTheme.chromeBorder, lineWidth: 1))
-                }
-                .buttonStyle(.plain)
-            }
-
-            AIEnhancementProgressBar(progress: viewModel.smartJob.progress, isCompleted: viewModel.smartJob.isCompleted)
-
-            if viewModel.smartJob.isCompleted {
-                Button {
-                    viewModel.dismissSmartOrganization()
-                    dismiss()
-                } label: {
-                    Text("Done")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity, minHeight: 38)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12)
-                                .fill(
-                                    LinearGradient(
-                                        colors: [NoteEditorTheme.accent, Color(red: 0x7C/255, green: 0xC4/255, blue: 0xE4/255)],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                    )
-                                )
-                        )
-                }
-                .buttonStyle(.plain)
             }
         }
     }
@@ -430,9 +350,7 @@ private struct AIEnhancementStatusRow: View {
     }
 }
 
-// MARK: - Progress bar (smartOrg panel)
-
-private struct AIEnhancementProgressBar: View {
+struct AIEnhancementProgressBar: View {
     let progress: Double
     let isCompleted: Bool
     var inProgressLabel: String = "Organizing..."
@@ -504,8 +422,7 @@ struct GapDetectionPopup: View {
     private var creditBalance: Int { creditsStore.balance }
     private var estimatedCredits: Int { viewModel.estimatedGapDetectionCredits(currentNote: currentNote) }
     private var yourNotesPrice: Int {
-        let pages = (viewModel.gapSelectedOwnNoteId.flatMap { id in notes.first { $0.id == id } }
-            ?? currentNote)?.pageSettings.count ?? 1
+        let pages = currentNote?.pageSettings.count ?? 1
         return max(4, pages / 4 + 4)
     }
     private var otherNotesPrice: Int { selectedSources * 6 }
@@ -584,7 +501,7 @@ struct GapDetectionPopup: View {
     private var header: some View {
         HStack(alignment: .top, spacing: 16) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Gap Detection")
+                Text(headerEyebrow)
                     .font(.system(size: 11, weight: .black))
                     .tracking(0.1 * 11)
                     .foregroundStyle(NoteEditorTheme.textMuted)
@@ -661,10 +578,43 @@ struct GapDetectionPopup: View {
         }
     }
 
+    @ViewBuilder
     private var rootConfig: some View {
+        switch viewModel.gapConfigStep {
+        case .sources:
+            sourcesStepConfig
+        case .materials:
+            materialsStepConfig
+        }
+    }
+
+    private var sourcesStepConfig: some View {
         VStack(spacing: 18) {
             yourNotesSection
             othersNotesSection
+            HStack {
+                Text(selectedSources == 0
+                     ? "Comparing against your own note only — add peer notes for richer gap signals."
+                     : "\(selectedSources) peer note\(selectedSources == 1 ? "" : "s") selected.")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(NoteEditorTheme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                Button("Continue") {
+                    viewModel.gapConfigStep = .materials
+                }
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 22)
+                .frame(height: 44)
+                .background(RoundedRectangle(cornerRadius: 14).fill(NoteEditorTheme.accent))
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var materialsStepConfig: some View {
+        VStack(spacing: 18) {
             classMaterialsSection
             confirmSection
         }
@@ -672,42 +622,14 @@ struct GapDetectionPopup: View {
 
     private var yourNotesSection: some View {
         sectionCard {
-            HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 14) {
                 VStack(alignment: .leading, spacing: 6) {
-                    sectionEyebrow("1. Your Notes")
-                    Text("Starts with the note you launched from, but you can switch sources before the AI begins.")
+                    sectionEyebrow("1. Your Note")
+                    Text("The note you launched Gap Detection from.")
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(NoteEditorTheme.textSecondary)
                 }
-                Spacer()
-                Button(viewModel.gapOwnNotePickerOpen ? "Hide notes" : "Choose note") {
-                    viewModel.gapOwnNotePickerOpen.toggle()
-                }
-                .font(.system(size: 12, weight: .bold))
-                .foregroundStyle(NoteEditorTheme.textPrimary)
-                .padding(.horizontal, 12)
-                .frame(height: 34)
-                .background(Capsule().fill(Color.white.opacity(0.84)))
-                .overlay(Capsule().strokeBorder(NoteEditorTheme.chromeBorder, lineWidth: 1))
-                .buttonStyle(.plain)
-            }
-
-            gapNoteSourceCard(selectedOwnNote ?? currentNote, active: true)
-
-            if viewModel.gapOwnNotePickerOpen {
-                VStack(spacing: 10) {
-                    ForEach(noteOptions) { note in
-                        gapNoteSourceCard(
-                            note,
-                            active: note.id == (selectedOwnNote?.id ?? currentNote?.id),
-                            action: {
-                                viewModel.gapSelectedOwnNoteId = note.id
-                                viewModel.gapOwnNotePickerOpen = false
-                            }
-                        )
-                    }
-                }
-                .frame(maxHeight: 260)
+                gapNoteSourceCard(currentNote, active: true)
             }
         }
     }
@@ -838,11 +760,6 @@ struct GapDetectionPopup: View {
                     .lineSpacing(4)
             }
 
-            HStack(spacing: 10) {
-                outputModeButton(.newNote)
-                outputModeButton(.appendPages)
-            }
-
             VStack(spacing: 10) {
                 priceRow("Your note", value: yourNotesPrice)
                 priceRow("Other's notes", value: otherNotesPrice)
@@ -878,6 +795,17 @@ struct GapDetectionPopup: View {
             }
 
             HStack {
+                Button("Back") {
+                    viewModel.gapConfigStep = .sources
+                }
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(NoteEditorTheme.textPrimary)
+                .padding(.horizontal, 16)
+                .frame(height: 44)
+                .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.78)))
+                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(NoteEditorTheme.chromeBorder, lineWidth: 1))
+                .buttonStyle(.plain)
+
                 Text("Available now: \(creditBalance) Credits")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(NoteEditorTheme.textSecondary)
@@ -910,92 +838,6 @@ struct GapDetectionPopup: View {
         .overlay(RoundedRectangle(cornerRadius: 22).strokeBorder(NoteEditorTheme.accent.opacity(0.18), lineWidth: 1))
     }
 
-    private var sourceColumn: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            sectionHeader("Choose sources", subtitle: "Compare your note with related community posts and optional class materials.")
-            currentNoteCard
-            Button {
-                viewModel.gapDetectionConfigPanel = .communityBrowser
-            } label: {
-                HStack {
-                    Text("Browse Community posts")
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                }
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(NoteEditorTheme.accent)
-                .padding(14)
-                .background(RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(0.88)))
-                .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(NoteEditorTheme.chromeBorder, lineWidth: 1))
-            }
-            .buttonStyle(.plain)
-
-            VStack(spacing: 10) {
-                ForEach(recommendedNotes.prefix(3)) { note in
-                    sourceNoteRow(note)
-                }
-            }
-        }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(RoundedRectangle(cornerRadius: 24).fill(Color.white.opacity(0.56)))
-        .overlay(RoundedRectangle(cornerRadius: 24).strokeBorder(NoteEditorTheme.glassBorder, lineWidth: 1))
-    }
-
-    private var settingsColumn: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            sectionHeader("Output", subtitle: "Choose where the AI gap map should land.")
-            VStack(spacing: 10) {
-                ForEach(GapDetectionOutputMode.allCases) { mode in
-                    optionRow(
-                        title: mode.label,
-                        subtitle: mode == .newNote ? "Create a separate AI summary note." : "Append result pages to this note.",
-                        selected: viewModel.gapOutputMode == mode
-                    ) {
-                        viewModel.gapOutputMode = mode
-                    }
-                }
-            }
-
-            Divider().overlay(NoteEditorTheme.chromeBorder)
-
-            sectionHeader("Class materials", subtitle: "Attach syllabus, slides, or readings for extra context.")
-            ForEach(viewModel.gapClassMaterialNames, id: \.self) { name in
-                HStack {
-                    Image(systemName: "doc")
-                    Text(name).lineLimit(1)
-                    Spacer()
-                    Button {
-                        viewModel.gapClassMaterialNames.removeAll { $0 == name }
-                    } label: {
-                        Image(systemName: "xmark")
-                    }
-                    .buttonStyle(.plain)
-                }
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(NoteEditorTheme.textSecondary)
-                .padding(10)
-                .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.72)))
-            }
-            Button {
-                let next = "Class material \(viewModel.gapClassMaterialNames.count + 1).pdf"
-                viewModel.gapClassMaterialNames.append(next)
-            } label: {
-                Label("Upload materials", systemImage: "tray.and.arrow.up")
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(NoteEditorTheme.accent)
-                    .frame(maxWidth: .infinity, minHeight: 42)
-                    .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.86)))
-                    .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(NoteEditorTheme.chromeBorder, lineWidth: 1))
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(RoundedRectangle(cornerRadius: 24).fill(Color.white.opacity(0.56)))
-        .overlay(RoundedRectangle(cornerRadius: 24).strokeBorder(NoteEditorTheme.glassBorder, lineWidth: 1))
-    }
-
     private var communityBrowser: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .center, spacing: 10) {
@@ -1013,7 +855,7 @@ struct GapDetectionPopup: View {
             VStack(spacing: 12) {
                 HStack(spacing: 10) {
                     filterBox(title: "School", value: "All schools")
-                    filterBox(title: "Course code", value: selectedOwnNote?.subject ?? currentNote?.subject ?? "e.g. CHEM-204")
+                    filterBox(title: "Course code", value: currentNote?.subject ?? "e.g. CHEM-204")
                     filterBox(title: "Time", value: "Matching current note")
                 }
             }
@@ -1045,7 +887,7 @@ struct GapDetectionPopup: View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .center, spacing: 10) {
                 circleBackButton {
-                    viewModel.gapDetectionConfigPanel = .root
+                    viewModel.popGapPreview()
                 }
                 VStack(alignment: .leading, spacing: 6) {
                     sectionEyebrow("Other's Notes Preview")
@@ -1093,24 +935,16 @@ struct GapDetectionPopup: View {
             if viewModel.gapJob.isCompleted {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(viewModel.gapOutputMode == .newNote ? "A new note is ready to open." : "New pages were attached to the current note.")
+                        Text("Your gap summary is ready.")
                             .font(.system(size: 15, weight: .bold))
                             .foregroundStyle(NoteEditorTheme.textPrimary)
-                        Text("Gemini compared the two PDFs and Noteworks rendered the summary as a note image.")
+                        Text("It opens beside your note so you can review while editing. Past summaries live in AI Enhancements.")
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(NoteEditorTheme.textSecondary)
                     }
                     Spacer()
-                    Button("Later") { onClose() }
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(NoteEditorTheme.textPrimary)
-                        .padding(.horizontal, 14)
-                        .frame(height: 42)
-                        .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.74)))
-                        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(NoteEditorTheme.chromeBorder, lineWidth: 1))
-                        .buttonStyle(.plain)
-                    Button(viewModel.gapOutputMode == .newNote ? "Open generated note" : "Jump to attached page") {
-                        viewModel.acknowledgeGapJobResult()
+                    Button("Done") {
+                        viewModel.finishGapDetectionPopup()
                     }
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(.white)
@@ -1128,7 +962,10 @@ struct GapDetectionPopup: View {
 
     private var headerTitle: String {
         switch viewModel.gapDetectionMode {
-        case .config: return "Choose sources for the scan"
+        case .config:
+            return viewModel.gapConfigStep == .materials
+                ? "Add class materials (optional)"
+                : "Choose notes to compare"
         case .running: return "Analyzing your note"
         case .completed: return "AI output is ready"
         }
@@ -1137,11 +974,25 @@ struct GapDetectionPopup: View {
     private var headerSubtitle: String {
         switch viewModel.gapDetectionMode {
         case .config:
-            return "Compare your note with related community posts and optional class materials before the AI builds a gap map."
+            if viewModel.gapConfigStep == .materials {
+                return "Upload up to five files for more context, then confirm to start the scan."
+            }
+            return "Pick your source note plus any peer notes from the community to compare against."
         case .running:
             return "Comparing your note against related materials."
         case .completed:
             return "Your gap summary has been generated. Open it now or come back from the toolbar later."
+        }
+    }
+
+    private var headerEyebrow: String {
+        switch viewModel.gapDetectionMode {
+        case .config:
+            return viewModel.gapConfigStep == .materials
+                ? "Gap Detection · Step 2 of 2"
+                : "Gap Detection · Step 1 of 2"
+        case .running, .completed:
+            return "Gap Detection"
         }
     }
 
@@ -1154,27 +1005,13 @@ struct GapDetectionPopup: View {
             }
     }
 
-    private var noteOptions: [Note] {
-        var seen = Set<String>()
-        return ([currentNote].compactMap { $0 } + notes).filter { note in
-            guard !seen.contains(note.id) else { return false }
-            seen.insert(note.id)
-            return true
-        }
-    }
-
-    private var selectedOwnNote: Note? {
-        guard let id = viewModel.gapSelectedOwnNoteId else { return currentNote }
-        return noteOptions.first { $0.id == id } ?? currentNote
-    }
-
     private var previewNote: Note? {
         guard let id = viewModel.gapPreviewNoteId else { return nil }
         return notes.first { $0.id == id }
     }
 
     private var selectedSourceTitle: String {
-        let title = selectedOwnNote?.title ?? currentNote?.title ?? "Untitled Note"
+        let title = currentNote?.title ?? "Untitled Note"
         return title.isEmpty ? "Untitled Note" : title
     }
 
@@ -1232,69 +1069,11 @@ struct GapDetectionPopup: View {
         .disabled(action == nil)
     }
 
-    private var currentNoteCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Current note")
-                .font(.system(size: 11, weight: .black))
-                .tracking(0.08 * 11)
-                .foregroundStyle(NoteEditorTheme.textMuted)
-            Text(currentNote?.title.isEmpty == false ? currentNote?.title ?? "Untitled Note" : "Untitled Note")
-                .font(.system(size: 17, weight: .bold))
-                .foregroundStyle(NoteEditorTheme.textPrimary)
-            Text("\(currentNote?.pageSettings.count ?? 1) page\(currentNote?.pageSettings.count == 1 ? "" : "s") selected as your source")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(NoteEditorTheme.textSecondary)
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 18).fill(Color.white.opacity(0.88)))
-        .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(NoteEditorTheme.chromeBorder, lineWidth: 1))
-    }
-
-    private func sourceNoteRow(_ note: Note) -> some View {
-        let selected = viewModel.selectedGapSourceIds.contains(note.id)
-        return HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text(note.title.isEmpty ? "Untitled Note" : note.title)
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(NoteEditorTheme.textPrimary)
-                Text([note.subject, note.tag, "\(note.pageSettings.count) pages"].compactMap { $0 }.joined(separator: " · "))
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(NoteEditorTheme.textSecondary)
-            }
-            Spacer()
-            Button("Preview") {
-                viewModel.pushGapPreview(noteId: note.id)
-            }
-            .font(.system(size: 12, weight: .bold))
-            .foregroundStyle(NoteEditorTheme.textMuted)
-            .buttonStyle(.plain)
-            Button(selected ? "Selected" : "Add") {
-                if selected {
-                    viewModel.selectedGapSourceIds.remove(note.id)
-                } else {
-                    viewModel.selectedGapSourceIds.insert(note.id)
-                }
-            }
-            .font(.system(size: 12, weight: .bold))
-            .foregroundStyle(selected ? .white : NoteEditorTheme.accent)
-            .padding(.horizontal, 12)
-            .frame(height: 30)
-            .background(Capsule().fill(selected ? NoteEditorTheme.accent : Color.white.opacity(0.86)))
-            .overlay(Capsule().strokeBorder(NoteEditorTheme.accent.opacity(0.24), lineWidth: 1))
-            .buttonStyle(.plain)
-        }
-        .padding(14)
-        .background(RoundedRectangle(cornerRadius: 16).fill(selected ? NoteEditorTheme.accent.opacity(0.10) : Color.white.opacity(0.72)))
-        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(selected ? NoteEditorTheme.accent.opacity(0.24) : NoteEditorTheme.chromeBorder, lineWidth: 1))
-    }
-
     private func gapCommunityNoteCard(_ note: Note, compact: Bool = false) -> some View {
         let selected = viewModel.selectedGapSourceIds.contains(note.id)
         let price = max(4, min(12, note.pageSettings.count + 3))
         return Button {
-            viewModel.gapPreviewNoteId = note.id
-            viewModel.gapDetectionConfigPanel = .preview
+            viewModel.pushGapPreview(noteId: note.id)
         } label: {
             HStack(alignment: .center, spacing: 14) {
                 VStack(alignment: .leading, spacing: 7) {
@@ -1417,52 +1196,6 @@ struct GapDetectionPopup: View {
         .padding(20)
         .background(RoundedRectangle(cornerRadius: 24).fill(Color.white.opacity(0.56)))
         .overlay(RoundedRectangle(cornerRadius: 24).strokeBorder(NoteEditorTheme.glassBorder, lineWidth: 1))
-    }
-
-    private func sectionHeader(_ title: String, subtitle: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.system(size: 15, weight: .bold))
-                .foregroundStyle(NoteEditorTheme.textPrimary)
-            Text(subtitle)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(NoteEditorTheme.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private func optionRow(title: String, subtitle: String, selected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 12) {
-                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(selected ? NoteEditorTheme.accent : NoteEditorTheme.textMuted)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(title).font(.system(size: 13, weight: .bold))
-                    Text(subtitle).font(.system(size: 12, weight: .medium)).foregroundStyle(NoteEditorTheme.textSecondary)
-                }
-                Spacer()
-            }
-            .foregroundStyle(NoteEditorTheme.textPrimary)
-            .padding(12)
-            .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.84)))
-            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(selected ? NoteEditorTheme.accent.opacity(0.25) : NoteEditorTheme.chromeBorder, lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func outputModeButton(_ mode: GapDetectionOutputMode) -> some View {
-        Button {
-            viewModel.gapOutputMode = mode
-        } label: {
-            Text(mode.label)
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(viewModel.gapOutputMode == mode ? NoteEditorTheme.accent : NoteEditorTheme.textPrimary)
-                .padding(.horizontal, 14)
-                .frame(height: 38)
-                .background(Capsule().fill(viewModel.gapOutputMode == mode ? NoteEditorTheme.accent.opacity(0.14) : Color.white.opacity(0.72)))
-                .overlay(Capsule().strokeBorder(viewModel.gapOutputMode == mode ? NoteEditorTheme.accent.opacity(0.22) : NoteEditorTheme.glassBorder, lineWidth: 1))
-        }
-        .buttonStyle(.plain)
     }
 
     private func priceRow(_ title: String, value: Int) -> some View {

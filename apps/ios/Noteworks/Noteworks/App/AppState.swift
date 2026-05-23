@@ -66,6 +66,9 @@ final class AppState: ObservableObject {
     /// the next `.onChange` and clears it back to `nil`.
     @Published var pendingCommunityPost: CommunityPost?
 
+    /// Post-onboarding product tour (NoteWorks_UI 5).
+    let tutorialCoordinator = TutorialCoordinator()
+
     // MARK: - Dependencies
 
     let notesStore: NotesStore
@@ -283,5 +286,8 @@ final class AppState: ObservableObject {
         resumeOnboardingAtCollege = false
         isGuestMode = false
         isOAuthSignIn = false
+        tutorialCoordinator.tutorialNoteId = nil
+        tutorialCoordinator.isActive = false
+        tutorialCoordinator.showComplete = false
     }
 }

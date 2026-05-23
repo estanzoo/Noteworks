@@ -81,6 +81,10 @@ enum SupabaseConfig {
         URL(string: "\(functionsBase)/gap-detect")!
     }
 
+    static var smartOrganizeURL: URL {
+        URL(string: "\(functionsBase)/smart-organize")!
+    }
+
     /// `POST /upload-avatar` — uploads image bytes as the request body
     /// (Content-Type must be the image's MIME type), writes the file to
     /// the `avatars` storage bucket, and sets `users.avatar_url`.
@@ -106,6 +110,7 @@ enum SupabaseConfig {
         userId: String? = nil,
         hashtag: String? = nil,
         courseId: String? = nil,
+        postKind: PostKind? = nil,
         likedByMe: Bool = false,
         includeOwnPrivate: Bool = false
     ) -> URL {
@@ -115,6 +120,7 @@ enum SupabaseConfig {
         if let userId { items.append(URLQueryItem(name: "user_id", value: userId)) }
         if let hashtag { items.append(URLQueryItem(name: "hashtag", value: hashtag)) }
         if let courseId { items.append(URLQueryItem(name: "course_id", value: courseId)) }
+        if let postKind { items.append(URLQueryItem(name: "post_kind", value: postKind.rawValue)) }
         if likedByMe { items.append(URLQueryItem(name: "liked_by_me", value: "true")) }
         if includeOwnPrivate { items.append(URLQueryItem(name: "include_own_private", value: "true")) }
         components.queryItems = items

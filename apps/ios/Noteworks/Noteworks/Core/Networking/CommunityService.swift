@@ -49,8 +49,8 @@ final class CommunityService: CommunityServiceProtocol {
     ) async throws -> FeedPage {
         let url: URL
         switch filter {
-        case .publicFeed:
-            url = SupabaseConfig.getPostsURL(cursor: cursor, limit: limit)
+        case .publicFeed(let postKind):
+            url = SupabaseConfig.getPostsURL(cursor: cursor, limit: limit, postKind: postKind)
         case .hashtag(let name):
             url = SupabaseConfig.getPostsURL(cursor: cursor, limit: limit, hashtag: name)
         case .course(let id):

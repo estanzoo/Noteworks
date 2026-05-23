@@ -90,6 +90,7 @@ struct NoteEditorView: View {
     /// does not touch the outer editor chrome / gesture wiring, so
     /// pinch-zoom on the scroll view is unaffected.
     @State private var canvasLayoutSettleNonce: Int = 0
+    @State private var tutorialAnchors: [TutorialTarget: CGRect] = [:]
     /// Current zoom factor driven by `ZoomablePageScrollView`. 1.0 = fit.
     /// The zoom architecture (see `ZoomablePageScrollView` doc comment)
     /// resizes the page card to `logicalPageSize * canvasZoom` instead
@@ -142,16 +143,32 @@ struct NoteEditorView: View {
     }
 
     var noteId: String?
+    var isTutorialPresentation: Bool = false
+
+    private var isActiveTutorial: Bool {
+        isTutorialPresentation
+            && appState.tutorialCoordinator.isActive
+            && !appState.tutorialCoordinator.showSkipConfirm
+    }
+
+    /// AI dropdown steps: dim + spotlight under the open panel (not full-screen frosted blur).
+    private var isAITutorialDropdownStep: Bool {
+        guard isActiveTutorial else { return false }
+        guard let stepId = appState.tutorialCoordinator.currentStepId else { return false }
+        return stepId == "ai-gap" || stepId == "ai-smart"
+    }
+
+    private var isAITutorialButtonStep: Bool {
+        guard isActiveTutorial else { return false }
+        return appState.tutorialCoordinator.currentStepId == "ai"
+    }
 
     var body: some View {
         GeometryReader { outerGeo in
             let stableEditorH = max(outerGeo.size.height, editorStableMaxHeight)
             ZStack(alignment: .top) {
                 ZStack {
-                // `.ignoresSafeArea()` mirrors every other screen using
-                // `OnboardingBackground` (Home, Profile, Community). Without it
-                // the status-bar and home-indicator regions show through as a
-                // white band above the chrome and below the page footer.
+                Group {
                 OnboardingBackground()
                     .ignoresSafeArea()
 
@@ -193,6 +210,8 @@ struct NoteEditorView: View {
                     .padding(.bottom, 12)
                 }
                 .ignoresSafeArea(.keyboard, edges: .bottom)
+                }
+                .allowsHitTesting(!isActiveTutorial)
 
                 // Floating dropdowns layer — drawn ABOVE the chrome and
                 // canvas so they're never clipped behind the page card.
@@ -202,8 +221,34 @@ struct NoteEditorView: View {
                 // highlighter / eraser panels under their respective tool
                 // icons), using the frames published via
                 // `ToolButtonAnchorKey`.
+                if isActiveTutorial && (isAITutorialButtonStep || isAITutorialDropdownStep) {
+                    TutorialOverlayView(
+                        coordinator: appState.tutorialCoordinator,
+                        firstName: appState.tutorialCoordinator.firstName(from: appState.profile),
+                        targetFrames: tutorialAnchors,
+                        showsBackdrop: true,
+                        showsCoachCard: false,
+                        blocksBackgroundInteraction: false
+                    )
+                    .allowsHitTesting(false)
+                    .zIndex(400)
+                }
+
                 dropdownsLayer
+                    .allowsHitTesting(!isActiveTutorial)
                     .ignoresSafeArea(.keyboard, edges: .bottom)
+                    .zIndex(410)
+
+                if isActiveTutorial {
+                    TutorialOverlayView(
+                        coordinator: appState.tutorialCoordinator,
+                        firstName: appState.tutorialCoordinator.firstName(from: appState.profile),
+                        targetFrames: tutorialAnchors,
+                        showsBackdrop: false,
+                        showsCoachCard: true
+                    )
+                    .zIndex(430)
+                }
 
                 if showPageThumbnails {
                     PageThumbnailsModal(
@@ -270,15 +315,61 @@ struct NoteEditorView: View {
                         accessToken: appState.accessToken ?? "",
                         onClose: { viewModel.closeGapDetectionPopup() }
                     )
-                    // Sized to the *visible* viewport (`outerGeo`), not the
-                    // keyboard-pinned `stableEditorH` editor stack. Overlaying
-                    // on the taller stack centred the modal in off-screen space
-                    // and made it look pinned to the bottom after resume.
                     .frame(width: outerGeo.size.width, height: outerGeo.size.height)
                     .ignoresSafeArea(.keyboard, edges: .bottom)
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
                     .zIndex(450)
                 }
+
+                if viewModel.showSmartOrganizationPopup {
+                    SmartOrganizationPopup(
+                        viewModel: viewModel,
+                        creditsStore: appState.creditsStore,
+                        noteTitle: currentEditorNote?.title.isEmpty == false
+                            ? (currentEditorNote?.title ?? "this note")
+                            : "this note",
+                        accessToken: appState.accessToken ?? "",
+                        onClose: { viewModel.closeSmartOrganizationPopup() }
+                    )
+                    .frame(width: outerGeo.size.width, height: outerGeo.size.height)
+                    .ignoresSafeArea(.keyboard, edges: .bottom)
+                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                    .zIndex(460)
+                }
+
+                if viewModel.showAISummaryHistory {
+                    AISummaryHistoryPopup(
+                        entries: viewModel.aiSummaryHistory(for: currentEditorNote?.id),
+                        onSelect: { viewModel.openAISummaryEntry($0) },
+                        onClose: { viewModel.closeAISummaryHistory() }
+                    )
+                    .frame(width: outerGeo.size.width, height: outerGeo.size.height)
+                    .transition(.opacity)
+                    .zIndex(470)
+                }
+
+                HStack {
+                    Spacer()
+                    VStack {
+                        if let entry = viewModel.activeGapSummary {
+                            GapSummarySidePanel(entry: entry) {
+                                viewModel.closeGapSummary()
+                            }
+                            .padding(.top, 156)
+                            .padding(.trailing, 24)
+                        } else if let entry = viewModel.activeSmartSummary {
+                            SmartSummarySidePanel(entry: entry) {
+                                viewModel.closeSmartSummary()
+                            }
+                            .padding(.top, 156)
+                            .padding(.trailing, 24)
+                        }
+                        Spacer()
+                    }
+                }
+                .frame(width: outerGeo.size.width, height: outerGeo.size.height, alignment: .topTrailing)
+                .allowsHitTesting(viewModel.activeGapSummary != nil || viewModel.activeSmartSummary != nil)
+                .zIndex(440)
             }
             .frame(width: outerGeo.size.width, height: outerGeo.size.height, alignment: .top)
             .coordinateSpace(name: "NoteEditorCoord")
@@ -336,10 +427,32 @@ struct NoteEditorView: View {
             DispatchQueue.main.async {
                 canvasLayoutSettleNonce &+= 1
             }
+            syncTutorialNoteEditorState()
+            DispatchQueue.main.async {
+                syncTutorialNoteEditorState()
+            }
         }
         .onDisappear {
             withAnimation(.easeInOut(duration: 0.22)) {
                 appState.isImmersiveEditing = false
+            }
+        }
+        .onChange(of: appState.tutorialCoordinator.currentStepId) { _, _ in
+            syncTutorialNoteEditorState()
+        }
+        .onChange(of: appState.tutorialCoordinator.stepIndex) { _, _ in
+            syncTutorialNoteEditorState()
+        }
+        .onChange(of: appState.tutorialCoordinator.isActive) { _, _ in
+            syncTutorialNoteEditorState()
+        }
+        .onChange(of: appState.tutorialCoordinator.tutorialAIPanelOpen) { _, shouldOpen in
+            guard isTutorialPresentation else { return }
+            if shouldOpen {
+                syncTutorialNoteEditorState()
+            } else if appState.tutorialCoordinator.isActive {
+                openPanel = nil
+                viewModel.closeAIEnhancements()
             }
         }
         .onChange(of: store.activeOpenNoteId) { _, newId in
@@ -436,9 +549,36 @@ struct NoteEditorView: View {
                 editingOverlayId = nil
             }
         }
+        .overlay {
+            if isTutorialPresentation, appState.tutorialCoordinator.isActive {
+                TutorialSkipConfirmPopup(coordinator: appState.tutorialCoordinator)
+            }
+        }
+        .onPreferenceChange(TutorialAnchorKey.self) { tutorialAnchors = $0 }
     }
 
     /// Sanitized filename for PDF export / share sheet.
+    private func syncTutorialNoteEditorState() {
+        guard isTutorialPresentation, appState.tutorialCoordinator.isActive else { return }
+        guard let stepId = appState.tutorialCoordinator.currentStepId else { return }
+
+        viewModel.showGapDetectionPopup = false
+        viewModel.showSmartOrganizationPopup = false
+
+        switch stepId {
+        case "ai-gap", "ai-smart":
+            viewModel.aiEnhancementPanel = .root
+            viewModel.openAIEnhancements()
+            openPanel = .ai
+        case "ai":
+            viewModel.aiEnhancementPanel = .root
+            viewModel.closeAIEnhancements()
+            openPanel = nil
+        default:
+            break
+        }
+    }
+
     private func sharePDFFilename(title: String) -> String {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let base = trimmed.isEmpty ? "Note" : trimmed
@@ -639,7 +779,11 @@ struct NoteEditorView: View {
     private func dropdownView(for panel: NoteEditorPanel) -> some View {
         switch panel {
         case .ai:
-            AIEnhancementsDropdown(viewModel: viewModel, creditsStore: appState.creditsStore) {
+            AIEnhancementsDropdown(
+                viewModel: viewModel,
+                creditsStore: appState.creditsStore,
+                noteId: viewModel.noteId
+            ) {
                 openPanel = nil
                 viewModel.closeAIEnhancements()
             }
@@ -774,6 +918,8 @@ struct NoteEditorView: View {
                 }
             }
             .background(anchorReporter(for: .ai))
+            .tutorialAnchor(.noteAIButton)
+            .tutorialHighlight(.noteAIButton, activeTarget: appState.tutorialCoordinator.activeTarget)
 
             ChromeIconButton(
                 symbol: "ellipsis",

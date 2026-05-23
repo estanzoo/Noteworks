@@ -15,6 +15,7 @@ struct HomeFAB: View {
     @Binding var isOpen: Bool
     let onAddBubble: () -> Void
     let onAddNote: () -> Void
+    var onPlusTap: (() -> Bool)? = nil
 
     /// Same easing/duration as the JSX (`transition: transform 0.24s
     /// cubic-bezier(0.22,0.61,0.36,1)`).
@@ -78,6 +79,10 @@ struct HomeFAB: View {
     /// icon glyph 45° so the glass shell stays square while the "+" becomes "×".
     private var plusButton: some View {
         Button {
+            if onPlusTap?() == true {
+                withAnimation(openAnimation) { isOpen = true }
+                return
+            }
             withAnimation(openAnimation) { isOpen.toggle() }
         } label: {
             Image("Icons/fluent_add-32-filled")
@@ -111,6 +116,7 @@ struct HomeFAB: View {
                 .animation(openAnimation, value: isOpen)
         }
         .buttonStyle(.plain)
+        .tutorialAnchor(.homeFAB)
     }
 }
 

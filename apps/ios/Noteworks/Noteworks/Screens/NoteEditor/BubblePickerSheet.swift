@@ -63,11 +63,18 @@ struct BubblePickerSheet: View {
                     BubbleEditorDialog(
                         isPresented: $showCreate,
                         mode: .create,
-                        onSubmit: { name in
-                            if let error = store.addBubble(name: name) {
+                        defaultDisplayMode: .code,
+                        onSubmit: { _, courseDraft, displayMode in
+                            guard let courseDraft, let displayMode else {
+                                return .failure(message: "Enter a course name.")
+                            }
+                            if let error = store.addCourseBubble(draft: courseDraft, displayMode: displayMode) {
                                 return .failure(message: error)
                             }
-                            commit(NotesStore.normalizeBubbleName(name))
+                            let normalized = courseDraft.normalized()
+                            if let label = normalized.bubbleLabel(for: displayMode) {
+                                commit(NotesStore.normalizeBubbleName(label))
+                            }
                             return .success
                         }
                     )

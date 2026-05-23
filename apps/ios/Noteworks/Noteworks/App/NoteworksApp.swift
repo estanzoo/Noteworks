@@ -27,6 +27,7 @@ struct NoteworksApp: App {
             ContentView()
                 .environmentObject(appState)
                 .environmentObject(notesStore)
+                .environmentObject(appState.tutorialCoordinator)
                 .task {
                     // Cold-launch session restore. `ContentView` is showing
                     // `SplashView` until `isBootstrapping` flips false.

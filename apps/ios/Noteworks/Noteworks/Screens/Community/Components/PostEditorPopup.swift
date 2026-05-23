@@ -144,6 +144,7 @@ private enum EditorPreviewItem: Identifiable, Equatable {
 struct PostEditorPopup: View {
     @Binding var isPresented: Bool
     let accessToken: String
+    var isTutorialStatic: Bool = false
     var initialAttachments: [PendingPostAttachment] = []
     var initialTitle: String? = nil
     var initialBody: String? = nil
@@ -183,6 +184,7 @@ struct PostEditorPopup: View {
     init(
         isPresented: Binding<Bool>,
         accessToken: String,
+        isTutorialStatic: Bool = false,
         initialAttachments: [PendingPostAttachment] = [],
         initialTitle: String? = nil,
         initialBody: String? = nil,
@@ -193,6 +195,7 @@ struct PostEditorPopup: View {
     ) {
         self._isPresented = isPresented
         self.accessToken = accessToken
+        self.isTutorialStatic = isTutorialStatic
         self.initialAttachments = initialAttachments
         self.initialTitle = initialTitle
         self.initialBody = initialBody
@@ -327,9 +330,12 @@ struct PostEditorPopup: View {
                 .fill(.ultraThinMaterial)
                 .overlay(Color.black.opacity(0.12))
                 .ignoresSafeArea()
-                .onTapGesture { dismiss() }
+                .onTapGesture {
+                    if !isTutorialStatic { dismiss() }
+                }
 
             popupShell
+                .allowsHitTesting(!isTutorialStatic)
                 .frame(
                     maxWidth: showsPreviewPane ? 960 : 540,
                     maxHeight: 760
@@ -351,6 +357,8 @@ struct PostEditorPopup: View {
                 .shadow(color: .black.opacity(0.04), radius: 8, y: 4)
                 .padding(.horizontal, showsPreviewPane ? 24 : 32)
                 .animation(.easeInOut(duration: 0.22), value: showsPreviewPane)
+                .tutorialAnchor(.communityComposer)
+                .tutorialHighlight(.communityComposer, activeTarget: appState.tutorialCoordinator.activeTarget)
         }
         .ignoresSafeArea(.keyboard)
         .onAppear {
@@ -364,7 +372,9 @@ struct PostEditorPopup: View {
                 postBody = initialBody
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                titleFocused = true
+                if !isTutorialStatic {
+                    titleFocused = true
+                }
             }
         }
         .task {

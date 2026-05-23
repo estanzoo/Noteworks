@@ -23,6 +23,8 @@ enum AppTab: String, CaseIterable {
 
 struct MainTabView: View {
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var store: NotesStore
+    @EnvironmentObject private var tutorial: TutorialCoordinator
     @Environment(\.scenePhase) private var scenePhase
     @State private var selectedTab: AppTab? = .home
     /// Mirrors the JSX `lastMainPage` (noteworks-library.jsx L9346): the
@@ -30,6 +32,18 @@ struct MainTabView: View {
     /// Profile. Profile's back chevron pops back to here instead of
     /// hard-coding `.home`.
     @State private var lastMainTab: AppTab = .home
+    @State private var tutorialAnchors: [TutorialTarget: CGRect] = [:]
+
+    private var showsTabLevelTutorialOverlay: Bool {
+        guard tutorial.isActive, tutorial.tutorialNoteId == nil else { return false }
+        // Popup-layer steps host their own overlay beside the modal target.
+        switch tutorial.currentStepId {
+        case "community-composer", "community-new-post", "profile-entry", "profile":
+            return false
+        default:
+            return true
+        }
+    }
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -80,9 +94,66 @@ struct MainTabView: View {
             // the entire bottom of the screen back. The slide-down +
             // fade transition matches the cross-fade used for tab
             // switches above.
-            if !appState.isImmersiveEditing {
+            if !appState.isImmersiveEditing, !tutorial.isActive {
                 FloatingTabBar(selectedTab: $selectedTab)
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+
+            TutorialOverlayView(
+                coordinator: tutorial,
+                firstName: tutorial.firstName(from: appState.profile),
+                targetFrames: tutorialAnchors
+            )
+            .opacity(showsTabLevelTutorialOverlay ? 1 : 0)
+            .allowsHitTesting(showsTabLevelTutorialOverlay)
+            TutorialSkipConfirmPopup(coordinator: tutorial)
+            TutorialCompleteView(
+                coordinator: tutorial,
+                firstName: tutorial.firstName(from: appState.profile)
+            )
+        }
+        .onPreferenceChange(TutorialAnchorKey.self) { tutorialAnchors = $0 }
+        .animation(.easeInOut(duration: 0.22), value: tutorial.isActive)
+        .animation(.easeInOut(duration: 0.22), value: tutorial.stepIndex)
+        .onAppear {
+            tutorial.consumePendingAutoStartIfNeeded()
+            applyTutorialNavigation(for: tutorial.currentStep)
+        }
+        .onChange(of: tutorial.pendingAutoStart) { _, _ in
+            tutorial.consumePendingAutoStartIfNeeded()
+            applyTutorialNavigation(for: tutorial.currentStep)
+        }
+        .onChange(of: tutorial.isActive) { _, active in
+            if active {
+                applyTutorialNavigation(for: tutorial.currentStep)
+            } else {
+                resetToHomeAfterTutorial()
+            }
+        }
+        .onChange(of: tutorial.showComplete) { _, showing in
+            if !showing, !tutorial.isActive {
+                resetToHomeAfterTutorial()
+            }
+        }
+        .onChange(of: tutorial.stepIndex) { _, _ in
+            applyTutorialNavigation(for: tutorial.currentStep)
+        }
+        .onChange(of: tutorial.currentStepId) { _, _ in
+            applyTutorialNavigation(for: tutorial.currentStep)
+        }
+        .fullScreenCover(
+            isPresented: Binding(
+                get: { tutorial.tutorialNoteId != nil },
+                set: { presented in
+                    if !presented { tutorial.tutorialNoteId = nil }
+                }
+            )
+        ) {
+            if let noteId = tutorial.tutorialNoteId {
+                NoteEditorView(noteId: noteId, isTutorialPresentation: true)
+                    .environmentObject(appState)
+                    .environmentObject(store)
+                    .id("\(noteId)-\(tutorial.stepIndex)")
             }
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
@@ -108,6 +179,51 @@ struct MainTabView: View {
     private var communityPollingTaskId: String {
         let user = appState.currentUser?.id ?? "none"
         return "\(appState.isAuthenticated)-\(appState.isGuestMode)-\(user)-\(scenePhase)"
+    }
+
+    private func applyTutorialNavigation(for step: NoteWorksTutorialStep?) {
+        guard tutorial.isActive, let step else { return }
+        switch step.screen {
+        case .home:
+            tutorial.tutorialNoteId = nil
+            if selectedTab != .home {
+                withAnimation(.easeInOut(duration: 0.22)) { selectedTab = .home }
+            }
+        case .library:
+            tutorial.tutorialNoteId = nil
+            store.libraryFilter = nil
+            if selectedTab != .notebook {
+                withAnimation(.easeInOut(duration: 0.22)) { selectedTab = .notebook }
+            }
+        case .note:
+            let noteId = tutorial.ensureTutorialNote(in: store, forceNew: step.id == "ai")
+            tutorial.tutorialNoteId = noteId
+        case .community:
+            tutorial.tutorialNoteId = nil
+            if selectedTab != .people {
+                withAnimation(.easeInOut(duration: 0.22)) { selectedTab = .people }
+            }
+        case .profile:
+            tutorial.tutorialNoteId = nil
+            if selectedTab != nil {
+                withAnimation(.easeInOut(duration: 0.22)) { selectedTab = nil }
+            }
+        }
+    }
+
+    /// After skip or finish, land on Home regardless of which tutorial step was active.
+    private func resetToHomeAfterTutorial() {
+        tutorial.tutorialNoteId = nil
+        if selectedTab != .home {
+            withAnimation(.easeInOut(duration: 0.22)) {
+                selectedTab = .home
+            }
+        }
+        if appState.isImmersiveEditing {
+            withAnimation(.easeInOut(duration: 0.22)) {
+                appState.isImmersiveEditing = false
+            }
+        }
     }
 
     /// Wraps one tab's view tree with cross-fade visibility + hit-testing
@@ -317,8 +433,10 @@ struct TabItemButton: View {
 
 #Preview {
     let notesStore = NotesStore.preview()
+    let appState = AppState(notesStore: notesStore)
     return MainTabView()
-        .environmentObject(AppState(notesStore: notesStore))
+        .environmentObject(appState)
         .environmentObject(notesStore)
+        .environmentObject(appState.tutorialCoordinator)
 }
 

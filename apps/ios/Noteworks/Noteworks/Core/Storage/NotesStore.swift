@@ -659,6 +659,34 @@ final class NotesStore: ObservableObject {
         return nil
     }
 
+    /// Creates a course bubble from the Home add-bubble dialog (UI 5 parity).
+    @discardableResult
+    func addCourseBubble(draft: CourseDraft, displayMode: CourseDisplayMode) -> String? {
+        let normalized = draft.normalized()
+        guard !normalized.name.isEmpty else {
+            return "Enter a course name."
+        }
+        if !normalized.noCode && displayMode == .code && normalized.code.isEmpty {
+            return "Enter a course code, or choose No course code."
+        }
+        guard let rawLabel = normalized.bubbleLabel(for: displayMode) else {
+            return "Enter a course name."
+        }
+        let name = NotesStore.normalizeBubbleName(rawLabel)
+        guard !name.isEmpty else { return "Enter a bubble name." }
+        if NotesStore.isReservedName(name) {
+            return "That name is reserved for uncategorized notes."
+        }
+        if bubbleNameTaken(name) {
+            return "A bubble with this name already exists."
+        }
+        let storedCode = normalized.code.isEmpty ? name : normalized.code
+        bubbles.append(NoteBubble(name: name, courseCode: storedCode))
+        syncBubbleNamesFromBubbles()
+        saveDebounced()
+        return nil
+    }
+
     /// Renames a bubble and bulk-rewrites every linked note's `subject`
     /// (mirrors JSX `renameBubble` L7010–L7023).
     @discardableResult
@@ -1380,6 +1408,13 @@ final class NotesStore: ObservableObject {
 
     nonisolated static func normalizeBubbleName(_ raw: String) -> String {
         raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    nonisolated static func normalizeCourseCode(_ raw: String) -> String {
+        raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: " ", with: "")
+            .uppercased()
     }
 
     /// Pure check against a constant set — safe to call from any actor

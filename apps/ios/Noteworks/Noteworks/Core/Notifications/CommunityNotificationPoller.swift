@@ -53,7 +53,7 @@ enum CommunityNotificationPoller {
     ) async {
         do {
             let page = try await service.fetchFeed(
-                filter: .publicFeed,
+                filter: .publicFeed(),
                 cursor: nil,
                 limit: 20,
                 currentUserId: userId,
