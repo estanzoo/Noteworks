@@ -36,6 +36,8 @@
 //    - Single-finger tap → `onPageFingerTap` (base coords).
 //    - Overlay drag / resize via `UIPanGestureRecognizer` enabled
 //      when `blocksPageGestures` is true.
+//    - Image pinch-to-resize via `UIPinchGestureRecognizer` while
+//      an image overlay is selected (page pinch waits to fail).
 //    - Floating overlay-adjust toolbar tap (image select mode).
 //
 
@@ -98,6 +100,12 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
     /// When true, the overlay pan + toolbar tap recognizers also track
     /// Apple Pencil (image select — move / resize / tap toolbar buttons).
     var overlayPanAcceptsPencil: Bool = false
+    /// Base-coordinate rect of the selected image overlay. When non-nil,
+    /// a two-finger pinch starting on this rect resizes the image
+    /// instead of zooming the page.
+    var overlayPinchTargetRect: CGRect? = nil
+    /// Pinch scale is relative to gesture start (1.0 at `.began`).
+    var onOverlayPinchResize: ((OverlayManipulationPhase, CGFloat) -> Void)? = nil
     /// Reports the current zoom factor (1.0 = fit). The caller multiplies
     /// the logical page size by this to drive its SwiftUI layout.
     @Binding var zoom: CGFloat
@@ -119,6 +127,8 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         overlayAdjustToolbarRect: CGRect? = nil,
         onOverlayAdjustToolbarTap: ((ImageOverlayAdjustToolbarButton) -> Void)? = nil,
         overlayPanAcceptsPencil: Bool = false,
+        overlayPinchTargetRect: CGRect? = nil,
+        onOverlayPinchResize: ((OverlayManipulationPhase, CGFloat) -> Void)? = nil,
         zoom: Binding<CGFloat>,
         @ViewBuilder content: @escaping () -> Content
     ) {
@@ -137,6 +147,8 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         self.overlayAdjustToolbarRect = overlayAdjustToolbarRect
         self.onOverlayAdjustToolbarTap = onOverlayAdjustToolbarTap
         self.overlayPanAcceptsPencil = overlayPanAcceptsPencil
+        self.overlayPinchTargetRect = overlayPinchTargetRect
+        self.onOverlayPinchResize = onOverlayPinchResize
         self._zoom = zoom
         self.content = content
     }
@@ -229,6 +241,17 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         pagePan.require(toFail: overlayPan)
         canvasTap.require(toFail: overlayPan)
 
+        // Image pinch-to-resize — page pinch waits for this to fail so
+        // pinching a selected image resizes it instead of zooming the page.
+        let overlayPinch = UIPinchGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleOverlayPinch(_:))
+        )
+        overlayPinch.cancelsTouchesInView = false
+        overlayPinch.delegate = context.coordinator
+        scrollView.addGestureRecognizer(overlayPinch)
+        scrollView.pinchGestureRecognizer?.require(toFail: overlayPinch)
+
         let host = UIHostingController(rootView: content())
         host.view.backgroundColor = .clear
         host.view.isMultipleTouchEnabled = true
@@ -258,6 +281,7 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         context.coordinator.pagePanGesture = pagePan
         context.coordinator.canvasTapGesture = canvasTap
         context.coordinator.overlayPanGesture = overlayPan
+        context.coordinator.overlayPinchGesture = overlayPinch
         context.coordinator.toolbarTapGesture = toolbarTap
         context.coordinator.blocksPageGestures = blocksPageGestures
         context.coordinator.onPageFingerTap = onPageFingerTap
@@ -265,6 +289,8 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         context.coordinator.overlayInteractionExclusionRects = overlayInteractionExclusionRects
         context.coordinator.overlayAdjustToolbarRect = overlayAdjustToolbarRect
         context.coordinator.onOverlayAdjustToolbarTap = onOverlayAdjustToolbarTap
+        context.coordinator.overlayPinchTargetRect = overlayPinchTargetRect
+        context.coordinator.onOverlayPinchResize = onOverlayPinchResize
         context.coordinator.overlayPanAcceptsPencil = overlayPanAcceptsPencil
         context.coordinator.applyOverlayPanTouchTypes()
         context.coordinator.zoomBinding = $zoom
@@ -289,9 +315,12 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         context.coordinator.overlayInteractionExclusionRects = overlayInteractionExclusionRects
         context.coordinator.overlayAdjustToolbarRect = overlayAdjustToolbarRect
         context.coordinator.onOverlayAdjustToolbarTap = onOverlayAdjustToolbarTap
+        context.coordinator.overlayPinchTargetRect = overlayPinchTargetRect
+        context.coordinator.onOverlayPinchResize = onOverlayPinchResize
         context.coordinator.overlayPanAcceptsPencil = overlayPanAcceptsPencil
         context.coordinator.applyOverlayPanTouchTypes()
         context.coordinator.toolbarTapGesture?.isEnabled = onOverlayAdjustToolbarTap != nil
+        context.coordinator.overlayPinchGesture?.isEnabled = onOverlayPinchResize != nil
         context.coordinator.zoomBinding = $zoom
 
         let scrollPanEnabled = !blocksPageGestures
@@ -363,11 +392,14 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         var overlayAdjustToolbarRect: CGRect?
         var onOverlayAdjustToolbarTap: ((ImageOverlayAdjustToolbarButton) -> Void)?
         var overlayPanAcceptsPencil: Bool = false
+        var overlayPinchTargetRect: CGRect?
+        var onOverlayPinchResize: ((OverlayManipulationPhase, CGFloat) -> Void)?
         var zoomBinding: Binding<CGFloat>?
         weak var pagePanGesture: UIPanGestureRecognizer?
         weak var canvasTapGesture: UITapGestureRecognizer?
         weak var toolbarTapGesture: UITapGestureRecognizer?
         weak var overlayPanGesture: UIPanGestureRecognizer?
+        weak var overlayPinchGesture: UIPinchGestureRecognizer?
         fileprivate var isApplyingFromSwiftUI = false
 
         /// True between `scrollViewWillBeginZooming` and
@@ -653,6 +685,25 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
             }
         }
 
+        // MARK: Overlay pinch (image resize)
+
+        @objc func handleOverlayPinch(_ gesture: UIPinchGestureRecognizer) {
+            guard let onOverlayPinchResize else { return }
+
+            switch gesture.state {
+            case .began:
+                onOverlayPinchResize(.began, 1.0)
+            case .changed:
+                onOverlayPinchResize(.changed, gesture.scale)
+            case .ended:
+                onOverlayPinchResize(.ended, gesture.scale)
+            case .cancelled, .failed:
+                onOverlayPinchResize(.cancelled, 1.0)
+            default:
+                break
+            }
+        }
+
         // MARK: Taps
 
         @objc func handleOverlayAdjustToolbarTap(_ gesture: UITapGestureRecognizer) {
@@ -885,6 +936,32 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
                 )
                 for rect in overlayInteractionExclusionRects where rect.contains(localBase) {
                     return false
+                }
+                return true
+            }
+            if gestureRecognizer === overlayPinchGesture {
+                guard let targetRect = overlayPinchTargetRect,
+                      onOverlayPinchResize != nil,
+                      let pinch = gestureRecognizer as? UIPinchGestureRecognizer,
+                      let scrollView = pinch.view as? UIScrollView,
+                      let contentView = contentRoot ?? host?.view,
+                      pinch.numberOfTouches >= 1 else {
+                    return false
+                }
+                for touchIndex in 0..<pinch.numberOfTouches {
+                    let location = pinch.location(ofTouch: touchIndex, in: scrollView)
+                    let pageFrame = contentView.convert(contentView.bounds, to: scrollView)
+                    guard pageFrame.contains(location) else { return false }
+                    let localScaled = scrollView.convert(location, to: contentView)
+                    let zoom = max(0.0001, currentZoom)
+                    let localBase = CGPoint(
+                        x: localScaled.x / zoom,
+                        y: localScaled.y / zoom
+                    )
+                    guard targetRect.contains(localBase) else { return false }
+                    for rect in overlayInteractionExclusionRects where rect.contains(localBase) {
+                        return false
+                    }
                 }
                 return true
             }

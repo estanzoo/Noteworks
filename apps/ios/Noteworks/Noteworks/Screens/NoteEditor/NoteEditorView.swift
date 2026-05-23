@@ -1083,6 +1083,16 @@ struct NoteEditorView: View {
         )
     }
 
+    /// Base-coordinate rect of the selected image overlay, if any.
+    private func selectedImageOverlayRect(pageSize: CGSize) -> CGRect? {
+        guard isImageOverlaySelected,
+              let selectedId = selectedOverlayId,
+              let overlay = viewModel.currentPageOverlays(store: store)
+            .first(where: { $0.id == selectedId && $0.kind == .image })
+        else { return nil }
+        return overlayRect(for: overlay, in: pageSize)
+    }
+
     /// Base-coordinate rects where sticker drag must not steal touches
     /// (floating image/shape adjust toolbar above the selection).
     private func overlayToolbarExclusionRects(pageSize: CGSize) -> [CGRect] {
@@ -1264,6 +1274,59 @@ struct NoteEditorView: View {
         }
     }
 
+    /// Two-finger pinch on a selected image — center-anchored resize
+    /// with aspect ratio preserved.
+    private func handleOverlayPinchResize(
+        phase: OverlayManipulationPhase,
+        scale: CGFloat,
+        pageSize: CGSize
+    ) {
+        guard let noteId = viewModel.noteId else { return }
+        let overlays = viewModel.currentPageOverlays(store: store)
+
+        switch phase {
+        case .began:
+            guard let selectedId = selectedOverlayId,
+                  let overlay = overlays.first(where: { $0.id == selectedId && $0.kind == .image })
+            else { return }
+            manipulationOverlayId = selectedId
+            manipulationStartRect = overlayRect(for: overlay, in: pageSize)
+            manipulationCorner = nil
+            isOverlayDragging = true
+
+        case .changed:
+            guard let id = manipulationOverlayId,
+                  let overlay = overlays.first(where: { $0.id == id }) else { return }
+            let updated = applyPinchScale(
+                scale,
+                to: overlay,
+                startRect: manipulationStartRect,
+                pageSize: pageSize
+            )
+            store.updateOverlay(updated, in: noteId)
+
+        case .ended:
+            guard let id = manipulationOverlayId,
+                  let overlay = overlays.first(where: { $0.id == id }) else {
+                isOverlayDragging = false
+                return
+            }
+            let updated = applyPinchScale(
+                scale,
+                to: overlay,
+                startRect: manipulationStartRect,
+                pageSize: pageSize
+            )
+            store.updateOverlay(updated, in: noteId)
+            manipulationOverlayId = nil
+            isOverlayDragging = false
+
+        case .cancelled:
+            manipulationOverlayId = nil
+            isOverlayDragging = false
+        }
+    }
+
     /// Top-most overlay containing `point`, searched in reverse
     /// (last-added wins) so the sticker the user visually grabbed
     /// is the one returned.
@@ -1390,6 +1453,39 @@ struct NoteEditorView: View {
         return updated
     }
 
+    /// Center-anchored pinch resize for image overlays.
+    private func applyPinchScale(
+        _ scale: CGFloat,
+        to overlay: NotePageOverlay,
+        startRect: CGRect,
+        pageSize: CGSize
+    ) -> NotePageOverlay {
+        guard pageSize.width > 0, pageSize.height > 0 else { return overlay }
+        let minDim: CGFloat = 40
+        let clampedScale = max(
+            minDim / max(startRect.width, 0.0001),
+            max(minDim / max(startRect.height, 0.0001), scale)
+        )
+        let newW = startRect.width * clampedScale
+        let newH = startRect.height * clampedScale
+        let center = CGPoint(x: startRect.midX, y: startRect.midY)
+        var rect = CGRect(
+            x: center.x - newW * 0.5,
+            y: center.y - newH * 0.5,
+            width: newW,
+            height: newH
+        )
+        rect.origin.x = max(0, min(pageSize.width - rect.size.width, rect.origin.x))
+        rect.origin.y = max(0, min(pageSize.height - rect.size.height, rect.origin.y))
+
+        var updated = overlay
+        updated.normX = rect.origin.x / pageSize.width
+        updated.normY = rect.origin.y / pageSize.height
+        updated.normW = rect.size.width / pageSize.width
+        updated.normH = rect.size.height / pageSize.height
+        return updated
+    }
+
     /// Single-finger tap on the page (handled by the outer scroll view so
     /// overlay bodies stay non-interactive and pinch always works).
     private func handlePageFingerTap(at point: CGPoint?, pageSize: CGSize) {
@@ -1500,6 +1596,16 @@ struct NoteEditorView: View {
                     handleOverlayAdjustToolbarTap(button, pageSize: logicalPageSize)
                 },
                 overlayPanAcceptsPencil: passesPencilToOverlays,
+                overlayPinchTargetRect: selectedImageOverlayRect(pageSize: logicalPageSize),
+                onOverlayPinchResize: isImageOverlaySelected
+                    ? { phase, scale in
+                        handleOverlayPinchResize(
+                            phase: phase,
+                            scale: scale,
+                            pageSize: logicalPageSize
+                        )
+                    }
+                    : nil,
                 zoom: $canvasZoom
             ) {
                 pageCard(logicalPageSize: zoomedPageSize, rotation: rotation)
