@@ -69,6 +69,12 @@ struct NoteEditorView: View {
     /// pinning layout to this max (top-aligned) keeps the chrome and title
     /// under the status bar while the keyboard covers the bottom.
     @State private var editorStableMaxHeight: CGFloat = 0
+    /// Width the `editorStableMaxHeight` snapshot was taken at. Keyboard
+    /// presentation only changes height, so any width change means the
+    /// device rotated and the cached max height is stale — using it would
+    /// stretch the editor stack past the (now shorter) screen and push
+    /// bottom-anchored chrome like `NotePageFooter` off-screen.
+    @State private var editorStableMaxWidth: CGFloat = 0
     /// Latest `GeometryReader` height for the visible editor viewport.
     /// Used to re-sync `editorStableMaxHeight` when modal overlays open so
     /// keyboard-pinned layout state cannot drift after backgrounding.
@@ -283,8 +289,19 @@ struct NoteEditorView: View {
                 editorViewportHeight = h
                 editorStableMaxHeight = max(editorStableMaxHeight, h)
             }
+            .onChange(of: outerGeo.size.width) { _, w in
+                // Rotation flips width. Drop the stale max-height snapshot
+                // so the editor stack resizes to the new viewport instead
+                // of being stretched to the previous orientation's height
+                // (which would push the page footer + canvas content off
+                // the bottom of the screen).
+                editorStableMaxWidth = w
+                editorStableMaxHeight = outerGeo.size.height
+                editorViewportHeight = outerGeo.size.height
+            }
             .onAppear {
                 editorViewportHeight = outerGeo.size.height
+                editorStableMaxWidth = outerGeo.size.width
                 editorStableMaxHeight = max(editorStableMaxHeight, outerGeo.size.height)
             }
             .onChange(of: viewModel.showGapDetectionPopup) { _, isShowing in
@@ -953,6 +970,16 @@ struct NoteEditorView: View {
         }
     }
 
+    /// Brings an image sticker to the top of the current page's overlay stack.
+    private func bringImageOverlayToFront(_ overlay: NotePageOverlay) {
+        guard overlay.kind == .image, let noteId = viewModel.noteId else { return }
+        store.bringOverlayToFront(
+            id: overlay.id,
+            onPage: viewModel.currentPage,
+            in: noteId
+        )
+    }
+
     /// Removes the overlay and clears selection chrome.
     private func deleteOverlay(_ overlay: NotePageOverlay, noteId: String) {
         if editingOverlayId == overlay.id { editingOverlayId = nil }
@@ -1046,6 +1073,7 @@ struct NoteEditorView: View {
             if selectedOverlayId != id { selectedOverlayId = id }
             editingOverlayId = nil
             if overlay.kind == .image {
+                bringImageOverlayToFront(overlay)
                 viewModel.selectTool(.imageSelect)
             }
             manipulationOverlayId = id
@@ -1250,6 +1278,7 @@ struct NoteEditorView: View {
                 selectedOverlayId = overlay.id
                 editingOverlayId = nil
                 if overlay.kind == .image {
+                    bringImageOverlayToFront(overlay)
                     viewModel.selectTool(.imageSelect)
                 }
             }

@@ -1180,6 +1180,26 @@ final class NotesStore: ObservableObject {
         saveDebounced()
     }
 
+    /// Moves an overlay to the end of the page's stack so it renders above
+    /// other stickers on that page. Other pages' overlays keep their order.
+    func bringOverlayToFront(id overlayId: String, onPage page: Int, in noteId: String) {
+        guard let noteIdx = notes.firstIndex(where: { $0.id == noteId }) else { return }
+        var overlays = notes[noteIdx].overlays
+        guard let fromIdx = overlays.firstIndex(where: { $0.id == overlayId && $0.page == page })
+        else { return }
+        if overlays.lastIndex(where: { $0.page == page }) == fromIdx { return }
+
+        let overlay = overlays.remove(at: fromIdx)
+        if let lastOnPage = overlays.lastIndex(where: { $0.page == page }) {
+            overlays.insert(overlay, at: lastOnPage + 1)
+        } else {
+            overlays.append(overlay)
+        }
+        notes[noteIdx].overlays = overlays
+        notes[noteIdx].updatedAt = Date()
+        saveDebounced()
+    }
+
     /// Duplicates an overlay. Image overlays get a fresh copy of the PNG.
     /// The copy is appended to the page's overlay list so it renders in
     /// front of the original. `pageSize` + `offsetPoints` position the

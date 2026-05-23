@@ -311,15 +311,30 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         context.coordinator.isApplyingFromSwiftUI = true
         defer { context.coordinator.isApplyingFromSwiftUI = false }
 
-        if context.coordinator.baseContentSize != baseContentSize {
+        let baseChanged = context.coordinator.baseContentSize != baseContentSize
+        if baseChanged {
             context.coordinator.baseContentSize = baseContentSize
-            context.coordinator.resetForNewBaseSize(scrollView)
-            DispatchQueue.main.async {
-                context.coordinator.configureInitialDisplayIfNeeded(scrollView)
-            }
-        } else if !context.coordinator.isZooming {
+            // Rotation / page change: reset zoom to fit so the new page
+            // dimensions don't leave a stale partial zoom that hides the
+            // page off-screen and silently disables panning.
+            context.coordinator.currentZoom = 1
+        }
+
+        if !context.coordinator.isZooming {
             context.coordinator.applyZoomedContentSize(scrollView)
             context.coordinator.centerContent(in: scrollView)
+            if baseChanged {
+                context.coordinator.recenterScrollOffset(scrollView)
+                context.coordinator.publishZoomBinding(1)
+                // Run again on the next runloop tick — scrollView.bounds
+                // is often briefly stale during a rotation transition,
+                // and the first pass uses pre-rotation bounds.
+                DispatchQueue.main.async {
+                    context.coordinator.applyZoomedContentSize(scrollView)
+                    context.coordinator.centerContent(in: scrollView)
+                    context.coordinator.recenterScrollOffset(scrollView)
+                }
+            }
         }
     }
 
@@ -360,11 +375,6 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         /// UIScrollView; on end, we collapse the live transform into a
         /// real `contentRoot.frame` resize.
         private(set) var isZooming: Bool = false
-        private var didConfigureInitialDisplay = false
-        private var configuredLayoutBounds: CGSize = .zero
-        private let minLayoutWidth: CGFloat = 200
-        private let minLayoutHeight: CGFloat = 150
-
         // Page swipe state.
         private var isSlidingPage = false
         private var didFireBoundaryHaptic = false
@@ -384,27 +394,35 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
 
         // MARK: Layout / sizing
 
+        /// Called once at view creation. Lays out the page at fit zoom.
         func configureInitialDisplayIfNeeded(_ scrollView: UIScrollView) {
-            guard !didConfigureInitialDisplay,
-                  baseContentSize.width > 0, baseContentSize.height > 0 else { return }
-            let bounds = scrollView.bounds.size
-            guard bounds.width >= minLayoutWidth, bounds.height >= minLayoutHeight else { return }
-
-            didConfigureInitialDisplay = true
-            configuredLayoutBounds = bounds
+            guard baseContentSize.width > 0, baseContentSize.height > 0 else { return }
             currentZoom = 1
             applyZoomedContentSize(scrollView)
             centerContent(in: scrollView)
+            recenterScrollOffset(scrollView)
             publishZoomBinding(1)
         }
 
-        func resetForNewBaseSize(_ scrollView: UIScrollView) {
-            didConfigureInitialDisplay = false
-            configuredLayoutBounds = .zero
-            currentZoom = 1
-            applyZoomedContentSize(scrollView)
-            centerContent(in: scrollView)
-            publishZoomBinding(1)
+        /// Place `contentOffset` so the centered page sits dead center.
+        func recenterScrollOffset(_ scrollView: UIScrollView) {
+            let inset = scrollView.contentInset
+            let bounds = scrollView.bounds.size
+            let content = scrollView.contentSize
+            var offset: CGPoint
+            if content.width <= bounds.width && content.height <= bounds.height {
+                // Page fits viewport → centering inset is symmetric →
+                // offset of -inset puts page in dead middle.
+                offset = CGPoint(x: -inset.left, y: -inset.top)
+            } else {
+                // Page bigger than viewport → middle of scrollable range.
+                offset = CGPoint(
+                    x: (content.width - bounds.width) * 0.5,
+                    y: (content.height - bounds.height) * 0.5
+                )
+            }
+            clampOffset(&offset, in: scrollView)
+            scrollView.setContentOffset(offset, animated: false)
         }
 
         /// Set `contentRoot.frame` = `baseContentSize × currentZoom` and
