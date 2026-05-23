@@ -788,8 +788,10 @@ final class NotesStore: ObservableObject {
         guard let idx = bubbles.firstIndex(where: {
             $0.name.caseInsensitiveCompare(name) == .orderedSame
         }) else { return }
-        bubbles[idx].manualOffsetX = offsetX
-        bubbles[idx].manualOffsetY = offsetY
+        var updated = bubbles[idx]
+        updated.manualOffsetX = offsetX
+        updated.manualOffsetY = offsetY
+        bubbles[idx] = updated
         saveDebounced()
     }
 
@@ -800,8 +802,10 @@ final class NotesStore: ObservableObject {
             $0.name.caseInsensitiveCompare(name) == .orderedSame
         }) else { return }
         guard bubbles[idx].manualOffsetX != nil || bubbles[idx].manualOffsetY != nil else { return }
-        bubbles[idx].manualOffsetX = nil
-        bubbles[idx].manualOffsetY = nil
+        var updated = bubbles[idx]
+        updated.manualOffsetX = nil
+        updated.manualOffsetY = nil
+        bubbles[idx] = updated
         saveDebounced()
     }
 

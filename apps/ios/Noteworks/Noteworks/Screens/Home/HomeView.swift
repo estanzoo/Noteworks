@@ -38,7 +38,6 @@ struct HomeView: View {
     // be dragged. Manual positions persist on `NotesStore` so they survive
     // app launches.
     @State private var isEditingLayout = false
-    @State private var draggingName: String? = nil
     @State private var pendingDeleteName: String? = nil
 
     private var unreadCount: Int { appState.notifications.unreadCount }
@@ -302,7 +301,6 @@ struct HomeView: View {
                         .onTapGesture {
                             withAnimation(.easeInOut(duration: 0.22)) {
                                 isEditingLayout = false
-                                draggingName = nil
                             }
                         }
                         .zIndex(-1)
@@ -319,7 +317,6 @@ struct HomeView: View {
                         isReservedName: Self.isReservedBubbleName(course.name),
                         canDelete: course.name.caseInsensitiveCompare(NotesStore.initialGuestBubbleName) != .orderedSame,
                         isTutorialTarget: isUntitledBubble,
-                        draggingName: $draggingName,
                         onTap: { handleBubbleTap(course.name, isUntitledBubble: isUntitledBubble) },
                         onRename: { handleRenameBubble(course.name) },
                         onMoveAll: { handleEnterEditMode() },
@@ -355,7 +352,6 @@ struct HomeView: View {
         Button {
             withAnimation(.easeInOut(duration: 0.22)) {
                 isEditingLayout = false
-                draggingName = nil
             }
         } label: {
             Text("Done")
@@ -516,8 +512,8 @@ struct HomeView: View {
 // - A `Button` + `.contextMenu` in normal mode (long-press surfaces
 //   Rename / Move / Reset Position / Delete, mirroring the iOS Home
 //   Screen pattern).
-// - A `DragGesture` in edit mode, with a subtle wiggle (`rotationEffect`
-//   driven by `wigglePhase` + `.repeatForever(autoreverses: true)`).
+// - A `DragGesture` in edit mode, with a subtle sine-wave jiggle
+//   (`TimelineView` + `rotationEffect`) that survives layout re-renders.
 // - A lifted scale + zIndex while it's the actively dragged bubble.
 // - Spring animations on position so reset / re-sort / drag-commit all
 //   tween into place rather than snap.
@@ -535,7 +531,6 @@ private struct HomeBubbleCell: View {
     let isReservedName: Bool
     let canDelete: Bool
     var isTutorialTarget: Bool = false
-    @Binding var draggingName: String?
 
     let onTap: () -> Void
     let onRename: () -> Void
@@ -544,81 +539,52 @@ private struct HomeBubbleCell: View {
     let onDelete: () -> Void
     let onCommitDrag: (Double, Double) -> Void
 
-    /// Flipped once on entering edit mode. The implicit `.animation`
-    /// modifier with `.repeatForever(autoreverses: true)` then bounces
-    /// the rotation between `-wiggleAngle` and `+wiggleAngle` forever —
-    /// classic Home Screen jiggle.
-    @State private var wigglePhase: Bool = false
-
-    // Drag state lives on the cell, not the parent. Updating the
-    // parent's `@State` on every drag delta caused HomeView.body to
-    // re-evaluate per frame, which re-ran the full HomeBubbleLayout
-    // pipeline (slot packing, shrink-to-fit, collision resolution) for
-    // every bubble on every finger move — that was the "strong
-    // resistance" the user reported. Keeping the per-frame delta local
-    // means only this one cell re-renders while the finger moves.
+    // Per-frame drag delta stays local so HomeView doesn't re-layout
+    // every sibling on each finger move (that killed their wiggle anim).
     @State private var dragOffset: CGSize = .zero
     @State private var isLocalDragging: Bool = false
 
     private static let wiggleAngle: Double = 1.4
 
-    private var isBeingDragged: Bool { isLocalDragging }
+    private var isDraggingThisBubble: Bool { isLocalDragging || dragOffset != .zero }
 
-    /// While the bubble is being dragged we stop the wiggle so the
-    /// finger isn't fighting a rotating target — feels much more
-    /// responsive than letting the dragged bubble keep oscillating.
-    private var wiggleActive: Bool { isEditing && !isBeingDragged }
+    /// Only the bubble under the finger stops wiggling; siblings keep
+    /// jiggling while edit mode stays active.
+    private var wiggleActive: Bool { isEditing && !isDraggingThisBubble }
+
+    /// Per-bubble period so the cluster desynchronises after a few seconds.
+    private var wiggleDuration: Double {
+        0.13 + Double(index % 5) * 0.012
+    }
+
+    /// Sine-wave jiggle angle for `date`. Time-based so parent re-renders
+    /// (layout recompute, drag commit) never cancel a `repeatForever`.
+    private func wiggleAngle(at date: Date) -> Double {
+        guard wiggleActive else { return 0 }
+        let phaseOffset = Double(index) * 0.09
+        let t = date.timeIntervalSinceReferenceDate + phaseOffset
+        return Self.wiggleAngle * sin(t * .pi * 2 / wiggleDuration)
+    }
+
+    private var baseCenter: CGPoint {
+        CGPoint(
+            x: geometry.width / 2 + course.offsetX * geometry.width,
+            y: geometry.height / 2 + course.offsetY * geometry.height
+        )
+    }
 
     var body: some View {
-        bubbleContent
-            .rotationEffect(.degrees(wiggleActive ? (wigglePhase ? Self.wiggleAngle : -Self.wiggleAngle) : 0))
-            .animation(.easeOut(duration: 0.2), value: isEditing)
-            // Smooth scale/shadow/rotation transition when grabbing or
-            // releasing a bubble — without this the lift snaps in
-            // instantly and feels jolty.
-            .animation(.spring(response: 0.28, dampingFraction: 0.78), value: isBeingDragged)
-            .animation(
-                wiggleActive
-                    // Slight per-bubble duration jitter so the cluster
-                    // desynchronises after a few seconds — looks more
-                    // organic than every bubble wiggling in lockstep.
-                    ? .easeInOut(duration: 0.13 + Double(index % 5) * 0.012)
-                        .repeatForever(autoreverses: true)
-                    : nil,
-                value: wigglePhase
-            )
-            .onChange(of: isEditing) { _, on in
-                if on { wigglePhase.toggle() }
-            }
-            // When the user releases a dragged bubble we're still in
-            // edit mode but the wiggle stopped during the drag. Toggle
-            // `wigglePhase` so the repeatForever animation re-kicks in
-            // on this bubble and it rejoins the jiggle.
-            .onChange(of: isBeingDragged) { wasDragging, nowDragging in
-                if wasDragging && !nowDragging && isEditing {
-                    wigglePhase.toggle()
-                }
-            }
-            .scaleEffect(isBeingDragged ? 1.05 : 1.0)
-            .shadow(
-                color: isBeingDragged ? .black.opacity(0.18) : .clear,
-                radius: isBeingDragged ? 18 : 0,
-                x: 0,
-                y: isBeingDragged ? 10 : 0
-            )
+        interactiveBubble
+            // Pin layout to the bubble's unscaled diameter so the lift
+            // scale is purely visual and never shrinks finger travel.
+            .frame(width: course.size, height: course.size)
             .position(
-                x: geometry.width / 2 + course.offsetX * geometry.width,
-                y: geometry.height / 2 + course.offsetY * geometry.height
+                x: baseCenter.x + dragOffset.width,
+                y: baseCenter.y + dragOffset.height
             )
-            .offset(isBeingDragged ? dragOffset : .zero)
-            // CRITICAL: explicitly disable animation on dragOffset
-            // changes. Without this, the surrounding `.animation(_,
-            // value:)` modifiers (especially the wiggle's repeatForever)
-            // can implicitly interpolate the
-            // per-frame drag updates, which manifests as the "rubber
-            // band / heavy" drag feel the user noticed.
             .animation(nil, value: dragOffset)
-            .zIndex(isBeingDragged ? 10 : 0)
+            .gesture(isEditing ? dragGesture : nil)
+            .zIndex(isDraggingThisBubble ? 10 : 0)
             // Do not attach implicit position animations here. A spring on
             // `course.offsetX` / `offsetY` also runs when the tab layer
             // cross-fades back in and `GeometryReader` delivers a slightly
@@ -628,12 +594,27 @@ private struct HomeBubbleCell: View {
             // Home side or inside the drag gesture.
     }
 
-    @ViewBuilder
-    private var bubbleContent: some View {
-        if isEditing {
+    private var bubbleVisuals: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !wiggleActive)) { timeline in
             BubbleView(course: course)
                 .contentShape(Circle())
-                .gesture(dragGesture)
+                .rotationEffect(.degrees(wiggleAngle(at: timeline.date)))
+        }
+        .scaleEffect(isDraggingThisBubble ? 1.05 : 1.0)
+        .animation(.spring(response: 0.28, dampingFraction: 0.78), value: isDraggingThisBubble)
+        .shadow(
+            color: isDraggingThisBubble ? .black.opacity(0.18) : .clear,
+            radius: isDraggingThisBubble ? 18 : 0,
+            x: 0,
+            y: isDraggingThisBubble ? 10 : 0
+        )
+        .animation(.spring(response: 0.28, dampingFraction: 0.78), value: isDraggingThisBubble)
+    }
+
+    @ViewBuilder
+    private var interactiveBubble: some View {
+        if isEditing {
+            bubbleVisuals
         } else {
             Button(action: onTap) {
                 BubbleView(course: course)
@@ -684,6 +665,16 @@ private struct HomeBubbleCell: View {
         }
     }
 
+    private func clampedDragOffset(for translation: CGSize) -> CGSize {
+        let base = baseCenter
+        let r = course.size / 2
+        // Clamp only to the container so the bubble never disappears
+        // off-screen. Overlap is resolved on release via `onCommitDrag`.
+        let targetX = min(geometry.width - r, max(r, base.x + translation.width))
+        let targetY = min(geometry.height - r, max(r, base.y + translation.height))
+        return CGSize(width: targetX - base.x, height: targetY - base.y)
+    }
+
     private var dragGesture: some Gesture {
         // `minimumDistance: 1` keeps the drag snappy (finger barely
         // moves before the bubble tracks) while still ignoring perfect
@@ -691,52 +682,27 @@ private struct HomeBubbleCell: View {
         // in edit mode — there's nothing for a tap to trigger.
         DragGesture(minimumDistance: 1)
             .onChanged { value in
-                let baseX = geometry.width / 2 + course.offsetX * geometry.width
-                let baseY = geometry.height / 2 + course.offsetY * geometry.height
-                let r = course.size / 2
-                // Clamp only to the container so the bubble never
-                // disappears off-screen. No per-frame collision check
-                // against siblings — that used to fight the finger
-                // whenever it brushed past another bubble. The layout
-                // pass that re-runs after `onCommitDrag` (and the
-                // whole-field `enforceNonOverlap` relaxation inside it)
-                // resolves any overlap on release with a spring.
-                let targetX = min(geometry.width - r, max(r, baseX + value.translation.width))
-                let targetY = min(geometry.height - r, max(r, baseY + value.translation.height))
-
-                // Disable implicit animations on the per-frame offset
-                // mutation. Without this the outer `.animation(_,
-                // value: isBeingDragged)` spring can grab the drag
-                // updates on the first frame and interpolate them,
-                // which feels like a heavy rubber band.
                 var txn = Transaction()
                 txn.disablesAnimations = true
                 withTransaction(txn) {
-                    if !isLocalDragging {
-                        isLocalDragging = true
-                        // Tell the parent which bubble is on top so
-                        // its z-index lifts above siblings. This is
-                        // the only per-drag parent mutation; the
-                        // per-frame delta stays local.
-                        if draggingName != course.name {
-                            draggingName = course.name
-                        }
-                    }
-                    dragOffset = CGSize(width: targetX - baseX, height: targetY - baseY)
+                    if !isLocalDragging { isLocalDragging = true }
+                    dragOffset = clampedDragOffset(for: value.translation)
                 }
             }
-            .onEnded { _ in
-                let finalOffsetX = Double(course.offsetX) + Double(dragOffset.width / max(geometry.width, 1))
-                let finalOffsetY = Double(course.offsetY) + Double(dragOffset.height / max(geometry.height, 1))
-                // Commit the new position to the store first, then
-                // clear local drag state inside the same withAnimation
-                // so the bubble smoothly transitions from its dragged
-                // `.offset` back to its newly-resolved `.position`.
-                withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+            .onEnded { value in
+                let clamped = clampedDragOffset(for: value.translation)
+                let finalOffsetX = Double(course.offsetX) + Double(clamped.width / max(geometry.width, 1))
+                let finalOffsetY = Double(course.offsetY) + Double(clamped.height / max(geometry.height, 1))
+                // Commit and clear drag state in one non-animated
+                // transaction so `baseCenter` updates from the store
+                // before `dragOffset` returns to zero — avoids the
+                // release snap-back to the pre-drag slot.
+                var txn = Transaction()
+                txn.disablesAnimations = true
+                withTransaction(txn) {
                     onCommitDrag(finalOffsetX, finalOffsetY)
                     dragOffset = .zero
                     isLocalDragging = false
-                    draggingName = nil
                 }
             }
     }
