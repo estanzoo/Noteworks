@@ -45,8 +45,12 @@ final class FingerPassThroughPKCanvasView: PKCanvasView {
         // Always yield multi-finger sequences to the outer scroll view.
         if touches.count >= 2 { return true }
 
-        // Ambiguous probe — keep canvas in chain so PencilKit receives `.began`.
-        if touches.isEmpty { return false }
+        // Hit-test probe with no typed touches yet. Image-select must
+        // yield here too — returning false kept the canvas as the hit
+        // target so PencilKit still inked despite pass-through.
+        if touches.isEmpty {
+            return passesPencilTouchesThrough
+        }
 
         let isPencil = touches.contains(where: { $0.type == .pencil })
         if isPencil {
@@ -60,7 +64,7 @@ final class FingerPassThroughPKCanvasView: PKCanvasView {
         return true
     }
 
-    func applyTouchRoutingPolicy() {
+    func applyTouchRoutingPolicy(allowsPencilDrawing: Bool) {
         let pencil = NSNumber(value: UITouch.TouchType.pencil.rawValue)
         let fingerAndPencil = [
             NSNumber(value: UITouch.TouchType.direct.rawValue),
@@ -69,11 +73,16 @@ final class FingerPassThroughPKCanvasView: PKCanvasView {
 
         isMultipleTouchEnabled = true
 
-        if passesFingerTouchesThrough {
+        if passesPencilTouchesThrough {
+            drawingGestureRecognizer.allowedTouchTypes = []
+        } else if passesFingerTouchesThrough {
             drawingGestureRecognizer.allowedTouchTypes = [pencil]
         } else {
             drawingGestureRecognizer.allowedTouchTypes = fingerAndPencil
         }
+
+        drawingGestureRecognizer.isEnabled = allowsPencilDrawing
+        isDrawingEnabled = allowsPencilDrawing
 
         // PKCanvasView inherits UIScrollView's pan/pinch recognizers.
         // The outer ZoomablePageScrollView owns page zoom.
@@ -83,7 +92,7 @@ final class FingerPassThroughPKCanvasView: PKCanvasView {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        applyTouchRoutingPolicy()
+        applyTouchRoutingPolicy(allowsPencilDrawing: drawingGestureRecognizer.isEnabled)
     }
 }
 
@@ -136,7 +145,6 @@ struct PencilCanvasView: UIViewRepresentable {
         let canvasView = FingerPassThroughPKCanvasView()
         canvasView.passesFingerTouchesThrough = passesFingerTouchesThrough
         canvasView.passesPencilTouchesThrough = passesPencilTouchesThrough
-        canvasView.applyTouchRoutingPolicy()
         canvasView.drawingPolicy = drawingPolicy
         canvasView.backgroundColor = .clear
         canvasView.isOpaque = false
@@ -147,7 +155,7 @@ struct PencilCanvasView: UIViewRepresentable {
         canvasView.tool = tool
         canvasView.delegate = context.coordinator
         canvasView.isUserInteractionEnabled = isDrawingEnabled
-        canvasView.drawingGestureRecognizer.isEnabled = allowsPencilDrawing
+        canvasView.applyTouchRoutingPolicy(allowsPencilDrawing: allowsPencilDrawing)
 
         canvasView.minimumZoomScale = 1
         canvasView.maximumZoomScale = 1
@@ -164,20 +172,20 @@ struct PencilCanvasView: UIViewRepresentable {
     }
 
     func updateUIView(_ canvasView: FingerPassThroughPKCanvasView, context: Context) {
-        if canvasView.passesFingerTouchesThrough != passesFingerTouchesThrough
-            || canvasView.passesPencilTouchesThrough != passesPencilTouchesThrough {
-            canvasView.passesFingerTouchesThrough = passesFingerTouchesThrough
-            canvasView.passesPencilTouchesThrough = passesPencilTouchesThrough
-            canvasView.applyTouchRoutingPolicy()
+        let routingChanged = canvasView.passesFingerTouchesThrough != passesFingerTouchesThrough
+            || canvasView.passesPencilTouchesThrough != passesPencilTouchesThrough
+        canvasView.passesFingerTouchesThrough = passesFingerTouchesThrough
+        canvasView.passesPencilTouchesThrough = passesPencilTouchesThrough
+        if routingChanged
+            || canvasView.drawingGestureRecognizer.isEnabled != allowsPencilDrawing
+            || canvasView.isDrawingEnabled != allowsPencilDrawing {
+            canvasView.applyTouchRoutingPolicy(allowsPencilDrawing: allowsPencilDrawing)
         }
         if canvasView.drawingPolicy != drawingPolicy {
             canvasView.drawingPolicy = drawingPolicy
         }
         if canvasView.isUserInteractionEnabled != isDrawingEnabled {
             canvasView.isUserInteractionEnabled = isDrawingEnabled
-        }
-        if canvasView.drawingGestureRecognizer.isEnabled != allowsPencilDrawing {
-            canvasView.drawingGestureRecognizer.isEnabled = allowsPencilDrawing
         }
         canvasView.tool = tool
         context.coordinator.parent = self

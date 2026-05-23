@@ -32,6 +32,8 @@ enum NoteEditorTool: String, Equatable {
     case shape
     case text
     case image
+    /// Move / resize the selected image sticker (not the import picker).
+    case imageSelect
 
     /// True for tools that have a working UI in this build. `text` and
     /// `image` are implemented via the `NoteOverlayLayer` rendered above
@@ -39,14 +41,15 @@ enum NoteEditorTool: String, Equatable {
     /// still a stub for v1.
     var isImplemented: Bool {
         switch self {
-        case .pen, .highlighter, .eraser, .lasso, .text, .image, .shape: return true
+        case .pen, .highlighter, .eraser, .lasso, .text, .image, .imageSelect, .shape:
+            return true
         }
     }
 
     /// Overlay tools where stickers accept direct finger drag on the body.
     var allowsOverlayManipulation: Bool {
         switch self {
-        case .text, .image, .shape: return true
+        case .text, .image, .imageSelect, .shape: return true
         default: return false
         }
     }
@@ -58,15 +61,24 @@ enum NoteEditorTool: String, Equatable {
     var canDraw: Bool {
         switch self {
         case .pen, .highlighter, .eraser, .lasso: return true
-        case .text, .image, .shape: return false
+        case .text, .image, .imageSelect, .shape: return false
         }
     }
 
     /// When true, finger taps pass through the canvas to stickers below.
     var passesFingerToOverlays: Bool {
         switch self {
-        case .pen, .highlighter, .text, .image, .shape: return true
+        case .pen, .highlighter, .text, .image, .imageSelect, .shape: return true
         case .eraser, .lasso: return false
+        }
+    }
+
+    /// When true, Apple Pencil passes through the canvas to overlay
+    /// manipulation (move / resize) instead of inking.
+    var passesPencilToOverlays: Bool {
+        switch self {
+        case .imageSelect: return true
+        default: return false
         }
     }
 }
@@ -557,10 +569,8 @@ final class NoteEditorViewModel: ObservableObject {
             return PKEraserTool(eraserMode == .object ? .vector : .bitmap, width: eraserSize)
         case .lasso:
             return PKLassoTool()
-        case .shape, .text, .image:
-            // Decorative tool buttons — their UI is wired but they don't
-            // bind to a PencilKit primitive. Falling back to the pen so
-            // the canvas keeps drawing while the user explores them.
+        case .shape, .text, .image, .imageSelect:
+            // Decorative / overlay tools — no PencilKit primitive.
             return PKInkingTool(penBrush.pkInkType, color: UIColor(penColor), width: penThickness)
         }
     }
@@ -1136,6 +1146,7 @@ final class NoteEditorViewModel: ObservableObject {
         case .shape: return shapeStatus()
         case .text: return textStatus()
         case .image: return "Pick an image to insert"
+        case .imageSelect: return "Image select"
         }
     }
 

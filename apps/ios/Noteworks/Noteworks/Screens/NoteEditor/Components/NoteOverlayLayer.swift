@@ -128,25 +128,59 @@ enum ImageOverlayAdjustToolbarMetrics {
     static let height: CGFloat = 48
     /// Distance from the sticker's top edge to the toolbar's top edge.
     static let gapAboveSticker: CGFloat = 52
-    static let buttonCount = 6
+    /// Matches `ImageOverlayAdjustToolbar` — `HStack(spacing: 4)` +
+    /// `.padding(.horizontal, 10)` + each `toolbarIcon` frame.
+    static let iconWidth: CGFloat = 36
+    static let iconHeight: CGFloat = 32
+    static let iconSpacing: CGFloat = 4
+    static let horizontalPadding: CGFloat = 10
+
+    /// Left-to-right order in `ImageOverlayAdjustToolbar`.
+    private static let buttonsInOrder: [ImageOverlayAdjustToolbarButton] = [
+        .crop, .lasso, .cut, .duplicate, .delete, .more
+    ]
 
     /// Base-coordinate rect for the floating toolbar above a sticker.
+    /// Mirrors `.offset(x: max(0, (liveSize.width - width) / 2))` in
+    /// `NoteOverlayItem.selectionInteraction` — not `midX - width/2`,
+    /// which misaligned hits on narrow stickers and swapped duplicate/delete.
     static func frame(above stickerFrame: CGRect) -> CGRect {
-        CGRect(
-            x: stickerFrame.midX - width / 2,
+        let x = stickerFrame.minX + max(0, (stickerFrame.width - width) / 2)
+        return CGRect(
+            x: x,
             y: stickerFrame.minY - gapAboveSticker,
             width: width,
             height: height
         )
     }
 
-    /// Maps a page-coordinate touch to a toolbar button (equal-width slots).
+    /// Hit rects for each icon (base page coordinates).
+    static func buttonFrames(in toolbarFrame: CGRect) -> [CGRect] {
+        let iconsWidth = CGFloat(buttonsInOrder.count) * iconWidth
+            + CGFloat(buttonsInOrder.count - 1) * iconSpacing
+        let rowWidth = iconsWidth + 2 * horizontalPadding
+        // `HStack` is centered inside `.frame(width: 280)`.
+        let centeringSlack = max(0, toolbarFrame.width - rowWidth)
+        let rowY = toolbarFrame.minY + (toolbarFrame.height - iconHeight) / 2
+        var x = toolbarFrame.minX + horizontalPadding + centeringSlack / 2
+        return buttonsInOrder.map { _ in
+            let frame = CGRect(x: x, y: rowY, width: iconWidth, height: iconHeight)
+            x += iconWidth + iconSpacing
+            return frame
+        }
+    }
+
+    /// Maps a page-coordinate touch to the icon under the finger.
     static func button(at point: CGPoint, in toolbarFrame: CGRect) -> ImageOverlayAdjustToolbarButton? {
-        guard toolbarFrame.contains(point) else { return nil }
-        let localX = point.x - toolbarFrame.minX
-        let slotWidth = toolbarFrame.width / CGFloat(buttonCount)
-        let index = min(buttonCount - 1, max(0, Int(localX / slotWidth)))
-        return ImageOverlayAdjustToolbarButton(rawValue: index)
+        let frames = buttonFrames(in: toolbarFrame)
+        for (button, frame) in zip(buttonsInOrder, frames) {
+            // Slightly expand targets — finger taps rarely land dead-centre.
+            let hit = frame.insetBy(dx: -4, dy: -6)
+            if hit.contains(point) {
+                return button
+            }
+        }
+        return nil
     }
 }
 

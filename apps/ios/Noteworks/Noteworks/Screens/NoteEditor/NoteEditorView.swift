@@ -123,6 +123,18 @@ struct NoteEditorView: View {
         viewModel.activeTool.allowsOverlayManipulation
     }
 
+    /// True when the selected overlay on the current page is an image.
+    private var isImageOverlaySelected: Bool {
+        guard let selectedId = selectedOverlayId else { return false }
+        return viewModel.currentPageOverlays(store: store)
+            .contains(where: { $0.id == selectedId && $0.kind == .image })
+    }
+
+    /// Pencil drags move the selected sticker instead of inking.
+    private var passesPencilToOverlays: Bool {
+        viewModel.activeTool.passesPencilToOverlays && hasOverlaySelection
+    }
+
     var noteId: String?
 
     var body: some View {
@@ -491,6 +503,7 @@ struct NoteEditorView: View {
                     pixelSize: downscaled.size
                 ) {
                     selectedOverlayId = newId
+                    viewModel.selectTool(.imageSelect)
                 }
             }
         } catch {
@@ -884,6 +897,9 @@ struct NoteEditorView: View {
         guard hasOverlaySelection else { return }
         editingOverlayId = nil
         selectedOverlayId = nil
+        if viewModel.activeTool == .imageSelect {
+            viewModel.selectTool(.pen)
+        }
     }
 
     /// Selected image/shape sticker used for toolbar hit-testing.
@@ -945,6 +961,9 @@ struct NoteEditorView: View {
         manipulationOverlayId = nil
         manipulationCorner = nil
         isOverlayDragging = false
+        if viewModel.activeTool == .imageSelect {
+            viewModel.selectTool(.pen)
+        }
     }
 
     /// Duplicates the overlay with a down-right offset; the copy is
@@ -962,6 +981,7 @@ struct NoteEditorView: View {
         ) else { return }
         selectedOverlayId = copy.id
         editingOverlayId = nil
+        viewModel.selectTool(.imageSelect)
         viewModel.flashStatus("Duplicated")
     }
 
@@ -1025,6 +1045,9 @@ struct NoteEditorView: View {
 
             if selectedOverlayId != id { selectedOverlayId = id }
             editingOverlayId = nil
+            if overlay.kind == .image {
+                viewModel.selectTool(.imageSelect)
+            }
             manipulationOverlayId = id
             manipulationStartRect = rect
             manipulationCorner = corner
@@ -1226,6 +1249,9 @@ struct NoteEditorView: View {
             } else {
                 selectedOverlayId = overlay.id
                 editingOverlayId = nil
+                if overlay.kind == .image {
+                    viewModel.selectTool(.imageSelect)
+                }
             }
             return
         }
@@ -1298,6 +1324,7 @@ struct NoteEditorView: View {
                 onOverlayAdjustToolbarTap: { button in
                     handleOverlayAdjustToolbarTap(button, pageSize: logicalPageSize)
                 },
+                overlayPanAcceptsPencil: passesPencilToOverlays,
                 zoom: $canvasZoom
             ) {
                 pageCard(logicalPageSize: zoomedPageSize, rotation: rotation)
@@ -1429,6 +1456,7 @@ struct NoteEditorView: View {
                     isDrawingEnabled: true,
                     allowsPencilDrawing: viewModel.activeTool.canDraw,
                     passesFingerTouchesThrough: viewModel.activeTool.passesFingerToOverlays,
+                    passesPencilTouchesThrough: passesPencilToOverlays,
                     onCanvasReady: { canvas in
                         self.liveCanvas = canvas
                         refreshCanvasUndoState()

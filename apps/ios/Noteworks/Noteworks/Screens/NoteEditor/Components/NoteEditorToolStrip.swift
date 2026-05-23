@@ -6,7 +6,7 @@
 //  `note-tool-strip` (L3755):
 //
 //    Left   : undo / redo
-//    Center : select, pen, eraser, highlighter, lasso, shape, text, image
+//    Center : image-select indicator, pen, eraser, highlighter, lasso, shape, text, image
 //    Right  : (reserved)
 //
 //  Renders without its own glass card so the parent `NoteEditorView` can
@@ -80,6 +80,7 @@ struct NoteEditorToolStrip: View {
 
             // Center cluster — write tools.
             HStack(spacing: 4) {
+                ImageSelectModeChromeIcon(isActive: viewModel.activeTool == .imageSelect)
                 toolButton(.pen, symbol: "pencil.tip", panel: .pen)
                 toolButton(.eraser, symbol: "eraser", panel: .eraser)
                 toolButton(.highlighter, symbol: "highlighter", panel: .highlighter)

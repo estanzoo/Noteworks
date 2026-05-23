@@ -41,6 +41,53 @@ struct ChromeIconButton: View {
     }
 }
 
+// MARK: - Image select mode indicator (cursor + dashed marquee)
+
+/// Status glyph in the tool strip: highlights while an image sticker is
+/// selected on the page. Matches `ChromeIconButton` chrome (36×30) but
+/// is not tappable — it reflects overlay selection, not a separate tool.
+struct ImageSelectModeChromeIcon: View {
+    var isActive: Bool
+
+    var body: some View {
+        ImageSelectModeGlyph()
+            .foregroundStyle(isActive ? NoteEditorTheme.accent : NoteEditorTheme.textPrimary)
+            .frame(width: 36, height: 30)
+            .background(
+                RoundedRectangle(cornerRadius: 9)
+                    .fill(isActive ? NoteEditorTheme.accent.opacity(0.16) : Color.white.opacity(0.001))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 9)
+                    .strokeBorder(
+                        isActive ? NoteEditorTheme.accent.opacity(0.45) : Color.clear,
+                        lineWidth: 1
+                    )
+            )
+            .accessibilityLabel("Image select")
+            .accessibilityValue(isActive ? "On" : "Off")
+            .accessibilityAddTraits(isActive ? .isSelected : [])
+    }
+}
+
+/// Mouse cursor inside a dashed selection rectangle.
+private struct ImageSelectModeGlyph: View {
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .stroke(
+                    style: StrokeStyle(lineWidth: 1.25, dash: [2.5, 2.2])
+                )
+                .frame(width: 15, height: 15)
+
+            Image(systemName: "cursorarrow")
+                .font(.system(size: 10, weight: .medium))
+                .offset(x: 2.5, y: 3.5)
+        }
+        .frame(width: 18, height: 18)
+    }
+}
+
 // MARK: - Chrome label button (icon + label) used in dropdown rows
 
 struct ChromeMenuRow: View {
