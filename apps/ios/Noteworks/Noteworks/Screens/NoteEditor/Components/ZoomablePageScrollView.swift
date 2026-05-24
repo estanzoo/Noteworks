@@ -33,6 +33,7 @@
 //    - Page swipe (single-finger pan at fit zoom) via a dedicated
 //      `UIPanGestureRecognizer`.
 //    - Double-tap to toggle between fit and `doubleTapZoomScale`.
+//    - Two-finger double-tap → `onTwoFingerDoubleTap` (e.g. undo).
 //    - Single-finger tap → `onPageFingerTap` (base coords).
 //    - Overlay drag / resize via `UIPanGestureRecognizer` enabled
 //      when `blocksPageGestures` is true.
@@ -88,6 +89,8 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
     /// position (i.e. divided by the current zoom). The caller can use
     /// it directly against the unzoomed `pageSize`.
     var onPageFingerTap: ((CGPoint?) -> Void)? = nil
+    /// Two-finger double-tap on the canvas (finger only).
+    var onTwoFingerDoubleTap: (() -> Void)? = nil
     /// Single-finger pan driver used while an overlay is selected, fired
     /// in BASE (unzoomed) page coordinates.
     var onOverlayManipulation: ((OverlayManipulationPhase, CGPoint, CGSize) -> Void)? = nil
@@ -122,6 +125,7 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         onSwipeNext: (() -> Void)? = nil,
         onSwipePrevious: (() -> Void)? = nil,
         onPageFingerTap: ((CGPoint?) -> Void)? = nil,
+        onTwoFingerDoubleTap: (() -> Void)? = nil,
         onOverlayManipulation: ((OverlayManipulationPhase, CGPoint, CGSize) -> Void)? = nil,
         overlayInteractionExclusionRects: [CGRect] = [],
         overlayAdjustToolbarRect: CGRect? = nil,
@@ -142,6 +146,7 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         self.onSwipeNext = onSwipeNext
         self.onSwipePrevious = onSwipePrevious
         self.onPageFingerTap = onPageFingerTap
+        self.onTwoFingerDoubleTap = onTwoFingerDoubleTap
         self.onOverlayManipulation = onOverlayManipulation
         self.overlayInteractionExclusionRects = overlayInteractionExclusionRects
         self.overlayAdjustToolbarRect = overlayAdjustToolbarRect
@@ -200,6 +205,18 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         doubleTap.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
         doubleTap.delegate = context.coordinator
         scrollView.addGestureRecognizer(doubleTap)
+
+        // Two-finger double-tap (e.g. undo).
+        let twoFingerDoubleTap = UITapGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleTwoFingerDoubleTap(_:))
+        )
+        twoFingerDoubleTap.numberOfTapsRequired = 2
+        twoFingerDoubleTap.numberOfTouchesRequired = 2
+        twoFingerDoubleTap.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        twoFingerDoubleTap.cancelsTouchesInView = false
+        twoFingerDoubleTap.delegate = context.coordinator
+        scrollView.addGestureRecognizer(twoFingerDoubleTap)
 
         // Single-finger tap → page coords callback.
         let canvasTap = UITapGestureRecognizer(
@@ -283,8 +300,10 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         context.coordinator.overlayPanGesture = overlayPan
         context.coordinator.overlayPinchGesture = overlayPinch
         context.coordinator.toolbarTapGesture = toolbarTap
+        context.coordinator.twoFingerDoubleTapGesture = twoFingerDoubleTap
         context.coordinator.blocksPageGestures = blocksPageGestures
         context.coordinator.onPageFingerTap = onPageFingerTap
+        context.coordinator.onTwoFingerDoubleTap = onTwoFingerDoubleTap
         context.coordinator.onOverlayManipulation = onOverlayManipulation
         context.coordinator.overlayInteractionExclusionRects = overlayInteractionExclusionRects
         context.coordinator.overlayAdjustToolbarRect = overlayAdjustToolbarRect
@@ -310,7 +329,9 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         context.coordinator.atFirstPage = atFirstPage
         context.coordinator.blocksPageGestures = blocksPageGestures
         context.coordinator.onPageFingerTap = onPageFingerTap
+        context.coordinator.onTwoFingerDoubleTap = onTwoFingerDoubleTap
         context.coordinator.canvasTapGesture?.isEnabled = onPageFingerTap != nil
+        context.coordinator.twoFingerDoubleTapGesture?.isEnabled = onTwoFingerDoubleTap != nil
         context.coordinator.onOverlayManipulation = onOverlayManipulation
         context.coordinator.overlayInteractionExclusionRects = overlayInteractionExclusionRects
         context.coordinator.overlayAdjustToolbarRect = overlayAdjustToolbarRect
@@ -387,6 +408,7 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         var atFirstPage: Bool = false
         var blocksPageGestures: Bool = false
         var onPageFingerTap: ((CGPoint?) -> Void)?
+        var onTwoFingerDoubleTap: (() -> Void)?
         var onOverlayManipulation: ((OverlayManipulationPhase, CGPoint, CGSize) -> Void)?
         var overlayInteractionExclusionRects: [CGRect] = []
         var overlayAdjustToolbarRect: CGRect?
@@ -398,6 +420,7 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         weak var pagePanGesture: UIPanGestureRecognizer?
         weak var canvasTapGesture: UITapGestureRecognizer?
         weak var toolbarTapGesture: UITapGestureRecognizer?
+        weak var twoFingerDoubleTapGesture: UITapGestureRecognizer?
         weak var overlayPanGesture: UIPanGestureRecognizer?
         weak var overlayPinchGesture: UIPinchGestureRecognizer?
         fileprivate var isApplyingFromSwiftUI = false
@@ -785,6 +808,11 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
                 scrollView.setContentOffset(offset, animated: false)
             }
             publishZoomBinding(targetZoom)
+        }
+
+        @objc func handleTwoFingerDoubleTap(_ gesture: UITapGestureRecognizer) {
+            guard gesture.state == .ended else { return }
+            onTwoFingerDoubleTap?()
         }
 
         // MARK: Page swipe (only at fit zoom)

@@ -1606,6 +1606,7 @@ struct NoteEditorView: View {
                     // it lines up with `logicalPageSize`.
                     handlePageFingerTap(at: point, pageSize: logicalPageSize)
                 },
+                onTwoFingerDoubleTap: handleEditorUndo,
                 onOverlayManipulation: { phase, start, translation in
                     handleOverlayManipulation(
                         phase: phase,
