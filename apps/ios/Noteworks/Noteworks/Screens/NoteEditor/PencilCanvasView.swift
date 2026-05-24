@@ -36,6 +36,27 @@ final class FingerPassThroughPKCanvasView: PKCanvasView {
         return super.hitTest(point, with: event)
     }
 
+    override func addInteraction(_ interaction: UIInteraction) {
+        if #available(iOS 16.0, *), interaction is UIEditMenuInteraction { return }
+        super.addInteraction(interaction)
+    }
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        false
+    }
+
+    /// PencilKit attaches `UIEditMenuInteraction` on iOS 17+ so a single
+    /// canvas tap offers "Select All" / "Insert Space". We provide our own
+    /// chrome — strip those interactions so a tap does nothing.
+    func stripSystemEditMenus() {
+        guard #available(iOS 16.0, *) else { return }
+        for view in [self] + allSubviewsRecursive {
+            for interaction in view.interactions where interaction is UIEditMenuInteraction {
+                view.removeInteraction(interaction)
+            }
+        }
+    }
+
     /// Yield touches to the overlay layer beneath when Select mode (or
     /// finger-only pass-through in write tools) requests it.
     private func shouldPassThrough(event: UIEvent?) -> Bool {
@@ -93,6 +114,18 @@ final class FingerPassThroughPKCanvasView: PKCanvasView {
     override func didMoveToWindow() {
         super.didMoveToWindow()
         applyTouchRoutingPolicy(allowsPencilDrawing: drawingGestureRecognizer.isEnabled)
+        stripSystemEditMenus()
+        // PencilKit sometimes attaches edit-menu interactions one runloop
+        // after the view lands in the hierarchy.
+        DispatchQueue.main.async { [weak self] in
+            self?.stripSystemEditMenus()
+        }
+    }
+}
+
+private extension UIView {
+    var allSubviewsRecursive: [UIView] {
+        subviews + subviews.flatMap(\.allSubviewsRecursive)
     }
 }
 
@@ -102,6 +135,13 @@ struct PencilCanvasView: UIViewRepresentable {
     /// swaps flow down. Stored in **base** (zoom == 1) coordinates so
     /// it round-trips through disk regardless of the current zoom.
     @Binding var drawing: PKDrawing
+
+    /// Incremented only when the view model deliberately replaces the
+    /// page drawing (page load, clear page). Live strokes update the
+    /// binding via the delegate but must NOT be pushed back into the
+    /// canvas — reassigning `canvasView.drawing` clears PencilKit's undo
+    /// stack and invalidates stroke identifiers.
+    var drawingPushGeneration: Int = 0
 
     /// Currently active tool (pen / highlighter / eraser / lasso). Pushed
     /// from the parent's toolbar; we apply it on every `updateUIView`.
@@ -137,6 +177,11 @@ struct PencilCanvasView: UIViewRepresentable {
     /// real canvas `UndoManager` once the view exists.
     var onCanvasReady: ((PKCanvasView) -> Void)? = nil
 
+    /// Fired after every user-driven drawing mutation (stroke, erase,
+    /// undo, redo). Passes the base-coordinate drawing from before the
+    /// change so the editor can record a unified undo step.
+    var onDrawingChanged: ((PKDrawing) -> Void)? = nil
+
     /// Apple Pencil double-tap (Settings → Apple Pencil). Without
     /// `PKToolPicker`, the app must handle `UIPencilInteraction` explicitly.
     var onPencilDoubleTap: ((UIPencilInteraction) -> Void)? = nil
@@ -150,8 +195,9 @@ struct PencilCanvasView: UIViewRepresentable {
         canvasView.isOpaque = false
         canvasView.isMultipleTouchEnabled = true
         context.coordinator.appliedZoom = max(0.0001, zoomScale)
-        context.coordinator.lastPublishedBaseDrawing = drawing
-        canvasView.drawing = drawing.transformed(using: CGAffineTransform(scaleX: zoomScale, y: zoomScale))
+        context.coordinator.lastConsumedPushGeneration = drawingPushGeneration
+        context.coordinator.lastKnownBaseDrawing = drawing
+        canvasView.drawing = scaledDisplayDrawing(from: drawing, zoom: zoomScale)
         canvasView.tool = tool
         canvasView.delegate = context.coordinator
         canvasView.isUserInteractionEnabled = isDrawingEnabled
@@ -164,6 +210,8 @@ struct PencilCanvasView: UIViewRepresentable {
         let pencil = UIPencilInteraction()
         pencil.delegate = context.coordinator
         canvasView.addInteraction(pencil)
+
+        canvasView.stripSystemEditMenus()
 
         DispatchQueue.main.async {
             onCanvasReady?(canvasView)
@@ -192,7 +240,6 @@ struct PencilCanvasView: UIViewRepresentable {
 
         if context.coordinator.isDrawing {
             // Don't yank the canvas out from under the user mid-stroke.
-            // We re-sync at the next tool-end via the delegate path.
             return
         }
 
@@ -203,44 +250,47 @@ struct PencilCanvasView: UIViewRepresentable {
             // Zoom changed → push the freshly-scaled drawing into the
             // canvas exactly ONCE. PencilKit re-rasterises the strokes
             // at the new size, producing genuinely-crisp ink.
-            let displayDrawing = drawing.transformed(
-                using: CGAffineTransform(scaleX: safeZoom, y: safeZoom)
+            pushDrawingToCanvas(
+                canvasView,
+                coordinator: context.coordinator,
+                zoom: safeZoom
             )
-            context.coordinator.suppressNextDelegateChange = true
-            context.coordinator.lastPublishedBaseDrawing = drawing
-            canvasView.drawing = displayDrawing
             context.coordinator.appliedZoom = safeZoom
             return
         }
 
-        // Same zoom as last time: only reassign the canvas drawing when
-        // the binding's drawing genuinely differs from what we last
-        // received from (or pushed to) the canvas. Floating-point
-        // round-trip from the
-        //   canvas → 1/zoom → parent.drawing → ×zoom → displayDrawing
-        // path means `canvasView.drawing` and the freshly-recomputed
-        // `displayDrawing` are almost never byte-identical, so a naive
-        // `!=` check would reassign on every stroke and produce the
-        // flicker / disappear-reappear glitch the user is reporting.
-        if let last = context.coordinator.lastPublishedBaseDrawing,
-           last == drawing {
-            // The binding's value came from our own delegate echo —
-            // the canvas already has the correct content, leave it
-            // alone.
+        // Only push when the view model explicitly replaced the page
+        // drawing. Echoing live binding updates back into the canvas
+        // replaces PKDrawing wholesale and breaks undo/redo.
+        guard context.coordinator.lastConsumedPushGeneration != drawingPushGeneration else {
             return
         }
 
-        // Binding changed from outside (page load, undo, clear-page).
-        // Push the (newly-scaled) drawing into the canvas once.
-        let displayDrawing = drawing.transformed(
-            using: CGAffineTransform(scaleX: safeZoom, y: safeZoom)
+        pushDrawingToCanvas(
+            canvasView,
+            coordinator: context.coordinator,
+            zoom: safeZoom
         )
-        context.coordinator.suppressNextDelegateChange = true
-        context.coordinator.lastPublishedBaseDrawing = drawing
-        canvasView.drawing = displayDrawing
+        context.coordinator.lastConsumedPushGeneration = drawingPushGeneration
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    private func scaledDisplayDrawing(from baseDrawing: PKDrawing, zoom: CGFloat) -> PKDrawing {
+        baseDrawing.transformed(
+            using: CGAffineTransform(scaleX: zoom, y: zoom)
+        )
+    }
+
+    private func pushDrawingToCanvas(
+        _ canvasView: PKCanvasView,
+        coordinator: Coordinator,
+        zoom: CGFloat
+    ) {
+        coordinator.suppressNextDelegateChange = true
+        coordinator.lastKnownBaseDrawing = drawing
+        canvasView.drawing = scaledDisplayDrawing(from: drawing, zoom: zoom)
+    }
 
     // MARK: - Coordinator
 
@@ -256,21 +306,11 @@ struct PencilCanvasView: UIViewRepresentable {
         /// scaled drawing back into the binding (which would
         /// permanently scale persisted strokes on every zoom change).
         var suppressNextDelegateChange = false
-        /// The base-coordinate `PKDrawing` we most recently either
-        /// (a) published up to the binding via the delegate, or
-        /// (b) pushed into the canvas via `updateUIView`.
-        ///
-        /// We compare incoming binding values against this so we can
-        /// tell "the binding changed because of our own delegate echo"
-        /// (skip — canvas is already correct) from "the binding changed
-        /// because of an external mutation like a page swap or undo"
-        /// (reassign the canvas drawing). Without this distinction the
-        /// round-trip
-        ///   canvas → ×(1/zoom) → binding → ×zoom → canvas
-        /// causes floating-point drift that makes the canvas content
-        /// never byte-equal what we'd recompute, so a naive `!=` check
-        /// would reassign every stroke and flicker the ink.
-        var lastPublishedBaseDrawing: PKDrawing?
+        /// Last `drawingPushGeneration` consumed by `updateUIView`.
+        var lastConsumedPushGeneration: Int = 0
+        /// Base-coordinate drawing last emitted to the binding — used to
+        /// build undo steps when PencilKit reports a new stroke.
+        var lastKnownBaseDrawing: PKDrawing?
 
         init(_ parent: PencilCanvasView) {
             self.parent = parent
@@ -292,10 +332,12 @@ struct PencilCanvasView: UIViewRepresentable {
             let baseDrawing = canvasView.drawing.transformed(
                 using: CGAffineTransform(scaleX: inverse, y: inverse)
             )
-            lastPublishedBaseDrawing = baseDrawing
+            let previousDrawing = lastKnownBaseDrawing ?? baseDrawing
+            lastKnownBaseDrawing = baseDrawing
             if parent.drawing != baseDrawing {
                 parent.drawing = baseDrawing
             }
+            parent.onDrawingChanged?(previousDrawing)
         }
 
         func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {

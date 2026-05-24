@@ -124,6 +124,13 @@ enum NotePageOverlayKind: String, Codable, Hashable {
     case text
     case image
     case shape
+
+    /// Overlays the user can move / resize with Apple Pencil in select mode.
+    var supportsSelectMode: Bool {
+        switch self {
+        case .text, .image, .shape: return true
+        }
+    }
 }
 
 /// A draggable item placed on top of a note page. Coordinates are stored
@@ -1271,6 +1278,38 @@ final class NotesStore: ObservableObject {
         if let filename = removed?.imageFilename {
             persistence.deleteOverlayImage(for: noteId, filename: filename)
         }
+    }
+
+    /// Replaces every overlay on one page while keeping other pages intact.
+    /// Used by editor undo/redo to restore sticker state alongside ink.
+    func replacePageOverlays(
+        _ overlays: [NotePageOverlay],
+        forPage page: Int,
+        in noteId: String,
+        restoringImageData: [String: Data] = [:]
+    ) {
+        guard let idx = notes.firstIndex(where: { $0.id == noteId }) else { return }
+
+        let previousOnPage = notes[idx].overlays.filter { $0.page == page }
+        let previousFilenames = Set(previousOnPage.compactMap(\.imageFilename))
+        let nextFilenames = Set(overlays.compactMap(\.imageFilename))
+
+        notes[idx].overlays.removeAll { $0.page == page }
+        notes[idx].overlays.append(contentsOf: overlays)
+        notes[idx].updatedAt = Date()
+
+        for (filename, data) in restoringImageData {
+            saveOverlayImageData(data, for: noteId, filename: filename)
+        }
+
+        for filename in previousFilenames where !nextFilenames.contains(filename) {
+            let stillUsed = notes[idx].overlays.contains { $0.imageFilename == filename }
+            if !stillUsed {
+                persistence.deleteOverlayImage(for: noteId, filename: filename)
+            }
+        }
+
+        saveDebounced()
     }
 
     // MARK: - Overlay image data (delegate to persistence layer)
