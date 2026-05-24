@@ -56,9 +56,12 @@ struct NoteOverlayLayer: View {
     /// only.
     var imageDataProvider: (String) -> Data?
 
+    /// Overlay ids omitted from this layer (rendered elsewhere).
+    var suppressedOverlayIds: Set<String> = []
+
     var body: some View {
         ZStack(alignment: .topLeading) {
-            ForEach(overlays) { overlay in
+            ForEach(overlays.filter { !suppressedOverlayIds.contains($0.id) }) { overlay in
                 NoteOverlayItem(
                     overlay: overlay,
                     pageSize: pageSize,

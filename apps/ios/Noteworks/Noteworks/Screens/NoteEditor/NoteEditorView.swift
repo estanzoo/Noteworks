@@ -131,9 +131,21 @@ struct NoteEditorView: View {
 
     /// True when the selected overlay on the current page is an image.
     private var isImageOverlaySelected: Bool {
-        guard let selectedId = selectedOverlayId else { return false }
+        selectedImageOverlay != nil
+    }
+
+    /// Selected image on the active page, if any.
+    private var selectedImageOverlay: NotePageOverlay? {
+        guard let selectedId = selectedOverlayId else { return nil }
         return viewModel.currentPageOverlays(store: store)
-            .contains(where: { $0.id == selectedId && $0.kind == .image })
+            .first(where: { $0.id == selectedId && $0.kind == .image })
+    }
+
+    /// While an image is selected it renders above PencilKit ink; deselect
+    /// returns it to the sticker layer below strokes.
+    private var suppressedUnderInkOverlayIds: Set<String> {
+        guard let overlay = selectedImageOverlay else { return [] }
+        return [overlay.id]
     }
 
     /// Pencil drags move the selected sticker instead of inking.
@@ -1063,13 +1075,6 @@ struct NoteEditorView: View {
     /// Switches to select mode so Apple Pencil can move / resize the sticker.
     private func enterSelectMode(for overlay: NotePageOverlay) {
         guard overlay.kind.supportsSelectMode else { return }
-        if overlay.kind == .image, let noteId = viewModel.noteId {
-            store.bringOverlayToFront(
-                id: overlay.id,
-                onPage: viewModel.currentPage,
-                in: noteId
-            )
-        }
         viewModel.selectTool(.imageSelect)
     }
 
@@ -1699,7 +1704,8 @@ struct NoteEditorView: View {
         return stamp
     }
 
-    /// Page card: background → stickers → ink on top (pen draws over images/text).
+    /// Page card: background → stickers (below ink) → strokes → selected
+    /// image (above ink while selected).
     @ViewBuilder
     private func pageCard(logicalPageSize: CGSize, rotation: Int) -> some View {
         pageCardChrome(logicalPageSize: logicalPageSize, rotation: rotation) {
@@ -1713,43 +1719,10 @@ struct NoteEditorView: View {
                 )
                 .allowsHitTesting(false)
                 if let noteId = viewModel.noteId {
-                    NoteOverlayLayer(
-                        overlays: viewModel.currentPageOverlays(store: store),
-                        pageSize: logicalPageSize,
-                        zoomScale: canvasZoom,
+                    pageOverlayLayer(
                         noteId: noteId,
-                        manipulationMode: allowsOverlayManipulation,
-                        selectedId: $selectedOverlayId,
-                        editingId: $editingOverlayId,
-                        onUpdate: { updated in
-                            if editingOverlayId == updated.id {
-                                store.updateOverlay(updated, in: noteId)
-                            } else if let before = viewModel.makePageSnapshot(store: store) {
-                                store.updateOverlay(updated, in: noteId)
-                                viewModel.recordPageMutation(before: before, store: store)
-                            } else {
-                                store.updateOverlay(updated, in: noteId)
-                            }
-                        },
-                        onDelete: { overlay in
-                            deleteOverlay(overlay, noteId: noteId)
-                        },
-                        onDuplicate: { overlay in
-                            duplicateOverlay(overlay, noteId: noteId, pageSize: logicalPageSize)
-                        },
-                        onSelectLasso: {
-                            viewModel.selectTool(.lasso)
-                            selectedOverlayId = nil
-                        },
-                        onCropImage: { _ in
-                            viewModel.flashStatus("Crop coming soon")
-                        },
-                        onOverlayDragChanged: { dragging in
-                            isOverlayDragging = dragging
-                        },
-                        imageDataProvider: { filename in
-                            store.loadOverlayImageData(for: noteId, filename: filename)
-                        }
+                        logicalPageSize: logicalPageSize,
+                        suppressedOverlayIds: suppressedUnderInkOverlayIds
                     )
                 }
                 PencilCanvasView(
@@ -1781,8 +1754,66 @@ struct NoteEditorView: View {
                         viewModel.handlePencilDoubleTap(interaction: interaction)
                     }
                 )
+                if let noteId = viewModel.noteId, let image = selectedImageOverlay {
+                    pageOverlayLayer(
+                        noteId: noteId,
+                        logicalPageSize: logicalPageSize,
+                        overlays: [image],
+                        allowsHitTesting: false
+                    )
+                }
             }
         }
+    }
+
+    @ViewBuilder
+    private func pageOverlayLayer(
+        noteId: String,
+        logicalPageSize: CGSize,
+        overlays: [NotePageOverlay]? = nil,
+        suppressedOverlayIds: Set<String> = [],
+        allowsHitTesting: Bool = true
+    ) -> some View {
+        NoteOverlayLayer(
+            overlays: overlays ?? viewModel.currentPageOverlays(store: store),
+            pageSize: logicalPageSize,
+            zoomScale: canvasZoom,
+            noteId: noteId,
+            manipulationMode: allowsOverlayManipulation,
+            selectedId: $selectedOverlayId,
+            editingId: $editingOverlayId,
+            onUpdate: { updated in
+                if editingOverlayId == updated.id {
+                    store.updateOverlay(updated, in: noteId)
+                } else if let before = viewModel.makePageSnapshot(store: store) {
+                    store.updateOverlay(updated, in: noteId)
+                    viewModel.recordPageMutation(before: before, store: store)
+                } else {
+                    store.updateOverlay(updated, in: noteId)
+                }
+            },
+            onDelete: { overlay in
+                deleteOverlay(overlay, noteId: noteId)
+            },
+            onDuplicate: { overlay in
+                duplicateOverlay(overlay, noteId: noteId, pageSize: logicalPageSize)
+            },
+            onSelectLasso: {
+                viewModel.selectTool(.lasso)
+                selectedOverlayId = nil
+            },
+            onCropImage: { _ in
+                viewModel.flashStatus("Crop coming soon")
+            },
+            onOverlayDragChanged: { dragging in
+                isOverlayDragging = dragging
+            },
+            imageDataProvider: { filename in
+                store.loadOverlayImageData(for: noteId, filename: filename)
+            },
+            suppressedOverlayIds: suppressedOverlayIds
+        )
+        .allowsHitTesting(allowsHitTesting)
     }
 
     @ViewBuilder
