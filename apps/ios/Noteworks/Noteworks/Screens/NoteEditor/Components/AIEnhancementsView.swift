@@ -65,9 +65,14 @@ struct AIEnhancementsPill: View {
         return GeometryReader { proxy in
             ZStack(alignment: .leading) {
                 Capsule()
+                    .fill(Color.white.opacity(0.7))
+                    .background(.ultraThinMaterial, in: Capsule())
+
+                Capsule()
                     .fill(NoteEditorTheme.accent.opacity(0.16))
-                    .frame(width: proxy.size.width * fill)
-                    .animation(.easeInOut(duration: 0.18), value: fill)
+                    .frame(width: proxy.size.width)
+                    .scaleEffect(x: fill, y: 1, anchor: .leading)
+
                 HStack(spacing: 6) {
                     Text("\(Int(fill * 100))%")
                         .font(.system(size: 11, weight: .bold))
@@ -78,13 +83,9 @@ struct AIEnhancementsPill: View {
                 }
                 .padding(.horizontal, 10)
             }
-            .frame(width: proxy.size.width, height: proxy.size.height)
-            .background(
-                Capsule().fill(Color.white.opacity(0.7))
-                    .background(.ultraThinMaterial, in: Capsule())
-            )
             .overlay(Capsule().strokeBorder(NoteEditorTheme.accent.opacity(0.18), lineWidth: 1))
             .clipShape(Capsule())
+            .animation(.easeInOut(duration: 0.18), value: fill)
         }
         .frame(width: 148, height: 26)
     }
@@ -376,10 +377,11 @@ struct AIEnhancementProgressBar: View {
                                 endPoint: .trailing
                             )
                         )
-                        .frame(width: proxy.size.width * fillFraction)
-                        .animation(.easeInOut(duration: 0.18), value: fillFraction)
+                        .frame(width: proxy.size.width)
+                        .scaleEffect(x: fillFraction, y: 1, anchor: .leading)
                 }
                 .clipShape(Capsule())
+                .animation(.easeInOut(duration: 0.18), value: fillFraction)
             }
             .frame(height: 9)
 
@@ -1149,30 +1151,45 @@ struct GapDetectionPopup: View {
         .disabled(action == nil)
     }
 
+    private func gapPeerSelectionIndicator(selected: Bool) -> some View {
+        ZStack {
+            Circle()
+                .fill(selected ? NoteEditorTheme.accent : Color.clear)
+                .overlay {
+                    Circle()
+                        .strokeBorder(
+                            selected ? NoteEditorTheme.accent : Color(red: 193/255, green: 205/255, blue: 218/255),
+                            lineWidth: 2
+                        )
+                }
+                .frame(width: 44, height: 44)
+
+            if selected {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(.white)
+            }
+        }
+        .accessibilityHidden(true)
+    }
+
     private func gapCommunityNoteCard(_ source: GapCommunityPeerSource, compact: Bool = false) -> some View {
         let selected = viewModel.selectedGapPeerSourceIds.contains(source.id)
         let price = 6
-        return Button {
-            viewModel.pushGapPreview(peerSourceId: source.id)
-        } label: {
-            HStack(alignment: .center, spacing: 14) {
+        return HStack(alignment: .top, spacing: 14) {
+            HStack(alignment: .top, spacing: 14) {
+                gapPeerSelectionIndicator(selected: selected)
+
                 VStack(alignment: .leading, spacing: 7) {
-                    HStack(spacing: 8) {
-                        Text(source.displayTitle)
-                            .font(.system(size: compact ? 14 : 15, weight: .bold))
-                            .foregroundStyle(NoteEditorTheme.textPrimary)
-                            .lineLimit(1)
-                        Text("\(price) Credits")
-                            .font(.system(size: 11, weight: .black))
-                            .foregroundStyle(NoteEditorTheme.accent)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Capsule().fill(NoteEditorTheme.accent.opacity(0.12)))
-                    }
+                    Text(source.displayTitle)
+                        .font(.system(size: compact ? 14 : 15, weight: .bold))
+                        .foregroundStyle(NoteEditorTheme.textPrimary)
+                        .lineLimit(2)
+
                     Text(
                         [
-                            source.authorName,
                             source.authorSchool,
+                            source.authorName.isEmpty ? nil : source.authorName,
                             formattedPeerDate(source.createdAt)
                         ]
                         .compactMap { value in
@@ -1181,27 +1198,46 @@ struct GapDetectionPopup: View {
                         }
                         .joined(separator: " · ")
                     )
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(NoteEditorTheme.textSecondary)
-                        .lineLimit(1)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(NoteEditorTheme.textSecondary)
+                    .lineLimit(2)
+
                     if !compact {
                         HStack(spacing: 6) {
                             gapChip(source.authorSchool ?? "Community")
-                            gapChip("NOTE")
-                            gapChip(source.attachment.hasPdf ? "PDF" : "Note")
+                            gapChip("Relevant community note")
                         }
                     }
                 }
-                Spacer()
-                Text(selected ? "Selected" : "Preview")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(selected ? NoteEditorTheme.accent : NoteEditorTheme.textMuted)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text("\(price) Credits")
+                    .font(.system(size: 11, weight: .black))
+                    .foregroundStyle(NoteEditorTheme.accent)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(NoteEditorTheme.accent.opacity(0.12)))
             }
-            .padding(14)
-            .background(RoundedRectangle(cornerRadius: 16).fill(selected ? NoteEditorTheme.accent.opacity(0.10) : Color.white.opacity(0.72)))
-            .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(selected ? NoteEditorTheme.accent.opacity(0.24) : NoteEditorTheme.chromeBorder, lineWidth: 1))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                viewModel.toggleGapPeerSourceSelection(source.id)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityLabel(selected ? "Deselect \(source.displayTitle)" : "Select \(source.displayTitle)")
+
+            Button("Preview note") {
+                viewModel.pushGapPreview(peerSourceId: source.id)
+            }
+            .font(.system(size: 12, weight: .bold))
+            .foregroundStyle(NoteEditorTheme.textMuted)
+            .buttonStyle(.plain)
+            .padding(.top, 2)
         }
-        .buttonStyle(.plain)
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 16).fill(selected ? NoteEditorTheme.accent.opacity(0.10) : Color.white.opacity(0.72)))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(selected ? NoteEditorTheme.accent.opacity(0.24) : NoteEditorTheme.chromeBorder, lineWidth: 1))
     }
 
     private func sourcePreviewCard(_ source: GapCommunityPeerSource) -> some View {
@@ -1274,11 +1310,7 @@ struct GapDetectionPopup: View {
                 .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(NoteEditorTheme.chromeBorder, lineWidth: 1))
                 .buttonStyle(.plain)
                 Button(selected ? "Remove from this run" : "Use this note") {
-                    if selected {
-                        viewModel.selectedGapPeerSourceIds.remove(source.id)
-                    } else {
-                        viewModel.selectedGapPeerSourceIds.insert(source.id)
-                    }
+                    viewModel.toggleGapPeerSourceSelection(source.id)
                 }
                 .font(.system(size: 13, weight: .bold))
                 .foregroundStyle(selected ? NoteEditorTheme.textPrimary : .white)

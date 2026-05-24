@@ -166,7 +166,8 @@ final class CommunityViewModel: ObservableObject {
                 accessToken: token
             )
             guard generation == loadGeneration else { return }
-            posts = page.posts
+            posts = Self.sortedByRecency(page.posts)
+            reconcileOwnPostAuthors(from: appState?.profile)
             nextCursor = page.nextCursor
             hasMore = page.nextCursor != nil
             // Surface "Sam posted X" entries in the bell-icon inbox for
@@ -212,6 +213,7 @@ final class CommunityViewModel: ObservableObject {
             let existingIds = Set(posts.map(\.id))
             let newOnes = page.posts.filter { !existingIds.contains($0.id) }
             posts.append(contentsOf: newOnes)
+            posts = Self.sortedByRecency(posts)
             nextCursor = page.nextCursor
             hasMore = page.nextCursor != nil
             appState?.notifications.recordNewCommunityPosts(
@@ -294,7 +296,8 @@ final class CommunityViewModel: ObservableObject {
 
     // MARK: - Create / delete posts
 
-    /// Calls `create-post`; on success prepends the result to the feed.
+    /// Calls `create-post`; on success merges the result into the feed in
+    /// reverse-chronological order (newest first, regardless of author).
     /// Caller (`PostEditorPopup`) is responsible for uploading any PDF
     /// attachments first and passing their note IDs in.
     @discardableResult
@@ -316,7 +319,15 @@ final class CommunityViewModel: ObservableObject {
                 major: me.major
             )
         }
-        posts.insert(withAuthor, at: 0)
+        if let existingIndex = posts.firstIndex(where: { $0.id == withAuthor.id }) {
+            posts[existingIndex] = withAuthor
+        } else {
+            posts.append(withAuthor)
+        }
+        posts = Self.sortedByRecency(posts)
+        if let author = withAuthor.author {
+            propagateAuthor(from: author)
+        }
         return withAuthor
     }
 
@@ -339,6 +350,43 @@ final class CommunityViewModel: ObservableObject {
     func upsert(_ post: CommunityPost) {
         if let index = posts.firstIndex(where: { $0.id == post.id }) {
             posts[index] = post
+        } else {
+            posts.append(post)
+            posts = Self.sortedByRecency(posts)
+        }
+        if let author = post.author {
+            propagateAuthor(from: author)
+        }
+    }
+
+    /// Avatar URL for a feed card — prefers the post's cached author block,
+    /// then falls back to the signed-in user's profile when the post is theirs.
+    func avatarUrl(for post: CommunityPost, profile: UserProfile?) -> String? {
+        if let url = post.author?.avatarUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !url.isEmpty {
+            return url
+        }
+        guard post.userId == profile?.id,
+              let url = profile?.avatarUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !url.isEmpty else {
+            return nil
+        }
+        return url
+    }
+
+    /// After loading the feed, backfill the current user's avatar/name onto
+    /// their cached posts without wiping URLs that came back from the server.
+    func reconcileOwnPostAuthors(from profile: UserProfile?) {
+        guard let profile else { return }
+        applyAvatar(for: profile.id, name: profile.displayName, avatarUrl: profile.avatarUrl)
+    }
+
+    private static func sortedByRecency(_ posts: [CommunityPost]) -> [CommunityPost] {
+        posts.sorted { lhs, rhs in
+            if lhs.createdAt != rhs.createdAt {
+                return lhs.createdAt > rhs.createdAt
+            }
+            return lhs.id > rhs.id
         }
     }
 
@@ -386,13 +434,60 @@ final class CommunityViewModel: ObservableObject {
     /// load via the `user_profiles` view.
     func applyAvatar(for userId: String, name: String?, avatarUrl: String?) {
         for index in posts.indices where posts[index].userId == userId {
-            posts[index].author = PostAuthor(
+            posts[index].author = mergePostAuthor(
+                existing: posts[index].author,
                 id: userId,
-                name: name ?? posts[index].author?.name,
+                name: name,
                 avatarUrl: avatarUrl
             )
         }
     }
+
+    /// When one post returns a full author block (e.g. from `get-post`),
+    /// copy the avatar onto every other cached post by the same author so
+    /// the feed stays consistent without opening each card individually.
+    private func propagateAuthor(from author: PostAuthor) {
+        for index in posts.indices where posts[index].userId == author.id {
+            posts[index].author = mergePostAuthor(
+                existing: posts[index].author,
+                id: author.id,
+                name: author.name,
+                avatarUrl: author.avatarUrl,
+                school: author.school,
+                major: author.major
+            )
+        }
+    }
+
+}
+
+// MARK: - Author merge helper
+
+func mergePostAuthor(
+    existing: PostAuthor?,
+    id: String,
+    name: String?,
+    avatarUrl: String?,
+    school: String? = nil,
+    major: String? = nil
+) -> PostAuthor {
+    let resolvedName = {
+        guard let name else { return existing?.name }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? existing?.name : name
+    }()
+    let resolvedAvatar = {
+        guard let avatarUrl else { return existing?.avatarUrl }
+        let trimmed = avatarUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? existing?.avatarUrl : avatarUrl
+    }()
+    return PostAuthor(
+        id: id,
+        name: resolvedName,
+        avatarUrl: resolvedAvatar,
+        school: school ?? existing?.school,
+        major: major ?? existing?.major
+    )
 }
 
 // MARK: - Author propagation helpers
@@ -410,9 +505,10 @@ func patchComments(
     comments.map { existing in
         var patched = existing
         if existing.userId == targetUserId {
-            patched.author = PostAuthor(
+            patched.author = mergePostAuthor(
+                existing: existing.author,
                 id: targetUserId,
-                name: name ?? existing.author.name,
+                name: name,
                 avatarUrl: avatarUrl
             )
         }

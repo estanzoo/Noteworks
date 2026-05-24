@@ -408,10 +408,11 @@ struct NoteEditorView: View {
             // second note from CourseSpace while the editor is already
             // on-screen, `store.openNoteInEditor` will just add it to
             // `openNoteIds` and flip `activeOpenNoteId`.
-            if let initialId = noteId {
+            if !isTutorialPresentation, let initialId = noteId {
                 store.openNoteInEditor(initialId)
             }
-            viewModel.attach(store: store, noteId: store.activeOpenNoteId ?? noteId, creditsStore: appState.creditsStore)
+            let attachedNoteId = isTutorialPresentation ? nil : (store.activeOpenNoteId ?? noteId)
+            viewModel.attach(store: store, noteId: attachedNoteId, creditsStore: appState.creditsStore)
             selectedOverlayId = nil
             editingOverlayId = nil
             // Tell MainTabView to retract its floating Home/Library/

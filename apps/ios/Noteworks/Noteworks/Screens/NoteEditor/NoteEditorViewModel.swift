@@ -1356,6 +1356,14 @@ final class NoteEditorViewModel: ObservableObject {
         gapCommunitySources.first { $0.id == id }
     }
 
+    func toggleGapPeerSourceSelection(_ id: String) {
+        if selectedGapPeerSourceIds.contains(id) {
+            selectedGapPeerSourceIds.remove(id)
+        } else {
+            selectedGapPeerSourceIds.insert(id)
+        }
+    }
+
     func addGapClassMaterial(filename: String, data: Data, isPDF: Bool) {
         if gapClassMaterials.count >= 5 {
             gapMaterialNotice = "You can attach up to five class materials."

@@ -166,7 +166,8 @@ struct CommunityPostDetailPopup: View {
     private func applyProfileToThread(_ profile: UserProfile?) {
         guard let profile else { return }
         if post.userId == profile.id {
-            post.author = PostAuthor(
+            post.author = mergePostAuthor(
+                existing: post.author,
                 id: profile.id,
                 name: profile.displayName,
                 avatarUrl: profile.avatarUrl,

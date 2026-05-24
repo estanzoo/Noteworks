@@ -28,6 +28,17 @@ private struct PageRotateOption: Identifiable {
     ]
 }
 
+private struct RotateButtonAnchorKey: PreferenceKey {
+    static var defaultValue: CGRect = .zero
+
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        let next = nextValue()
+        if next != .zero {
+            value = next
+        }
+    }
+}
+
 // MARK: - Modal
 
 struct PageThumbnailsModal: View {
@@ -39,6 +50,7 @@ struct PageThumbnailsModal: View {
     @State private var selectMode = false
     @State private var selectedPages: Set<Int> = []
     @State private var rotateMenuOpen = false
+    @State private var rotateButtonFrame: CGRect = .zero
     @State private var deleteConfirmOpen = false
     @State private var draggingPage: Int?
 
@@ -59,6 +71,29 @@ struct PageThumbnailsModal: View {
                 .ignoresSafeArea()
                 .onTapGesture { onClose() }
 
+            modalCard
+
+            if deleteConfirmOpen {
+                deleteConfirmOverlay
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea(.keyboard, edges: .bottom)
+        .onAppear {
+            resetSelectionState()
+        }
+        .onChange(of: viewModel.currentPage) { _, _ in
+            if !selectMode {
+                selectedPages = []
+            }
+        }
+    }
+
+    private var modalCard: some View {
+        GeometryReader { proxy in
+            let modalWidth = min(1060, proxy.size.width - 40)
+            let modalHeight = min(proxy.size.height * 0.84, max(320, proxy.size.height - 72))
+
             VStack(spacing: 0) {
                 headerBar
                 if selectMode {
@@ -66,8 +101,19 @@ struct PageThumbnailsModal: View {
                 }
                 thumbnailGrid
             }
-            .frame(maxWidth: 1060)
-            .frame(maxHeight: UIScreen.main.bounds.height * 0.84)
+            .coordinateSpace(name: "PageThumbnailsModal")
+            .overlay(alignment: .topLeading) {
+                if rotateMenuOpen, selectMode, hasSelection {
+                    rotateDropdownMenu
+                        .offset(
+                            x: rotateButtonFrame.minX,
+                            y: rotateButtonFrame.maxY + 8
+                        )
+                        .zIndex(40)
+                }
+            }
+            .onPreferenceChange(RotateButtonAnchorKey.self) { rotateButtonFrame = $0 }
+            .frame(width: modalWidth, height: modalHeight)
             .background(
                 LinearGradient(
                     colors: [
@@ -84,20 +130,7 @@ struct PageThumbnailsModal: View {
                     .strokeBorder(Color.white.opacity(0.74), lineWidth: 1)
             )
             .shadow(color: Color(red: 65/255, green: 82/255, blue: 105/255).opacity(0.22), radius: 38, y: 18)
-            .padding(.horizontal, 20)
-            .padding(.vertical, 36)
-
-            if deleteConfirmOpen {
-                deleteConfirmOverlay
-            }
-        }
-        .onAppear {
-            resetSelectionState()
-        }
-        .onChange(of: viewModel.currentPage) { _, _ in
-            if !selectMode {
-                selectedPages = []
-            }
+            .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
         }
     }
 
@@ -145,51 +178,16 @@ struct PageThumbnailsModal: View {
 
     private var selectToolbar: some View {
         HStack(spacing: 10) {
-            ZStack(alignment: .topLeading) {
-                ThumbnailActionButton(title: "Rotate", showsChevron: true, disabled: !hasSelection) {
-                    guard hasSelection else { return }
-                    rotateMenuOpen.toggle()
-                }
-
-                if rotateMenuOpen, hasSelection {
-                    VStack(spacing: 8) {
-                        ForEach(PageRotateOption.all) { option in
-                            Button {
-                                viewModel.rotatePages(Array(selectedPages).sorted(), to: option.rotation)
-                                rotateMenuOpen = false
-                            } label: {
-                                HStack(spacing: 10) {
-                                    Image(systemName: option.symbol)
-                                        .font(.system(size: 14, weight: .semibold))
-                                        .foregroundStyle(NoteEditorTheme.accent)
-                                        .frame(width: 18)
-                                    Text(option.label)
-                                        .font(.system(size: 13, weight: .bold))
-                                        .foregroundStyle(NoteEditorTheme.textPrimary)
-                                    Spacer(minLength: 0)
-                                }
-                                .padding(.horizontal, 14)
-                                .frame(minHeight: 46)
-                                .background(Color.white.opacity(0.94), in: RoundedRectangle(cornerRadius: 16))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 16)
-                                        .strokeBorder(Color(red: 217/255, green: 225/255, blue: 233/255).opacity(0.92), lineWidth: 1)
-                                )
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(10)
-                    .frame(width: 264, alignment: .leading)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
-                    .background(Color.white.opacity(0.96), in: RoundedRectangle(cornerRadius: 16))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16)
-                            .strokeBorder(NoteEditorTheme.glassBorder, lineWidth: 1)
+            ThumbnailActionButton(title: "Rotate", showsChevron: true, disabled: !hasSelection) {
+                guard hasSelection else { return }
+                rotateMenuOpen.toggle()
+            }
+            .background {
+                GeometryReader { geo in
+                    Color.clear.preference(
+                        key: RotateButtonAnchorKey.self,
+                        value: geo.frame(in: .named("PageThumbnailsModal"))
                     )
-                    .shadow(color: .black.opacity(0.14), radius: 20, y: 10)
-                    .offset(y: 50)
-                    .zIndex(20)
                 }
             }
 
@@ -200,6 +198,7 @@ struct PageThumbnailsModal: View {
 
             ThumbnailActionButton(title: "Delete", disabled: !hasSelection, tint: NoteEditorTheme.danger) {
                 guard hasSelection else { return }
+                rotateMenuOpen = false
                 deleteConfirmOpen = true
             }
 
@@ -213,6 +212,45 @@ struct PageThumbnailsModal: View {
                 .fill(Color(red: 210/255, green: 222/255, blue: 234/255).opacity(0.55))
                 .frame(height: 1)
         }
+    }
+
+    private var rotateDropdownMenu: some View {
+        VStack(spacing: 8) {
+            ForEach(PageRotateOption.all) { option in
+                Button {
+                    viewModel.rotatePages(Array(selectedPages).sorted(), to: option.rotation)
+                    rotateMenuOpen = false
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: option.symbol)
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(NoteEditorTheme.accent)
+                            .frame(width: 18)
+                        Text(option.label)
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(NoteEditorTheme.textPrimary)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(minHeight: 46)
+                    .background(Color.white.opacity(0.94), in: RoundedRectangle(cornerRadius: 16))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16)
+                            .strokeBorder(Color(red: 217/255, green: 225/255, blue: 233/255).opacity(0.92), lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(10)
+        .frame(width: 264, alignment: .leading)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .background(Color.white.opacity(0.96), in: RoundedRectangle(cornerRadius: 16))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .strokeBorder(NoteEditorTheme.glassBorder, lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.14), radius: 20, y: 10)
     }
 
     // MARK: - Grid

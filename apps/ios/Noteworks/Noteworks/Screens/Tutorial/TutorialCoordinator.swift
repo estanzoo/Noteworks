@@ -13,6 +13,9 @@ final class TutorialCoordinator: ObservableObject {
 
     private static let completedKey = "noteworks.tutorial.completed"
 
+    /// Sentinel ID for the AI-step note editor presentation. Never written to `NotesStore`.
+    static let ephemeralNoteId = "__tutorial__"
+
     @Published var isActive = false
     @Published var stepIndex = 0
     @Published var showSkipConfirm = false
@@ -118,16 +121,9 @@ final class TutorialCoordinator: ObservableObject {
         return true
     }
 
-    /// Creates (or reuses) the note used during AI tutorial steps.
-    func ensureTutorialNote(in store: NotesStore, forceNew: Bool = false) -> String {
-        if !forceNew,
-           let existingId = tutorialNoteId,
-           store.note(id: existingId) != nil {
-            return existingId
-        }
-        let note = store.createDraftNote()
-        tutorialNoteId = note.id
-        return note.id
+    /// Presents the note editor shell during AI tutorial steps without creating a store note.
+    func presentTutorialNoteEditor() {
+        tutorialNoteId = Self.ephemeralNoteId
     }
 
     func primaryButtonTapped() {

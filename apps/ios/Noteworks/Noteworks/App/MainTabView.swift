@@ -196,8 +196,7 @@ struct MainTabView: View {
                 withAnimation(.easeInOut(duration: 0.22)) { selectedTab = .notebook }
             }
         case .note:
-            let noteId = tutorial.ensureTutorialNote(in: store, forceNew: step.id == "ai")
-            tutorial.tutorialNoteId = noteId
+            tutorial.presentTutorialNoteEditor()
         case .community:
             tutorial.tutorialNoteId = nil
             if selectedTab != .people {

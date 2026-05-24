@@ -39,6 +39,9 @@ struct HomeView: View {
     // app launches.
     @State private var isEditingLayout = false
     @State private var pendingDeleteName: String? = nil
+    /// Fallback spotlight for the `home-bubbles` tutorial step when Untitled
+    /// Bubble is not on Home — picked once per visit to that step.
+    @State private var tutorialBubbleHighlightName: String? = nil
 
     private var unreadCount: Int { appState.notifications.unreadCount }
 
@@ -132,6 +135,17 @@ struct HomeView: View {
             // animating away, leaving a half-second of "Home behind a
             // keyboard" — the messy display the user reported.
             dismissKeyboard()
+            assignTutorialBubbleHighlightIfNeeded()
+        }
+        .onChange(of: appState.tutorialCoordinator.currentStepId) { _, _ in
+            assignTutorialBubbleHighlightIfNeeded()
+        }
+        .onChange(of: appState.tutorialCoordinator.isActive) { _, active in
+            if !active {
+                tutorialBubbleHighlightName = nil
+            } else {
+                assignTutorialBubbleHighlightIfNeeded()
+            }
         }
     }
 
@@ -308,6 +322,8 @@ struct HomeView: View {
 
                 ForEach(Array(bubbles.enumerated()), id: \.element.id) { index, course in
                     let isUntitledBubble = course.name.caseInsensitiveCompare(NotesStore.initialGuestBubbleName) == .orderedSame
+                    let isTutorialTarget = tutorialHighlightBubbleName(in: bubbles)
+                        .map { course.name.caseInsensitiveCompare($0) == .orderedSame } ?? false
                     HomeBubbleCell(
                         course: course,
                         index: index,
@@ -316,7 +332,7 @@ struct HomeView: View {
                         hasManualOffset: store.bubble(named: course.name)?.manualOffsetX != nil,
                         isReservedName: Self.isReservedBubbleName(course.name),
                         canDelete: course.name.caseInsensitiveCompare(NotesStore.initialGuestBubbleName) != .orderedSame,
-                        isTutorialTarget: isUntitledBubble,
+                        isTutorialTarget: isTutorialTarget,
                         onTap: { handleBubbleTap(course.name, isUntitledBubble: isUntitledBubble) },
                         onRename: { handleRenameBubble(course.name) },
                         onMoveAll: { handleEnterEditMode() },
@@ -368,6 +384,35 @@ struct HomeView: View {
                 .shadow(color: .black.opacity(0.06), radius: 4, x: 0, y: 2)
         }
         .buttonStyle(.plain)
+    }
+
+    // MARK: - Tutorial bubble spotlight
+
+    private func tutorialHighlightBubbleName(in bubbles: [CourseBubble]) -> String? {
+        guard appState.tutorialCoordinator.isActive,
+              appState.tutorialCoordinator.currentStepId == "home-bubbles" else { return nil }
+        if bubbles.contains(where: {
+            $0.name.caseInsensitiveCompare(NotesStore.initialGuestBubbleName) == .orderedSame
+        }) {
+            return NotesStore.initialGuestBubbleName
+        }
+        return tutorialBubbleHighlightName
+    }
+
+    private func assignTutorialBubbleHighlightIfNeeded() {
+        guard appState.tutorialCoordinator.isActive,
+              appState.tutorialCoordinator.currentStepId == "home-bubbles" else {
+            tutorialBubbleHighlightName = nil
+            return
+        }
+        if store.bubbleNames.contains(where: {
+            $0.caseInsensitiveCompare(NotesStore.initialGuestBubbleName) == .orderedSame
+        }) {
+            tutorialBubbleHighlightName = nil
+            return
+        }
+        guard tutorialBubbleHighlightName == nil else { return }
+        tutorialBubbleHighlightName = store.bubbleNames.randomElement()
     }
 
     // MARK: - Bubble actions

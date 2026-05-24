@@ -323,6 +323,7 @@ struct CommunityView: View {
             ForEach(viewModel.posts) { post in
                 PostCardView(
                     post: post,
+                    avatarUrl: viewModel.avatarUrl(for: post, profile: appState.profile),
                     onOpen: {
                         withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
                             activePostId = post.id
@@ -710,6 +711,7 @@ private struct PostNewCardView: View {
 
 private struct PostCardView: View {
     let post: CommunityPost
+    let avatarUrl: String?
     let onOpen: () -> Void
     let onToggleLike: () -> Void
     let onHashtagTap: (String) -> Void
@@ -721,7 +723,7 @@ private struct PostCardView: View {
                     CommunityAvatar(
                         name: post.authorName,
                         size: 40,
-                        avatarUrl: post.author?.avatarUrl
+                        avatarUrl: avatarUrl
                     )
 
                     VStack(alignment: .leading, spacing: 2) {
@@ -890,13 +892,12 @@ private struct CommunityViewLifecycleModifier: ViewModifier {
                     consumePendingCommunityPost(post)
                 }
                 if let me = appState.profile {
-                    viewModel.applyAvatar(for: me.id, name: me.displayName, avatarUrl: me.avatarUrl)
+                    viewModel.reconcileOwnPostAuthors(from: me)
                 }
                 syncTutorialCommunityState()
             }
             .onChange(of: appState.profile) { _, newProfile in
-                guard let me = newProfile else { return }
-                viewModel.applyAvatar(for: me.id, name: me.displayName, avatarUrl: me.avatarUrl)
+                viewModel.reconcileOwnPostAuthors(from: newProfile)
             }
             .onChange(of: tutorial.tutorialCommunityComposerOpen) { _, shouldOpen in
                 if shouldOpen {
