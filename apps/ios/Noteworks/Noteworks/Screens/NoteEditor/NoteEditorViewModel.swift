@@ -504,6 +504,16 @@ final class NoteEditorViewModel: ObservableObject {
     /// drops stale persists, so a fast page flip never writes one page's
     /// strokes onto the next page's file.
     private var drawingGeneration: Int = 0
+    /// Bumped only when the view model intentionally replaces the page
+    /// drawing (page load, clear page). `PencilCanvasView` watches this
+    /// so it can push the binding into `PKCanvasView` without echoing
+    /// every live stroke back — reassigning `canvasView.drawing` clears
+    /// PencilKit's undo stack and breaks stroke identifiers.
+    @Published private(set) var drawingPushGeneration: Int = 0
+    /// Unified undo/redo for strokes + overlays on the active page.
+    private var pageEditHistory = NoteEditorPageHistory()
+    @Published private(set) var canUndoPageEdit = false
+    @Published private(set) var canRedoPageEdit = false
     private var cancellables = Set<AnyCancellable>()
     /// Last pen / highlighter / lasso — used when leaving eraser via Apple Pencil double-tap.
     private var lastInkToolForPencil: NoteEditorTool = .pen
@@ -702,8 +712,10 @@ final class NoteEditorViewModel: ObservableObject {
         guard let id = noteId, let store else { return }
         let saved = store.loadDrawing(for: id, page: page) ?? PKDrawing()
         drawingGeneration += 1
+        drawingPushGeneration += 1
         skipNextDrawingPersist = true
         drawing = saved
+        clearPageEditHistory()
     }
 
     /// Called from the view's `onChange(of: viewModel.drawing)`. Debounces
@@ -945,10 +957,20 @@ final class NoteEditorViewModel: ObservableObject {
         }
         guard hasLoaded, let id = noteId, let store else { return }
         clearPageArmed = false
-        drawingGeneration += 1
-        skipNextDrawingPersist = true
-        drawing = PKDrawing()
-        store.clearCurrentPage(noteId: id)
+        if let before = makePageSnapshot(store: store) {
+            drawingGeneration += 1
+            drawingPushGeneration += 1
+            skipNextDrawingPersist = true
+            drawing = PKDrawing()
+            store.clearCurrentPage(noteId: id)
+            recordPageMutation(before: before, store: store)
+        } else {
+            drawingGeneration += 1
+            drawingPushGeneration += 1
+            skipNextDrawingPersist = true
+            drawing = PKDrawing()
+            store.clearCurrentPage(noteId: id)
+        }
         flashStatus("Page cleared")
     }
 
@@ -1168,7 +1190,7 @@ final class NoteEditorViewModel: ObservableObject {
         case .shape: return shapeStatus()
         case .text: return textStatus()
         case .image: return "Pick an image to insert"
-        case .imageSelect: return "Image select"
+        case .imageSelect: return "Select mode"
         }
     }
 
@@ -1967,6 +1989,91 @@ final class NoteEditorViewModel: ObservableObject {
 
     // MARK: - Overlay helpers
 
+    /// Snapshot of the active page's ink + stickers for undo/redo.
+    func makePageSnapshot(store: NotesStore) -> NoteEditorPageSnapshot? {
+        guard let noteId else { return nil }
+        let overlays = store.overlays(for: noteId, page: currentPage)
+        var imageData: [String: Data] = [:]
+        for overlay in overlays where overlay.kind == .image {
+            guard let filename = overlay.imageFilename,
+                  let data = store.loadOverlayImageData(for: noteId, filename: filename)
+            else { continue }
+            imageData[filename] = data
+        }
+        return NoteEditorPageSnapshot(
+            drawing: drawing,
+            overlays: overlays,
+            overlayImageData: imageData
+        )
+    }
+
+    func clearPageEditHistory() {
+        pageEditHistory.clear()
+        syncPageEditHistoryUI()
+    }
+
+    /// Records `before` when it differs from the current page state.
+    func recordPageMutation(before snapshot: NoteEditorPageSnapshot, store: NotesStore) {
+        guard let current = makePageSnapshot(store: store), snapshot != current else { return }
+        pageEditHistory.record(before: snapshot)
+        syncPageEditHistoryUI()
+    }
+
+    /// Registers a completed PencilKit stroke (or erase) step.
+    func handleLiveDrawingChange(from previousDrawing: PKDrawing, store: NotesStore) {
+        guard previousDrawing != drawing else { return }
+        var before = makePageSnapshot(store: store) ?? NoteEditorPageSnapshot(
+            drawing: previousDrawing,
+            overlays: [],
+            overlayImageData: [:]
+        )
+        before.drawing = previousDrawing
+        recordPageMutation(before: before, store: store)
+    }
+
+    @discardableResult
+    func undoPageEdit(store: NotesStore, canvas: PKCanvasView?) -> Bool {
+        guard let current = makePageSnapshot(store: store),
+              let previous = pageEditHistory.popUndo(current: current)
+        else { return false }
+        applyPageSnapshot(previous, store: store, canvas: canvas)
+        return true
+    }
+
+    @discardableResult
+    func redoPageEdit(store: NotesStore, canvas: PKCanvasView?) -> Bool {
+        guard let current = makePageSnapshot(store: store),
+              let next = pageEditHistory.popRedo(current: current)
+        else { return false }
+        applyPageSnapshot(next, store: store, canvas: canvas)
+        return true
+    }
+
+    private func applyPageSnapshot(
+        _ snapshot: NoteEditorPageSnapshot,
+        store: NotesStore,
+        canvas: PKCanvasView?
+    ) {
+        guard let noteId else { return }
+        store.replacePageOverlays(
+            snapshot.overlays,
+            forPage: currentPage,
+            in: noteId,
+            restoringImageData: snapshot.overlayImageData
+        )
+        drawingGeneration += 1
+        drawingPushGeneration += 1
+        skipNextDrawingPersist = true
+        drawing = snapshot.drawing
+        canvas?.undoManager?.removeAllActions()
+        syncPageEditHistoryUI()
+    }
+
+    private func syncPageEditHistoryUI() {
+        canUndoPageEdit = pageEditHistory.canUndo
+        canRedoPageEdit = pageEditHistory.canRedo
+    }
+
     /// Convenience pass-through for the overlay layer — returns the
     /// store's overlays filtered to the active note + page. Returning
     /// `[]` when there's no active note keeps preview rendering simple.
@@ -1979,6 +2086,7 @@ final class NoteEditorViewModel: ObservableObject {
     /// passes the typed string + style picked in the editor sheet.
     func insertTextOverlay(store: NotesStore, text: String, fontSize: CGFloat, colorHex: String) -> String? {
         guard let noteId else { return nil }
+        let before = makePageSnapshot(store: store)
         let overlay = NotePageOverlay.text(
             page: currentPage,
             text: text,
@@ -1986,6 +2094,9 @@ final class NoteEditorViewModel: ObservableObject {
             colorHex: colorHex
         )
         store.addOverlay(overlay, to: noteId)
+        if let before {
+            recordPageMutation(before: before, store: store)
+        }
         flashStatus("Text added")
         return overlay.id
     }
@@ -1999,11 +2110,15 @@ final class NoteEditorViewModel: ObservableObject {
         newColorHex: String
     ) {
         guard let noteId else { return }
+        let before = makePageSnapshot(store: store)
         var updated = overlay
         updated.text = newText
         updated.fontSize = newFontSize
         updated.colorHex = newColorHex
         store.updateOverlay(updated, in: noteId)
+        if let before {
+            recordPageMutation(before: before, store: store)
+        }
         flashStatus("Text updated")
     }
 
@@ -2012,6 +2127,7 @@ final class NoteEditorViewModel: ObservableObject {
     /// Drops a vector shape on the current page using the panel's type + color.
     func insertShapeOverlay(store: NotesStore) -> String? {
         guard let noteId else { return nil }
+        let before = makePageSnapshot(store: store)
         let overlay = NotePageOverlay.shape(
             page: currentPage,
             shapeType: shapeType.rawValue,
@@ -2019,6 +2135,9 @@ final class NoteEditorViewModel: ObservableObject {
             normRect: defaultNormRect(for: shapeType)
         )
         store.addOverlay(overlay, to: noteId)
+        if let before {
+            recordPageMutation(before: before, store: store)
+        }
         return overlay.id
     }
 
@@ -2035,6 +2154,7 @@ final class NoteEditorViewModel: ObservableObject {
 
     func insertImageOverlay(store: NotesStore, data: Data, pixelSize: CGSize) -> String? {
         guard let noteId else { return nil }
+        let before = makePageSnapshot(store: store)
         let filename = "\(UUID().uuidString).png"
         store.saveOverlayImageData(data, for: noteId, filename: filename)
         let normRect = defaultImageNormRect(for: pixelSize)
@@ -2044,6 +2164,9 @@ final class NoteEditorViewModel: ObservableObject {
             normRect: normRect
         )
         store.addOverlay(overlay, to: noteId)
+        if let before {
+            recordPageMutation(before: before, store: store)
+        }
         flashStatus("Image added")
         return overlay.id
     }

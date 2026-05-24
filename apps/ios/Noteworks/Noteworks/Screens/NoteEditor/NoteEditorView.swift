@@ -51,11 +51,10 @@ struct NoteEditorView: View {
     /// Live `PKCanvasView` reference — used by the chrome's undo/redo
     /// buttons. Captured once via `onCanvasReady`.
     @State private var liveCanvas: PKCanvasView? = nil
-    @State private var canUndoCanvas = false
-    @State private var canRedoCanvas = false
-    /// Counter that ticks every time the canvas reports a change so undo /
-    /// redo enabled-state in the chrome stays in sync.
-    @State private var canvasRevision: Int = 0
+    /// Page snapshot captured at the start of a move/resize gesture.
+    @State private var overlayMutationSnapshot: NoteEditorPageSnapshot? = nil
+    /// Page snapshot captured when inline text editing begins.
+    @State private var textEditSnapshot: NoteEditorPageSnapshot? = nil
     /// Full frame of each panel-bearing trigger in the shared
     /// "NoteEditorCoord" space (pen / eraser / highlighter buttons in
     /// the tool strip, AI pill in the header row, ellipsis button in
@@ -472,8 +471,6 @@ struct NoteEditorView: View {
         }
         .onChange(of: viewModel.drawing) { _, _ in
             viewModel.handleDrawingChange()
-            canvasRevision &+= 1
-            refreshCanvasUndoState()
         }
         .onChange(of: viewModel.noteTitle) { _, newValue in
             viewModel.handleTitleChange(newValue)
@@ -532,6 +529,23 @@ struct NoteEditorView: View {
             if let newId = viewModel.insertShapeOverlay(store: store) {
                 selectedOverlayId = newId
                 editingOverlayId = nil
+                if let overlay = viewModel.currentPageOverlays(store: store)
+                    .first(where: { $0.id == newId }) {
+                    enterSelectMode(for: overlay)
+                }
+            }
+        }
+        .onChange(of: editingOverlayId) { oldValue, newValue in
+            if newValue != nil {
+                textEditSnapshot = viewModel.makePageSnapshot(store: store)
+            } else if oldValue != nil, let before = textEditSnapshot {
+                viewModel.recordPageMutation(before: before, store: store)
+                textEditSnapshot = nil
+                if let selectedId = selectedOverlayId,
+                   let overlay = viewModel.currentPageOverlays(store: store)
+                    .first(where: { $0.id == selectedId }) {
+                    enterSelectMode(for: overlay)
+                }
             }
         }
         .onChange(of: viewModel.currentPage) { _, _ in
@@ -661,7 +675,10 @@ struct NoteEditorView: View {
                     pixelSize: downscaled.size
                 ) {
                     selectedOverlayId = newId
-                    viewModel.selectTool(.imageSelect)
+                    if let overlay = viewModel.currentPageOverlays(store: store)
+                        .first(where: { $0.id == newId }) {
+                        enterSelectMode(for: overlay)
+                    }
                 }
             }
         } catch {
@@ -1010,46 +1027,50 @@ struct NoteEditorView: View {
         NoteEditorToolStrip(
             viewModel: viewModel,
             openPanel: $openPanel,
-            canUndo: canUndoCanvas,
-            canRedo: canRedoCanvas,
-            onUndo: handleCanvasUndo,
-            onRedo: handleCanvasRedo,
+            canUndo: viewModel.canUndoPageEdit,
+            canRedo: viewModel.canRedoPageEdit,
+            onUndo: handleEditorUndo,
+            onRedo: handleEditorRedo,
             onOpenThumbnails: {
                 openPanel = nil
                 showPageThumbnails = true
                 viewModel.flashStatus("Page thumbnails opened")
             }
         )
-        .id(canvasRevision)
     }
 
-    private func refreshCanvasUndoState() {
-        canUndoCanvas = liveCanvas?.undoManager?.canUndo ?? false
-        canRedoCanvas = liveCanvas?.undoManager?.canRedo ?? false
-    }
-
-    private func handleCanvasUndo() {
-        guard let canvas = liveCanvas else { return }
-        canvas.undoManager?.undo()
-        // Keep the view model in sync if PencilKit did not emit
-        // `canvasViewDrawingDidChange` for this undo step (defensive).
-        if viewModel.drawing != canvas.drawing {
-            viewModel.drawing = canvas.drawing
-        }
-        refreshCanvasUndoState()
-        canvasRevision &+= 1
+    private func handleEditorUndo() {
+        guard viewModel.undoPageEdit(store: store, canvas: liveCanvas) else { return }
+        selectedOverlayId = nil
+        editingOverlayId = nil
         viewModel.flashStatus("Undo")
     }
 
-    private func handleCanvasRedo() {
-        guard let canvas = liveCanvas else { return }
-        canvas.undoManager?.redo()
-        if viewModel.drawing != canvas.drawing {
-            viewModel.drawing = canvas.drawing
-        }
-        refreshCanvasUndoState()
-        canvasRevision &+= 1
+    private func handleEditorRedo() {
+        guard viewModel.redoPageEdit(store: store, canvas: liveCanvas) else { return }
+        selectedOverlayId = nil
+        editingOverlayId = nil
         viewModel.flashStatus("Redo")
+    }
+
+    /// Commits an overlay move/resize/pinch gesture as one undo step.
+    private func commitOverlayMutationIfNeeded() {
+        guard let before = overlayMutationSnapshot else { return }
+        viewModel.recordPageMutation(before: before, store: store)
+        overlayMutationSnapshot = nil
+    }
+
+    /// Switches to select mode so Apple Pencil can move / resize the sticker.
+    private func enterSelectMode(for overlay: NotePageOverlay) {
+        guard overlay.kind.supportsSelectMode else { return }
+        if overlay.kind == .image, let noteId = viewModel.noteId {
+            store.bringOverlayToFront(
+                id: overlay.id,
+                onPage: viewModel.currentPage,
+                in: noteId
+            )
+        }
+        viewModel.selectTool(.imageSelect)
     }
 
     // MARK: - Canvas area
@@ -1127,21 +1148,15 @@ struct NoteEditorView: View {
         }
     }
 
-    /// Brings an image sticker to the top of the current page's overlay stack.
-    private func bringImageOverlayToFront(_ overlay: NotePageOverlay) {
-        guard overlay.kind == .image, let noteId = viewModel.noteId else { return }
-        store.bringOverlayToFront(
-            id: overlay.id,
-            onPage: viewModel.currentPage,
-            in: noteId
-        )
-    }
-
     /// Removes the overlay and clears selection chrome.
     private func deleteOverlay(_ overlay: NotePageOverlay, noteId: String) {
+        let before = viewModel.makePageSnapshot(store: store)
         if editingOverlayId == overlay.id { editingOverlayId = nil }
         if selectedOverlayId == overlay.id { selectedOverlayId = nil }
         store.removeOverlay(id: overlay.id, from: noteId)
+        if let before {
+            viewModel.recordPageMutation(before: before, store: store)
+        }
         manipulationOverlayId = nil
         manipulationCorner = nil
         isOverlayDragging = false
@@ -1157,15 +1172,19 @@ struct NoteEditorView: View {
         noteId: String,
         pageSize: CGSize
     ) {
+        let before = viewModel.makePageSnapshot(store: store)
         guard let copy = store.duplicateOverlay(
             overlay,
             in: noteId,
             pageSize: pageSize,
             offsetPoints: CGSize(width: 24, height: 24)
         ) else { return }
+        if let before {
+            viewModel.recordPageMutation(before: before, store: store)
+        }
         selectedOverlayId = copy.id
         editingOverlayId = nil
-        viewModel.selectTool(.imageSelect)
+        enterSelectMode(for: copy)
         viewModel.flashStatus("Duplicated")
     }
 
@@ -1194,6 +1213,7 @@ struct NoteEditorView: View {
 
         switch phase {
         case .began:
+            overlayMutationSnapshot = viewModel.makePageSnapshot(store: store)
             // Find the selected overlay; if no selection yet, pick the
             // top-most overlay under the touch and select it. This
             // lets the user grab and drag in one motion without a
@@ -1229,10 +1249,7 @@ struct NoteEditorView: View {
 
             if selectedOverlayId != id { selectedOverlayId = id }
             editingOverlayId = nil
-            if overlay.kind == .image {
-                bringImageOverlayToFront(overlay)
-                viewModel.selectTool(.imageSelect)
-            }
+            enterSelectMode(for: overlay)
             manipulationOverlayId = id
             manipulationStartRect = rect
             manipulationCorner = corner
@@ -1264,11 +1281,13 @@ struct NoteEditorView: View {
                 pageSize: pageSize
             )
             store.updateOverlay(updated, in: noteId)
+            commitOverlayMutationIfNeeded()
             manipulationOverlayId = nil
             manipulationCorner = nil
             isOverlayDragging = false
 
         case .cancelled:
+            overlayMutationSnapshot = nil
             manipulationOverlayId = nil
             manipulationCorner = nil
             isOverlayDragging = false
@@ -1287,6 +1306,7 @@ struct NoteEditorView: View {
 
         switch phase {
         case .began:
+            overlayMutationSnapshot = viewModel.makePageSnapshot(store: store)
             guard let selectedId = selectedOverlayId,
                   let overlay = overlays.first(where: { $0.id == selectedId && $0.kind == .image })
             else { return }
@@ -1319,10 +1339,12 @@ struct NoteEditorView: View {
                 pageSize: pageSize
             )
             store.updateOverlay(updated, in: noteId)
+            commitOverlayMutationIfNeeded()
             manipulationOverlayId = nil
             isOverlayDragging = false
 
         case .cancelled:
+            overlayMutationSnapshot = nil
             manipulationOverlayId = nil
             isOverlayDragging = false
         }
@@ -1512,18 +1534,16 @@ struct NoteEditorView: View {
             guard rect.contains(point) else { continue }
 
             if selectedOverlayId == overlay.id {
-                if overlay.kind == .image {
+                switch overlay.kind {
+                case .image, .shape:
                     deselectOverlays()
-                } else if overlay.kind == .text {
+                case .text:
                     editingOverlayId = overlay.id
                 }
             } else {
                 selectedOverlayId = overlay.id
                 editingOverlayId = nil
-                if overlay.kind == .image {
-                    bringImageOverlayToFront(overlay)
-                    viewModel.selectTool(.imageSelect)
-                }
+                enterSelectMode(for: overlay)
             }
             return
         }
@@ -1643,9 +1663,10 @@ struct NoteEditorView: View {
         pageStack
     }
 
-    /// Bumps when persisted page/overlay data changes — not during live drag.
+    /// Bumps when persisted page/overlay data changes — not during live
+    /// drawing or undo/redo (those must not remount the page canvas).
     private var pageContentStamp: Int {
-        var stamp = canvasRevision
+        var stamp = 0
         stamp = stamp &* 31 &+ (viewModel.noteId?.hashValue ?? 0)
         stamp = stamp &* 31 &+ viewModel.currentPage
         stamp = stamp &* 31 &+ viewModel.currentPageRotation
@@ -1701,7 +1722,14 @@ struct NoteEditorView: View {
                         selectedId: $selectedOverlayId,
                         editingId: $editingOverlayId,
                         onUpdate: { updated in
-                            store.updateOverlay(updated, in: noteId)
+                            if editingOverlayId == updated.id {
+                                store.updateOverlay(updated, in: noteId)
+                            } else if let before = viewModel.makePageSnapshot(store: store) {
+                                store.updateOverlay(updated, in: noteId)
+                                viewModel.recordPageMutation(before: before, store: store)
+                            } else {
+                                store.updateOverlay(updated, in: noteId)
+                            }
                         },
                         onDelete: { overlay in
                             deleteOverlay(overlay, noteId: noteId)
@@ -1726,6 +1754,7 @@ struct NoteEditorView: View {
                 }
                 PencilCanvasView(
                     drawing: $viewModel.drawing,
+                    drawingPushGeneration: viewModel.drawingPushGeneration,
                     tool: viewModel.pkTool,
                     zoomScale: canvasZoom,
                     drawingPolicy: .pencilOnly,
@@ -1741,7 +1770,12 @@ struct NoteEditorView: View {
                     passesPencilTouchesThrough: passesPencilToOverlays,
                     onCanvasReady: { canvas in
                         self.liveCanvas = canvas
-                        refreshCanvasUndoState()
+                    },
+                    onDrawingChanged: { previousDrawing in
+                        viewModel.handleLiveDrawingChange(
+                            from: previousDrawing,
+                            store: store
+                        )
                     },
                     onPencilDoubleTap: { interaction in
                         viewModel.handlePencilDoubleTap(interaction: interaction)
