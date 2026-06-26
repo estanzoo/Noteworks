@@ -226,6 +226,11 @@ extension CommunityPost {
         if let name = author?.name, !name.isEmpty { return name }
         return "Student"
     }
+
+    /// Image-only media URLs attached to this post (photos in the feed).
+    var imageURLs: [String] {
+        media.filter(\.isImage).map(\.url)
+    }
 }
 
 // MARK: - Comment

@@ -73,49 +73,70 @@ final class PDFStorageService {
                 let pageSize = Self.logicalPageSize(for: setting)
 
                 pdfContext.beginPage(withBounds: CGRect(origin: .zero, size: pageSize), pageInfo: [:])
-                let cg = pdfContext.cgContext
-
-                let drawing: PKDrawing
-                if pageIndex == livePage, let live = liveDrawing {
-                    drawing = live
-                } else {
-                    drawing = store.loadDrawing(for: note.id, page: pageIndex) ?? PKDrawing()
-                }
-
-                 Self.fillWhitePage(cg, size: pageSize)
-
-                let rotation = CGFloat(setting.rotation % 360)
-                cg.saveGState()
-                let cx = pageSize.width * 0.5
-                let cy = pageSize.height * 0.5
-                cg.translateBy(x: cx, y: cy)
-                cg.rotate(by: rotation * (.pi / 180))
-                cg.translateBy(x: -cx, y: -cy)
-
-                if let filename = setting.backgroundImageFilename,
-                   let data = store.loadOverlayImageData(for: note.id, filename: filename),
-                   let image = UIImage(data: data) {
-                    image.draw(in: CGRect(origin: .zero, size: pageSize))
-                }
-                Self.drawBackground(setting.background, in: CGRect(origin: .zero, size: pageSize), context: cg)
-
-                let inkScale: CGFloat = 3
-                let inkImage = drawing.image(from: CGRect(origin: .zero, size: pageSize), scale: inkScale)
-                inkImage.draw(in: CGRect(origin: .zero, size: pageSize))
-
-                let overlays = store.overlays(for: note.id, page: pageIndex)
-                for overlay in overlays {
-                    Self.drawOverlay(
-                        overlay,
-                        pageSize: pageSize,
-                        noteId: note.id,
-                        store: store,
-                        context: cg
-                    )
-                }
-
-                cg.restoreGState()
+                Self.drawPage(
+                    pageIndex: pageIndex,
+                    setting: setting,
+                    pageSize: pageSize,
+                    note: note,
+                    store: store,
+                    livePage: livePage,
+                    liveDrawing: liveDrawing,
+                    context: pdfContext.cgContext
+                )
             }
+        }
+    }
+
+    /// Renders one note page to a thumbnail-sized image — the same content as
+    /// PDF export (page fill, background photo, template, ink, overlays,
+    /// rotation), scaled crop-to-fill into `targetSize`.
+    @MainActor
+    func renderPageImage(
+        note: Note,
+        store: NotesStore,
+        pageNumber: Int,
+        livePage: Int?,
+        liveDrawing: PKDrawing?,
+        targetSize: CGSize
+    ) -> UIImage? {
+        guard pageNumber >= 1, pageNumber <= note.pageSettings.count else { return nil }
+        guard targetSize.width > 0, targetSize.height > 0 else { return nil }
+
+        let setting = note.pageSettings[pageNumber - 1]
+        let pageSize = Self.logicalPageSize(for: setting)
+
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+
+        let fillScale = max(
+            targetSize.width / pageSize.width,
+            targetSize.height / pageSize.height
+        )
+        let drawSize = CGSize(width: pageSize.width * fillScale, height: pageSize.height * fillScale)
+        let origin = CGPoint(
+            x: (targetSize.width - drawSize.width) * 0.5,
+            y: (targetSize.height - drawSize.height) * 0.5
+        )
+
+        return UIGraphicsImageRenderer(size: targetSize, format: format).image { ctx in
+            UIColor.white.setFill()
+            ctx.fill(CGRect(origin: .zero, size: targetSize))
+
+            ctx.cgContext.saveGState()
+            ctx.cgContext.translateBy(x: origin.x, y: origin.y)
+            ctx.cgContext.scaleBy(x: fillScale, y: fillScale)
+            Self.drawPage(
+                pageIndex: pageNumber,
+                setting: setting,
+                pageSize: pageSize,
+                note: note,
+                store: store,
+                livePage: livePage,
+                liveDrawing: liveDrawing,
+                context: ctx.cgContext
+            )
+            ctx.cgContext.restoreGState()
         }
     }
 
@@ -210,6 +231,59 @@ final class PDFStorageService {
     }
 
     // MARK: - Private rendering helpers
+
+    @MainActor
+    private static func drawPage(
+        pageIndex: Int,
+        setting: NotePageSetting,
+        pageSize: CGSize,
+        note: Note,
+        store: NotesStore,
+        livePage: Int?,
+        liveDrawing: PKDrawing?,
+        context cg: CGContext
+    ) {
+        let drawing: PKDrawing
+        if pageIndex == livePage, let live = liveDrawing {
+            drawing = live
+        } else {
+            drawing = store.loadDrawing(for: note.id, page: pageIndex) ?? PKDrawing()
+        }
+
+        Self.fillWhitePage(cg, size: pageSize)
+
+        let rotation = CGFloat(setting.rotation % 360)
+        cg.saveGState()
+        let cx = pageSize.width * 0.5
+        let cy = pageSize.height * 0.5
+        cg.translateBy(x: cx, y: cy)
+        cg.rotate(by: rotation * (.pi / 180))
+        cg.translateBy(x: -cx, y: -cy)
+
+        if let filename = setting.backgroundImageFilename,
+           let data = store.loadOverlayImageData(for: note.id, filename: filename),
+           let image = UIImage(data: data) {
+            image.draw(in: CGRect(origin: .zero, size: pageSize))
+        }
+        Self.drawBackground(setting.background, in: CGRect(origin: .zero, size: pageSize), context: cg)
+
+        let inkScale: CGFloat = 3
+        let inkImage = drawing.image(from: CGRect(origin: .zero, size: pageSize), scale: inkScale)
+        inkImage.draw(in: CGRect(origin: .zero, size: pageSize))
+
+        let overlays = store.overlays(for: note.id, page: pageIndex)
+        for overlay in overlays {
+            Self.drawOverlay(
+                overlay,
+                pageSize: pageSize,
+                noteId: note.id,
+                store: store,
+                context: cg
+            )
+        }
+
+        cg.restoreGState()
+    }
 
     private static func fillWhitePage(_ cg: CGContext, size: CGSize) {
         cg.saveGState()

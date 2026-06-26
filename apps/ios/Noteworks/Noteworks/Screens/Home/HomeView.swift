@@ -326,6 +326,7 @@ struct HomeView: View {
                         .map { course.name.caseInsensitiveCompare($0) == .orderedSame } ?? false
                     HomeBubbleCell(
                         course: course,
+                        siblings: bubbles.filter { $0.id != course.id },
                         index: index,
                         geometry: geo.size,
                         isEditing: isEditingLayout,
@@ -569,6 +570,9 @@ struct HomeView: View {
 private struct HomeBubbleCell: View {
     @EnvironmentObject private var appState: AppState
     let course: CourseBubble
+    /// Every other rendered bubble, used on drag release to push this
+    /// bubble out of any overlap into the nearest free space.
+    var siblings: [CourseBubble] = []
     let index: Int
     let geometry: CGSize
     let isEditing: Bool
@@ -736,18 +740,56 @@ private struct HomeBubbleCell: View {
             }
             .onEnded { value in
                 let clamped = clampedDragOffset(for: value.translation)
-                let finalOffsetX = Double(course.offsetX) + Double(clamped.width / max(geometry.width, 1))
-                let finalOffsetY = Double(course.offsetY) + Double(clamped.height / max(geometry.height, 1))
-                // Commit and clear drag state in one non-animated
-                // transaction so `baseCenter` updates from the store
-                // before `dragOffset` returns to zero — avoids the
-                // release snap-back to the pre-drag slot.
+                // Where the finger let go (clamped to the screen edges).
+                let requestedCenter = CGPoint(
+                    x: baseCenter.x + clamped.width,
+                    y: baseCenter.y + clamped.height
+                )
+                // Push out of any overlap with the other bubbles into the
+                // nearest free spot, mirroring the iOS Home Screen: drag is
+                // smooth, but on release the bubble self-corrects so two
+                // bubbles never stay overlapping.
+                let resolvedCenter = HomeBubbleLayout.resolveDragPosition(
+                    requestedCenter: requestedCenter,
+                    radius: course.size / 2,
+                    siblings: siblings,
+                    in: geometry
+                )
+
+                let requestedOffsetX = Double((requestedCenter.x - geometry.width / 2) / max(geometry.width, 1))
+                let requestedOffsetY = Double((requestedCenter.y - geometry.height / 2) / max(geometry.height, 1))
+                let resolvedOffsetX = Double((resolvedCenter.x - geometry.width / 2) / max(geometry.width, 1))
+                let resolvedOffsetY = Double((resolvedCenter.y - geometry.height / 2) / max(geometry.height, 1))
+
+                let needsCorrection =
+                    abs(resolvedCenter.x - requestedCenter.x) > 0.5 ||
+                    abs(resolvedCenter.y - requestedCenter.y) > 0.5
+
+                // Step 1: pin the bubble exactly where the finger released
+                // (no animation) so `baseCenter` matches the drop point and
+                // `dragOffset` can return to zero without a snap-back.
                 var txn = Transaction()
                 txn.disablesAnimations = true
                 withTransaction(txn) {
-                    onCommitDrag(finalOffsetX, finalOffsetY)
+                    onCommitDrag(requestedOffsetX, requestedOffsetY)
                     dragOffset = .zero
                     isLocalDragging = false
+                }
+
+                // Step 2: if the drop overlapped a neighbour, spring to the
+                // resolved free spot on the next run-loop tick. Deferring
+                // lets step 1 render first (bubble pinned at the drop point,
+                // no snap-back) so this transition animates cleanly instead
+                // of being merged into step 1's non-animated transaction.
+                // `dragOffset` stays at zero so the `.animation(nil, value:
+                // dragOffset)` guard doesn't cancel the move — only
+                // `baseCenter` (driven by the store) shifts.
+                if needsCorrection {
+                    DispatchQueue.main.async {
+                        withAnimation(.spring(response: 0.34, dampingFraction: 0.72)) {
+                            onCommitDrag(resolvedOffsetX, resolvedOffsetY)
+                        }
+                    }
                 }
             }
     }

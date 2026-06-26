@@ -15,6 +15,18 @@
 //  the outer scroll view owns the pinch — otherwise both recognizers
 //  would fight over the same touches.
 //
+//  Ink supersampling (crisp strokes under image-style zoom):
+//  The outer scroll view scales the whole page like a photo (one raster,
+//  no re-render) so strokes never flash on zoom — but a base-resolution
+//  raster softens when blown up. To keep ink crisp while writing zoomed
+//  in, the `PKCanvasView` is hosted inside `SupersamplingCanvasHost` at
+//  `S×` its on-screen bounds with a `1/S` transform: it occupies the same
+//  display size but PencilKit renders ink into an `S×`-denser raster, so
+//  the photo-style transform stays sharp up to `S×` zoom. The drawing is
+//  handed to PencilKit scaled by `S` and mapped back to base coords on
+//  read (the existing `zoomScale` round-trip), now with a FIXED factor —
+//  so nothing re-rasterises while zooming.
+//
 
 import SwiftUI
 import UIKit
@@ -129,6 +141,48 @@ private extension UIView {
     }
 }
 
+/// Hosts a `PKCanvasView` rendered at `renderScale×` its on-screen size
+/// with a compensating `1/renderScale` transform, so the canvas occupies
+/// the same display bounds but PencilKit rasterises ink into a denser
+/// raster. The outer scroll view scales this (already-crisp) raster like a
+/// photo, so strokes stay sharp up to `renderScale×` zoom with no
+/// per-zoom re-rendering.
+final class SupersamplingCanvasHost: UIView {
+    let canvas: FingerPassThroughPKCanvasView
+    /// Fixed supersample factor. Changing it relays out the canvas.
+    var renderScale: CGFloat = 1.0
+
+    init(canvas: FingerPassThroughPKCanvasView) {
+        self.canvas = canvas
+        super.init(frame: .zero)
+        backgroundColor = .clear
+        isOpaque = false
+        isMultipleTouchEnabled = true
+        addSubview(canvas)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let scale = max(0.0001, renderScale)
+        let targetBounds = CGSize(
+            width: bounds.width * scale,
+            height: bounds.height * scale
+        )
+        // `bounds` is transform-independent: size the canvas large, then
+        // shrink it back to the host's size via the transform and recenter.
+        canvas.transform = .identity
+        if canvas.bounds.size != targetBounds {
+            canvas.bounds = CGRect(origin: .zero, size: targetBounds)
+        }
+        canvas.transform = CGAffineTransform(scaleX: 1.0 / scale, y: 1.0 / scale)
+        canvas.center = CGPoint(x: bounds.midX, y: bounds.midY)
+    }
+}
+
 struct PencilCanvasView: UIViewRepresentable {
 
     /// Live drawing — bound to the parent so strokes flow up and page
@@ -147,11 +201,14 @@ struct PencilCanvasView: UIViewRepresentable {
     /// from the parent's toolbar; we apply it on every `updateUIView`.
     var tool: PKTool
 
-    /// Live zoom factor (1.0 = fit). The canvas's frame grows by this
-    /// factor in the parent layout, so we apply the same scale to the
-    /// drawing we hand to PencilKit, and the inverse scale to the
-    /// drawing PencilKit hands back, so persisted strokes always live
-    /// in base coordinates.
+    /// Ink render supersample factor (FIXED, not the live page zoom).
+    /// The canvas is hosted at `zoomScale×` its display bounds with a
+    /// `1/zoomScale` transform, so PencilKit renders ink into a denser
+    /// raster and strokes stay crisp up to `zoomScale×` photo zoom. We
+    /// hand PencilKit the drawing scaled by this factor and map it back
+    /// to base coordinates on read, so persisted strokes always live in
+    /// base coordinates. Because it never changes at runtime, the canvas
+    /// never re-rasterises while the page is zoomed.
     var zoomScale: CGFloat = 1.0
 
     /// `.anyInput` accepts both finger and Pencil. `.pencilOnly` lets the
@@ -186,7 +243,7 @@ struct PencilCanvasView: UIViewRepresentable {
     /// `PKToolPicker`, the app must handle `UIPencilInteraction` explicitly.
     var onPencilDoubleTap: ((UIPencilInteraction) -> Void)? = nil
 
-    func makeUIView(context: Context) -> FingerPassThroughPKCanvasView {
+    func makeUIView(context: Context) -> SupersamplingCanvasHost {
         let canvasView = FingerPassThroughPKCanvasView()
         canvasView.passesFingerTouchesThrough = passesFingerTouchesThrough
         canvasView.passesPencilTouchesThrough = passesPencilTouchesThrough
@@ -213,13 +270,22 @@ struct PencilCanvasView: UIViewRepresentable {
 
         canvasView.stripSystemEditMenus()
 
+        let host = SupersamplingCanvasHost(canvas: canvasView)
+        host.renderScale = max(0.0001, zoomScale)
+
         DispatchQueue.main.async {
             onCanvasReady?(canvasView)
         }
-        return canvasView
+        return host
     }
 
-    func updateUIView(_ canvasView: FingerPassThroughPKCanvasView, context: Context) {
+    func updateUIView(_ host: SupersamplingCanvasHost, context: Context) {
+        let canvasView = host.canvas
+        let safeRenderScale = max(0.0001, zoomScale)
+        if abs(host.renderScale - safeRenderScale) > 0.0005 {
+            host.renderScale = safeRenderScale
+            host.setNeedsLayout()
+        }
         let routingChanged = canvasView.passesFingerTouchesThrough != passesFingerTouchesThrough
             || canvasView.passesPencilTouchesThrough != passesPencilTouchesThrough
         canvasView.passesFingerTouchesThrough = passesFingerTouchesThrough

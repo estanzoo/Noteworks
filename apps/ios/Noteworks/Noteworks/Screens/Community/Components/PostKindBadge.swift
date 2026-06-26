@@ -35,7 +35,12 @@ struct PostKindPill: View {
 
 struct PostMediaCarousel: View {
     let media: [PostMedia]
+    /// When true (post detail), use a full-width swipe pager instead of
+    /// a horizontal strip of small tiles.
+    var useSwipePager: Bool = false
     var onImageTap: ((String) -> Void)? = nil
+
+    @State private var pagerIndex: Int = 0
 
     private var images: [PostMedia] {
         media.filter(\.isImage)
@@ -43,15 +48,62 @@ struct PostMediaCarousel: View {
 
     var body: some View {
         if !images.isEmpty {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
-                    ForEach(images) { item in
-                        mediaTile(for: item)
+            if useSwipePager {
+                swipePager
+                    .padding(.top, 12)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 10) {
+                        ForEach(images) { item in
+                            mediaTile(for: item)
+                        }
                     }
+                    .padding(.vertical, 6)
                 }
-                .padding(.vertical, 6)
+                .padding(.top, 12)
             }
-            .padding(.top, 12)
+        }
+    }
+
+    private var swipePager: some View {
+        VStack(spacing: 8) {
+            TabView(selection: $pagerIndex) {
+                ForEach(Array(images.enumerated()), id: \.element.id) { idx, item in
+                    pagerTile(for: item)
+                        .tag(idx)
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: images.count > 1 ? .automatic : .never))
+            .frame(height: 280)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+            if images.count > 1 {
+                Text("\(pagerIndex + 1) / \(images.count)")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(CommunityTheme.textMuted)
+            }
+        }
+        .onChange(of: images.count) { _, newCount in
+            if pagerIndex >= newCount { pagerIndex = 0 }
+        }
+    }
+
+    @ViewBuilder
+    private func pagerTile(for item: PostMedia) -> some View {
+        let content = RemotePostImage(urlString: item.url, contentMode: .fill)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.5), lineWidth: 1)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+        if let onImageTap {
+            Button { onImageTap(item.url) } label: { content }
+                .buttonStyle(.plain)
+        } else {
+            content
         }
     }
 

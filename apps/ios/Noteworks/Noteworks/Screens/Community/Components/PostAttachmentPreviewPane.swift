@@ -97,10 +97,21 @@ struct PostAttachmentPreviewPane: View {
             }
 
             if let active = items.indices.contains(selectedIndex) ? items[selectedIndex] : items.first {
-                primaryTile(for: active)
-                    .id(active.id)
+                if items.count > 1 {
+                    TabView(selection: $selectedIndex) {
+                        ForEach(Array(items.enumerated()), id: \.element.id) { idx, item in
+                            primaryTile(for: item)
+                                .tag(idx)
+                        }
+                    }
+                    .tabViewStyle(.page(indexDisplayMode: .automatic))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .animation(.easeOut(duration: 0.18), value: active.id)
+                    .animation(.easeOut(duration: 0.18), value: selectedIndex)
+                } else {
+                    primaryTile(for: active)
+                        .id(active.id)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             } else {
                 Spacer(minLength: 0)
             }

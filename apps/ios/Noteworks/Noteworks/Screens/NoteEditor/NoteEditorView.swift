@@ -63,20 +63,23 @@ struct NoteEditorView: View {
     /// button opened it — so the AI dropdown is just under the AI pill
     /// instead of below the entire chrome.
     @State private var toolAnchors: [NoteEditorPanel: CGRect] = [:]
-    /// Largest full-editor height seen this session. When the title field
-    /// focuses, the navigation host often shrinks the vertical proposal;
-    /// pinning layout to this max (top-aligned) keeps the chrome and title
-    /// under the status bar while the keyboard covers the bottom.
-    @State private var editorStableMaxHeight: CGFloat = 0
-    /// Width the `editorStableMaxHeight` snapshot was taken at. Keyboard
-    /// presentation only changes height, so any width change means the
-    /// device rotated and the cached max height is stale — using it would
-    /// stretch the editor stack past the (now shorter) screen and push
-    /// bottom-anchored chrome like `NotePageFooter` off-screen.
-    @State private var editorStableMaxWidth: CGFloat = 0
+    /// Editor viewport height captured while the keyboard is hidden. When
+    /// the title field focuses, the navigation host shrinks the vertical
+    /// proposal; pinning the stack to this height (top-aligned) keeps the
+    /// chrome and title under the status bar while the keyboard covers the
+    /// bottom. Crucially this is ONLY updated while `isKeyboardVisible` is
+    /// false — so a transient over-tall layout sample during the navigation
+    /// push can never latch and push the bottom status strip / page footer
+    /// off-screen (the intermittent "Synced / Page X of Y disappear and the
+    /// page sticks to the bottom with no space" bug).
+    @State private var keyboardHiddenHeight: CGFloat = 0
+    /// True between keyboard show/hide. The height pin only applies while
+    /// the keyboard is up; with it down the stack tracks the live viewport
+    /// height exactly, so it can't be stretched past the screen edge.
+    @State private var isKeyboardVisible: Bool = false
     /// Latest `GeometryReader` height for the visible editor viewport.
-    /// Used to re-sync `editorStableMaxHeight` when modal overlays open so
-    /// keyboard-pinned layout state cannot drift after backgrounding.
+    /// Used to re-sync the keyboard-hidden height when modal overlays open
+    /// so the pinned layout state cannot drift after backgrounding.
     @State private var editorViewportHeight: CGFloat = 0
     /// Ticks once after a note has loaded and the navigation push has had
     /// a runloop turn to settle its frames. The value is folded into the
@@ -90,12 +93,12 @@ struct NoteEditorView: View {
     /// pinch-zoom on the scroll view is unaffected.
     @State private var canvasLayoutSettleNonce: Int = 0
     @State private var tutorialAnchors: [TutorialTarget: CGRect] = [:]
-    /// Current zoom factor driven by `ZoomablePageScrollView`. 1.0 = fit.
-    /// The zoom architecture (see `ZoomablePageScrollView` doc comment)
-    /// resizes the page card to `logicalPageSize * canvasZoom` instead
-    /// of transform-scaling a fixed-size SwiftUI subtree — so PencilKit
-    /// strokes and the procedural background pattern stay vector-crisp
-    /// at every zoom level.
+    /// Current zoom factor reported by `ZoomablePageScrollView`. 1.0 = fit.
+    /// Zoom is now applied as a native UIScrollView transform on the page
+    /// (image-style — the whole page scales as one rasterised layer, nothing
+    /// re-renders), so the page card is ALWAYS laid out at its base size and
+    /// this value does NOT drive layout. It is kept only so the editor can
+    /// command a reset to fit (e.g. on page change) through the binding.
     @State private var canvasZoom: CGFloat = 1.0
     // MARK: - Overlay editor state
 
@@ -176,7 +179,14 @@ struct NoteEditorView: View {
 
     var body: some View {
         GeometryReader { outerGeo in
-            let stableEditorH = max(outerGeo.size.height, editorStableMaxHeight)
+            // Only inflate past the live viewport while the keyboard is up
+            // (to hold the chrome/title above it). With the keyboard down we
+            // track the live height verbatim, so a stale or transient taller
+            // sample can never push the bottom status strip / page footer
+            // below the screen edge.
+            let stableEditorH = isKeyboardVisible
+                ? max(outerGeo.size.height, keyboardHiddenHeight)
+                : outerGeo.size.height
             ZStack(alignment: .top) {
                 ZStack {
                 Group {
@@ -389,26 +399,40 @@ struct NoteEditorView: View {
             }
             .onChange(of: outerGeo.size.height) { _, h in
                 editorViewportHeight = h
-                editorStableMaxHeight = max(editorStableMaxHeight, h)
+                // Snapshot the full height only when the keyboard isn't the
+                // reason the viewport is its current size.
+                if !isKeyboardVisible {
+                    keyboardHiddenHeight = h
+                }
             }
-            .onChange(of: outerGeo.size.width) { _, w in
-                // Rotation flips width. Drop the stale max-height snapshot
-                // so the editor stack resizes to the new viewport instead
-                // of being stretched to the previous orientation's height
-                // (which would push the page footer + canvas content off
-                // the bottom of the screen).
-                editorStableMaxWidth = w
-                editorStableMaxHeight = outerGeo.size.height
+            .onChange(of: outerGeo.size.width) { _, _ in
+                // Rotation flips width. Re-snapshot against the new viewport
+                // so the editor stack resizes to the new orientation instead
+                // of being stretched to the previous one's height.
                 editorViewportHeight = outerGeo.size.height
+                if !isKeyboardVisible {
+                    keyboardHiddenHeight = outerGeo.size.height
+                }
             }
             .onAppear {
                 editorViewportHeight = outerGeo.size.height
-                editorStableMaxWidth = outerGeo.size.width
-                editorStableMaxHeight = max(editorStableMaxHeight, outerGeo.size.height)
+                if !isKeyboardVisible {
+                    keyboardHiddenHeight = outerGeo.size.height
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(
+                for: UIResponder.keyboardWillShowNotification
+            )) { _ in
+                isKeyboardVisible = true
+            }
+            .onReceive(NotificationCenter.default.publisher(
+                for: UIResponder.keyboardWillHideNotification
+            )) { _ in
+                isKeyboardVisible = false
             }
             .onChange(of: viewModel.showGapDetectionPopup) { _, isShowing in
-                guard isShowing, editorViewportHeight > 0 else { return }
-                editorStableMaxHeight = editorViewportHeight
+                guard isShowing, editorViewportHeight > 0, !isKeyboardVisible else { return }
+                keyboardHiddenHeight = editorViewportHeight
             }
         }
         .navigationBarHidden(true)
@@ -472,7 +496,9 @@ struct NoteEditorView: View {
             // then load the freshly-active one.
             viewModel.switchActiveNote(newId)
             openPanel = nil
-            editorStableMaxHeight = 0
+            if !isKeyboardVisible {
+                keyboardHiddenHeight = editorViewportHeight
+            }
             selectedOverlayId = nil
             editingOverlayId = nil
             // Re-fit the page card against the (possibly different)
@@ -907,6 +933,9 @@ struct NoteEditorView: View {
                     } else {
                         store.updateNote(id: id, title: title)
                     }
+                },
+                onReorder: { fromId, toId in
+                    store.reorderOpenNoteTab(from: fromId, to: toId)
                 }
             )
                 .frame(maxWidth: .infinity)
@@ -1559,6 +1588,15 @@ struct NoteEditorView: View {
     /// Reserved space above and below the page when fitting at zoom 1.
     private static let pageVerticalInset: CGFloat = 32
 
+    /// Fixed supersample factor for the ink layer. The page scales like a
+    /// photo (no per-zoom re-render), so the canvas is rendered at this
+    /// many times its display resolution to keep handwriting crisp while
+    /// zoomed in. Strokes stay sharp up to ~this zoom; beyond it they
+    /// soften like an image. Higher = crisper but more memory. PencilKit
+    /// rasterises lazily in tiles, so the cost scales with inked area, not
+    /// the full supersampled page.
+    private static let pageRenderSupersample: CGFloat = 5.0
+
     private var canvasArea: some View {
         GeometryReader { geometry in
             let rotation = viewModel.currentPageRotation
@@ -1582,15 +1620,15 @@ struct NoteEditorView: View {
         scrollContentSize: CGSize,
         rotation: Int
     ) -> some View {
-        // Page card at the CURRENT zoom. Multiplying the logical size by
-        // `canvasZoom` (driven by `ZoomablePageScrollView`'s pinch) lets
-        // PencilKit and the background pattern lay out at their true
-        // native size at every zoom level — vector content stays crisp
-        // because it's actually rendered larger, not stretched.
-        let zoomedPageSize = CGSize(
-            width: logicalPageSize.width * canvasZoom,
-            height: logicalPageSize.height * canvasZoom
-        )
+        // The page card is ALWAYS laid out at its base (fit) size. Zoom is
+        // applied purely as a transform by `ZoomablePageScrollView`'s native
+        // UIScrollView zoom — the whole page (background + ink + overlays)
+        // scales together as one rasterized image, exactly like pinching a
+        // photo. Nothing is re-laid-out or re-rendered while zooming, so the
+        // strokes never flash / regenerate. (Trade-off: like a photo, content
+        // is raster-scaled when zoomed past 1×, so it softens at high zoom
+        // rather than re-rasterising crisp.)
+        let zoomedPageSize = logicalPageSize
         let pageStack = ZStack {
             ZoomablePageScrollView(
                 baseContentSize: scrollContentSize,
@@ -1716,7 +1754,7 @@ struct NoteEditorView: View {
                 NotePageBackgroundView(
                     background: viewModel.currentPageBackground,
                     imageData: currentPageBackgroundImageData(),
-                    zoomScale: canvasZoom
+                    zoomScale: 1
                 )
                 .allowsHitTesting(false)
                 if let noteId = viewModel.noteId {
@@ -1730,7 +1768,7 @@ struct NoteEditorView: View {
                     drawing: $viewModel.drawing,
                     drawingPushGeneration: viewModel.drawingPushGeneration,
                     tool: viewModel.pkTool,
-                    zoomScale: canvasZoom,
+                    zoomScale: Self.pageRenderSupersample,
                     drawingPolicy: .pencilOnly,
                     // Keep the canvas in the responder chain for every tool
                     // so finger routing stays consistent — disabling it for
@@ -1778,7 +1816,7 @@ struct NoteEditorView: View {
         NoteOverlayLayer(
             overlays: overlays ?? viewModel.currentPageOverlays(store: store),
             pageSize: logicalPageSize,
-            zoomScale: canvasZoom,
+            zoomScale: 1,
             noteId: noteId,
             manipulationMode: allowsOverlayManipulation,
             selectedId: $selectedOverlayId,

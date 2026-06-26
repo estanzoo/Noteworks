@@ -10,9 +10,11 @@
 //    - Active chip is brighter and slightly wider.
 //    - Trailing "+" button opens a fresh draft tab.
 //    - Always shown in the editor chrome (matches NoteWorks_UI 2).
+//    - Drag a tab chip to reorder open notes (browser-style).
 //
 
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct NoteTabBar: View {
     /// Pre-resolved open notes. The parent reads from `store.openNoteIds`
@@ -24,10 +26,12 @@ struct NoteTabBar: View {
     var onClose: (String) -> Void
     var onCreateNew: () -> Void
     var onRename: (String, String) -> Void = { _, _ in }
+    var onReorder: (String, String) -> Void = { _, _ in }
 
     @State private var editingId: String?
     @State private var editingTitle = ""
     @FocusState private var focusedEditingId: String?
+    @State private var draggingTabId: String?
 
     var body: some View {
         HStack(spacing: 8) {
@@ -38,6 +42,7 @@ struct NoteTabBar: View {
                             note: note,
                             isActive: note.id == activeId,
                             totalTabs: notes.count,
+                            isDragging: draggingTabId == note.id,
                             editingTitle: editingId == note.id ? $editingTitle : nil,
                             isEditing: editingId == note.id,
                             isFocused: focusedEditingId == note.id,
@@ -55,6 +60,25 @@ struct NoteTabBar: View {
                                 stopEditing()
                             }
                         )
+                        .opacity(editingId != nil ? 1 : (draggingTabId == note.id ? 0.72 : 1))
+                        .onDrag {
+                            guard editingId == nil else { return NSItemProvider() }
+                            draggingTabId = note.id
+                            return NSItemProvider(object: note.id as NSString)
+                        }
+                        .onDrop(of: [UTType.text], isTargeted: nil) { providers in
+                            guard editingId == nil else { return false }
+                            guard let provider = providers.first else { return false }
+                            provider.loadObject(ofClass: NSString.self) { object, _ in
+                                guard let fromId = object as? String,
+                                      fromId != note.id else { return }
+                                DispatchQueue.main.async {
+                                    onReorder(fromId, note.id)
+                                    draggingTabId = nil
+                                }
+                            }
+                            return true
+                        }
                     }
                 }
                 .padding(.vertical, 2)
@@ -100,6 +124,7 @@ private struct NoteSessionTab: View {
     let note: Note
     let isActive: Bool
     let totalTabs: Int
+    var isDragging: Bool = false
     var editingTitle: Binding<String>?
     let isEditing: Bool
     let isFocused: Bool
@@ -186,6 +211,9 @@ private struct NoteSessionTab: View {
         .shadow(color: .black.opacity(isActive ? 0.06 : 0.02), radius: isActive ? 6 : 2, y: isActive ? 3 : 1)
         .frame(maxWidth: totalTabs <= 2 ? 260 : 200)
         .contentShape(RoundedRectangle(cornerRadius: 14))
+        .scaleEffect(isDragging ? 1.03 : 1)
+        .rotationEffect(isDragging ? .degrees(-1) : .zero)
+        .animation(.easeOut(duration: 0.18), value: isDragging)
         .onTapGesture(count: 2) {
             onSelect()
             onStartEditing()

@@ -267,6 +267,8 @@ struct PageThumbnailsModal: View {
                             ? pageSettings[pageNumber - 1]
                             : NotePageSetting()
                         PagePreviewThumb(
+                            viewModel: viewModel,
+                            store: store,
                             pageNumber: pageNumber,
                             setting: setting,
                             isCurrent: pageNumber == viewModel.currentPage,
@@ -400,6 +402,8 @@ struct PageThumbnailsModal: View {
 // MARK: - Preview thumb
 
 private struct PagePreviewThumb: View {
+    @ObservedObject var viewModel: NoteEditorViewModel
+    @ObservedObject var store: NotesStore
     let pageNumber: Int
     let setting: NotePageSetting
     let isCurrent: Bool
@@ -425,11 +429,14 @@ private struct PagePreviewThumb: View {
                         .fill(Color(red: 255/255, green: 253/255, blue: 241/255))
                         .frame(width: sheetSize.width, height: sheetSize.height)
                         .overlay {
-                            NotePageBackgroundView(background: setting.background)
-                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        }
-                        .overlay {
-                            previewLines
+                            PageThumbnailPreview(
+                                viewModel: viewModel,
+                                store: store,
+                                pageNumber: pageNumber,
+                                setting: setting,
+                                sheetSize: sheetSize
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                         }
                         .overlay(
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -489,26 +496,94 @@ private struct PagePreviewThumb: View {
         }
         .buttonStyle(.plain)
     }
+}
 
-    private var previewLines: some View {
-        let lineCount = landscape ? 3 : 5
-        return VStack(alignment: .leading, spacing: 8) {
-            ForEach(0..<lineCount, id: \.self) { index in
-                RoundedRectangle(cornerRadius: 999)
-                    .fill(
-                        index == 0
-                            ? NoteEditorTheme.accent.opacity(0.45)
-                            : NoteEditorTheme.textPrimary.opacity(0.14)
-                    )
-                    .frame(
-                        width: sheetSize.width * (index == 0 ? 0.58 : (index.isMultiple(of: 2) ? 0.74 : 0.46)),
-                        height: 5
-                    )
+// MARK: - Page thumbnail image
+
+private struct PageThumbnailPreview: View {
+    @ObservedObject var viewModel: NoteEditorViewModel
+    @ObservedObject var store: NotesStore
+    let pageNumber: Int
+    let setting: NotePageSetting
+    let sheetSize: CGSize
+
+    @State private var image: UIImage?
+
+    private var cacheKey: String {
+        let noteStamp: String
+        if let noteId = viewModel.noteId, let note = store.note(id: noteId) {
+            noteStamp = "\(noteId)-\(Int(note.updatedAt.timeIntervalSince1970))"
+        } else {
+            noteStamp = "missing"
+        }
+        let liveToken = pageNumber == viewModel.currentPage
+            ? "-live-\(viewModel.drawingPushGeneration)"
+            : ""
+        return "\(noteStamp)-p\(pageNumber)-r\(setting.rotation)-bg\(setting.background.rawValue)\(liveToken)"
+    }
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: sheetSize.width, height: sheetSize.height)
             }
         }
-        .padding(.horizontal, sheetSize.width * 0.14)
-        .padding(.vertical, sheetSize.height * 0.12)
-        .frame(width: sheetSize.width, height: sheetSize.height, alignment: .topLeading)
+        .frame(width: sheetSize.width, height: sheetSize.height)
+        .task(id: cacheKey) {
+            await loadThumbnail()
+        }
+    }
+
+    @MainActor
+    private func loadThumbnail() async {
+        if let cached = PageThumbnailCache.shared.image(for: cacheKey) {
+            image = cached
+            return
+        }
+
+        guard let noteId = viewModel.noteId, let note = store.note(id: noteId) else { return }
+
+        let pixelScale = UIScreen.main.scale
+        let targetSize = CGSize(
+            width: sheetSize.width * pixelScale,
+            height: sheetSize.height * pixelScale
+        )
+
+        let rendered = PDFStorageService.shared.renderPageImage(
+            note: note,
+            store: store,
+            pageNumber: pageNumber,
+            livePage: viewModel.currentPage,
+            liveDrawing: viewModel.drawing,
+            targetSize: targetSize
+        )
+
+        guard !Task.isCancelled else { return }
+
+        if let rendered {
+            PageThumbnailCache.shared.store(rendered, for: cacheKey)
+            image = rendered
+        }
+    }
+}
+
+private final class PageThumbnailCache {
+    static let shared = PageThumbnailCache()
+    private let cache = NSCache<NSString, UIImage>()
+
+    private init() {
+        cache.countLimit = 128
+    }
+
+    func image(for key: String) -> UIImage? {
+        cache.object(forKey: key as NSString)
+    }
+
+    func store(_ image: UIImage, for key: String) {
+        cache.setObject(image, forKey: key as NSString)
     }
 }
 

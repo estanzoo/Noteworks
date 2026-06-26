@@ -589,6 +589,15 @@ final class NotesStore: ObservableObject {
         activeOpenNoteId = id
     }
 
+    /// Moves one open editor tab to another tab's slot (browser-style reorder).
+    func reorderOpenNoteTab(from fromId: String, to toId: String) {
+        guard fromId != toId,
+              let fromIdx = openNoteIds.firstIndex(of: fromId),
+              let toIdx = openNoteIds.firstIndex(of: toId) else { return }
+        let moved = openNoteIds.remove(at: fromIdx)
+        openNoteIds.insert(moved, at: toIdx)
+    }
+
     /// Creates a fresh draft and opens it in a new tab. Returns the new
     /// note so the caller (the editor's "+" button) can land on it.
     @discardableResult

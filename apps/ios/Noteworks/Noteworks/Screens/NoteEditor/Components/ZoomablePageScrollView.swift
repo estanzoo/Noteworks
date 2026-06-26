@@ -4,30 +4,33 @@
 //
 //  Zoom + pan host for the note page.
 //
-//  Architecture (rewrite using Apple's UIScrollView zoom pattern):
+//  Architecture — pure native UIScrollView zoom (image-style):
 //
-//  We let UIScrollView do what it's good at:
-//    - `viewForZooming` returns `contentRoot` so the system pinch
-//      recognizer drives the live zoom preview via a CATransform on
-//      `contentRoot`.
-//    - `scrollViewDidZoom` recenters `contentRoot` via `contentInset`
-//      so the page stays magnetically centered when smaller than the
-//      viewport (no top-left-corner stickiness).
-//    - `scrollViewDidEndZooming(_:with:atScale:)` collapses the
-//      transform into a real `contentRoot.frame` resize:
-//          newZoom = currentZoom * scrollScale
-//          contentRoot.frame = base * newZoom
-//          scrollView.zoomScale = 1
-//          contentOffset = adjusted so the same content rect stays put
-//      Then publishes `newZoom` to SwiftUI so the page card rebuilds
-//      at the new logical size and PencilKit re-rasterizes natively.
+//  The page (background + PencilKit ink + overlays) is hosted at a single
+//  fixed BASE size inside `contentRoot`, and zoom is applied entirely by
+//  UIScrollView as a CATransform on `contentRoot`. We deliberately do NOT
+//  collapse that transform into a frame resize, and we do NOT re-rasterize
+//  PencilKit per zoom level. The whole page therefore scales as one
+//  rasterised image — exactly like pinching a photo — so strokes never
+//  flash, reposition, or regenerate while zooming.
 //
-//  Knobs from the blueprint:
+//    - `viewForZooming` returns `contentRoot`; the system pinch recognizer
+//      drives the live transform.
+//    - `scrollViewDidZoom` keeps the page centered (via `contentInset`)
+//      when it's smaller than the viewport, and mirrors `zoomScale` into
+//      `currentZoom`.
+//    - `scrollViewDidEndZooming` simply records the settled scale and
+//      reports it through the binding (used only so the editor can command
+//      a reset to fit on page change). The transform stays in place.
+//
+//  Trade-off: like a photo, content is raster-scaled above 1× (it softens
+//  at high zoom) rather than re-rasterising vector-crisp.
+//
+//  Knobs:
 //    - `bounces = false`, `alwaysBounceX/Y = false` → no rubber-band.
-//    - `minimumZoomScale = fitScale`, `maximumZoomScale = maxZoom /
-//      currentZoom` so cumulative zoom stays within `[1, maxZoom]`.
-//    - `contentSize == contentRoot.frame.size` so panning is only
-//      enabled when zoomed in past the viewport.
+//    - `minimumZoomScale = 1` (fit), `maximumZoomScale = maxZoom`.
+//    - `contentSize` is managed by UIScrollView (`base × zoomScale`), so
+//      panning is enabled only once zoomed in past the viewport.
 //
 //  Other surfaces still served by this view:
 //    - Page swipe (single-finger pan at fit zoom) via a dedicated
@@ -371,7 +374,7 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         }
 
         if !context.coordinator.isZooming {
-            context.coordinator.applyZoomedContentSize(scrollView)
+            context.coordinator.syncBaseLayout(scrollView)
             context.coordinator.centerContent(in: scrollView)
             if baseChanged {
                 context.coordinator.recenterScrollOffset(scrollView)
@@ -380,7 +383,7 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
                 // is often briefly stale during a rotation transition,
                 // and the first pass uses pre-rotation bounds.
                 DispatchQueue.main.async {
-                    context.coordinator.applyZoomedContentSize(scrollView)
+                    context.coordinator.syncBaseLayout(scrollView)
                     context.coordinator.centerContent(in: scrollView)
                     context.coordinator.recenterScrollOffset(scrollView)
                 }
@@ -399,8 +402,9 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         var contentStamp: Int = 0
         var maxZoom: CGFloat = 8.0
         var doubleTapZoomScale: CGFloat = 2.5
-        /// Cumulative zoom factor (baseContentSize × currentZoom = page
-        /// frame size). Always >= 1.
+        /// Mirror of `scrollView.zoomScale` (the live native zoom). 1 = fit,
+        /// up to `maxZoom`. Kept in sync from the scroll-view delegate so the
+        /// swipe / double-tap gates and the published binding can read it.
         var currentZoom: CGFloat = 1.0
         var onSwipeNext: (() -> Void)?
         var onSwipePrevious: (() -> Void)?
@@ -426,9 +430,10 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         fileprivate var isApplyingFromSwiftUI = false
 
         /// True between `scrollViewWillBeginZooming` and
-        /// `scrollViewDidEndZooming`. While zooming, we leave layout to
-        /// UIScrollView; on end, we collapse the live transform into a
-        /// real `contentRoot.frame` resize.
+        /// `scrollViewDidEndZooming`. Layout is left entirely to UIScrollView
+        /// — zoom is a single live transform on `contentRoot`, never collapsed
+        /// into a frame resize, so the page scales like a rasterised image and
+        /// nothing re-renders.
         private(set) var isZooming: Bool = false
         // Page swipe state.
         private var isSlidingPage = false
@@ -453,7 +458,7 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         func configureInitialDisplayIfNeeded(_ scrollView: UIScrollView) {
             guard baseContentSize.width > 0, baseContentSize.height > 0 else { return }
             currentZoom = 1
-            applyZoomedContentSize(scrollView)
+            syncBaseLayout(scrollView)
             centerContent(in: scrollView)
             recenterScrollOffset(scrollView)
             publishZoomBinding(1)
@@ -480,40 +485,40 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
             scrollView.setContentOffset(offset, animated: false)
         }
 
-        /// Set `contentRoot.frame` = `baseContentSize × currentZoom` and
-        /// sync `scrollView.contentSize`. Also resets the live zoom
-        /// transform so `zoomScale` reads as 1.
-        func applyZoomedContentSize(_ scrollView: UIScrollView) {
+        /// Keep `contentRoot` at its base (fit) size and let `zoomScale` carry
+        /// the zoom as a transform — the native UIScrollView zoom model. The
+        /// page therefore scales as one rasterised image; nothing is resized
+        /// or re-rendered while zooming.
+        ///
+        /// `contentRoot.frame` is only rewritten when the BASE size itself
+        /// changes (page swap / rotation), and the current `zoomScale` is
+        /// reapplied afterward so the transform survives the bounds change.
+        func syncBaseLayout(_ scrollView: UIScrollView) {
             guard let contentRoot, baseContentSize.width > 0, baseContentSize.height > 0 else {
                 return
             }
-            let target = CGSize(
-                width: baseContentSize.width * currentZoom,
-                height: baseContentSize.height * currentZoom
-            )
-            let currentSize = contentRoot.bounds.size
-            let needsResize = abs(currentSize.width - target.width) > 0.5
-                || abs(currentSize.height - target.height) > 0.5
-            if needsResize {
+            let bounds = contentRoot.bounds.size
+            let baseChanged = abs(bounds.width - baseContentSize.width) > 0.5
+                || abs(bounds.height - baseContentSize.height) > 0.5
+            if baseChanged {
+                let savedScale = scrollView.zoomScale
                 contentRoot.transform = .identity
-                contentRoot.frame = CGRect(origin: .zero, size: target)
-                host?.view.frame = CGRect(origin: .zero, size: target)
-                scrollView.contentSize = target
+                contentRoot.frame = CGRect(origin: .zero, size: baseContentSize)
+                host?.view.frame = CGRect(origin: .zero, size: baseContentSize)
+                scrollView.contentSize = baseContentSize
+                // Reapply the zoom (UIScrollView re-derives the transform +
+                // contentSize from the new bounds).
+                scrollView.zoomScale = savedScale
             }
-            // After committing a zoom, `zoomScale` must be 1 so the next
-            // live pinch starts from a clean state.
-            if scrollView.zoomScale != 1 {
-                scrollView.zoomScale = 1
+            scrollView.minimumZoomScale = 1
+            scrollView.maximumZoomScale = maxZoom
+            // Honour an externally-driven zoom reset (e.g. page change sets the
+            // binding back to 1). Setting zoomScale fires `scrollViewDidZoom`,
+            // which recenters.
+            let target = max(1, min(maxZoom, currentZoom))
+            if abs(scrollView.zoomScale - target) > 0.0005 {
+                scrollView.zoomScale = target
             }
-            // `zoomScale` is the multiplier ON TOP OF `currentZoom`.
-            //   - Pinch out (scale < 1) drops cumulative zoom toward 1
-            //     (fit), but not below: minScale = 1 / currentZoom.
-            //   - Pinch in (scale > 1) raises cumulative zoom toward
-            //     maxZoom: maxScale = maxZoom / currentZoom.
-            let minScale = 1 / max(currentZoom, 0.0001)
-            let maxScale = max(maxZoom / max(currentZoom, 0.0001), minScale)
-            scrollView.minimumZoomScale = minScale
-            scrollView.maximumZoomScale = maxScale
         }
 
         /// Insets so the page sits centered when smaller than viewport.
@@ -545,9 +550,12 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         }
 
         func scrollViewDidZoom(_ scrollView: UIScrollView) {
-            // Keep page centered during live pinch. UIScrollView writes
-            // `contentSize = contentRoot.frame.size × zoomScale` while
-            // pinching, so `centerContent` reads the live size.
+            // Native zoom: UIScrollView scales `contentRoot` via a transform
+            // and keeps `contentSize = base × zoomScale`. We just track the
+            // live scale and keep the page centered when it's smaller than the
+            // viewport. No resize, no re-render — the whole page (background +
+            // ink + overlays) scales as one image.
+            currentZoom = scrollView.zoomScale
             centerContent(in: scrollView)
         }
 
@@ -556,78 +564,15 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
             with view: UIView?,
             atScale scale: CGFloat
         ) {
-            // Collapse the live transform into a real frame resize so
-            // PencilKit + the pattern view re-rasterize at native size.
-            //
-            // What UIScrollView has done so far during the pinch:
-            //   - Set `zoomScale = scale` (applies a CATransform to
-            //     `contentRoot`).
-            //   - Set `contentSize = contentRoot.bounds.size × scale`.
-            //   - Adjusted `contentOffset` so the pinch focal stays
-            //     under the user's fingers.
-            //
-            // What we do now: turn the temporary scale into a real
-            // content-size bump so PencilKit renders sharp.
-            //
-            //   newZoom = currentZoom × scale
-            //   contentRoot.frame = baseContentSize × newZoom
-            //   zoomScale = 1
-            //   contentOffset = (viewportCenter in new content) - viewport/2
-            let newZoom = min(maxZoom, max(1, currentZoom * scale))
-
-            // Capture the content point at the viewport center BEFORE
-            // we tear down the live zoom transform. After the resize,
-            // we'll set `contentOffset` so the same point lands at the
-            // new viewport center.
-            //
-            // `contentOffset` is already in the post-zoom coordinate
-            // system (UIScrollView mutated it during pinch). The
-            // content point at viewport center is:
-            //     centerInContent_postZoom = contentOffset + bounds.size/2
-            // To express that in the NEW content coords (after we resize
-            // contentRoot to base × newZoom from base × currentZoom),
-            // multiply by the ratio between "scale we applied" and
-            // "real zoom factor we're committing":
-            //     newPoint = centerInContent_postZoom × (newZoom / (currentZoom × scale))
-            let postZoomCenter = CGPoint(
-                x: scrollView.contentOffset.x + scrollView.bounds.width * 0.5,
-                y: scrollView.contentOffset.y + scrollView.bounds.height * 0.5
-            )
-            let collapseRatio = newZoom / max(currentZoom * scale, 0.0001)
-            let newCenter = CGPoint(
-                x: postZoomCenter.x * collapseRatio,
-                y: postZoomCenter.y * collapseRatio
-            )
-
-            currentZoom = newZoom
-            applyZoomedContentSize(scrollView)
-            centerContent(in: scrollView)
-
-            // When page fits viewport (newZoom == 1), centering insets
-            // do the work — pin offset to the inset top-left so page
-            // sits dead center.
-            let bounds = scrollView.bounds.size
-            let inset = scrollView.contentInset
-            var offset: CGPoint
-            if newZoom <= 1.001 {
-                offset = CGPoint(x: -inset.left, y: -inset.top)
-            } else {
-                offset = CGPoint(
-                    x: newCenter.x - bounds.width * 0.5,
-                    y: newCenter.y - bounds.height * 0.5
-                )
-            }
-            clampOffset(&offset, in: scrollView)
-            scrollView.setContentOffset(offset, animated: false)
-
+            // Nothing to collapse — the transform IS the zoom and we leave it
+            // in place. Just record the settled scale, recenter, and report it
+            // through the binding so external resets (e.g. page change) can
+            // return to fit.
+            currentZoom = scale
             isZooming = false
-            publishZoomBinding(newZoom)
-
-            PageZoomDebug.zoom(
-                "didEnd newZoom=\(fmt(newZoom)) "
-                + "contentSize=\(fmt(scrollView.contentSize.width))×\(fmt(scrollView.contentSize.height)) "
-                + "offset=(\(fmt(scrollView.contentOffset.x)),\(fmt(scrollView.contentOffset.y)))"
-            )
+            centerContent(in: scrollView)
+            publishZoomBinding(scale)
+            PageZoomDebug.zoom("didEnd zoomScale=\(fmt(scale))")
         }
 
         // MARK: UIScrollViewDelegate (scroll)
@@ -668,37 +613,29 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
             switch gesture.state {
             case .began:
                 let startInScroll = gesture.location(in: scrollView)
+                // `convert` is transform-aware, so this is already in base
+                // (unzoomed) page coordinates.
                 overlayPanStartLocationInContent = scrollView.convert(startInScroll, to: contentView)
                 overlayPanStartZoom = max(0.0001, currentZoom)
-                let baseStart = CGPoint(
-                    x: overlayPanStartLocationInContent.x / overlayPanStartZoom,
-                    y: overlayPanStartLocationInContent.y / overlayPanStartZoom
-                )
-                onOverlayManipulation(.began, baseStart, .zero)
+                onOverlayManipulation(.began, overlayPanStartLocationInContent, .zero)
 
             case .changed:
                 let translation = gesture.translation(in: scrollView)
-                let baseStart = CGPoint(
-                    x: overlayPanStartLocationInContent.x / overlayPanStartZoom,
-                    y: overlayPanStartLocationInContent.y / overlayPanStartZoom
-                )
+                // Translation is in scroll-view (screen) space; divide by the
+                // zoom to express it in base page units.
                 let baseTranslation = CGSize(
                     width: translation.x / overlayPanStartZoom,
                     height: translation.y / overlayPanStartZoom
                 )
-                onOverlayManipulation(.changed, baseStart, baseTranslation)
+                onOverlayManipulation(.changed, overlayPanStartLocationInContent, baseTranslation)
 
             case .ended:
                 let translation = gesture.translation(in: scrollView)
-                let baseStart = CGPoint(
-                    x: overlayPanStartLocationInContent.x / overlayPanStartZoom,
-                    y: overlayPanStartLocationInContent.y / overlayPanStartZoom
-                )
                 let baseTranslation = CGSize(
                     width: translation.x / overlayPanStartZoom,
                     height: translation.y / overlayPanStartZoom
                 )
-                onOverlayManipulation(.ended, baseStart, baseTranslation)
+                onOverlayManipulation(.ended, overlayPanStartLocationInContent, baseTranslation)
 
             case .cancelled, .failed:
                 onOverlayManipulation(.cancelled, .zero, .zero)
@@ -737,12 +674,8 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
                   let contentView = contentRoot ?? host?.view else { return }
 
             let location = gesture.location(in: scrollView)
-            let localScaled = scrollView.convert(location, to: contentView)
-            let zoom = max(0.0001, currentZoom)
-            let localBase = CGPoint(
-                x: localScaled.x / zoom,
-                y: localScaled.y / zoom
-            )
+            // Transform-aware → base page coordinates.
+            let localBase = scrollView.convert(location, to: contentView)
             guard let button = ImageOverlayAdjustToolbarMetrics.button(at: localBase, in: toolbarRect) else {
                 return
             }
@@ -762,11 +695,8 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
                 onPageFingerTap(nil)
                 return
             }
-            let localScaled = scrollView.convert(location, to: contentView)
-            let local = CGPoint(
-                x: localScaled.x / currentZoom,
-                y: localScaled.y / currentZoom
-            )
+            // Transform-aware → base page coordinates.
+            let local = scrollView.convert(location, to: contentView)
             onPageFingerTap(local)
         }
 
@@ -774,38 +704,27 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
             guard let scrollView = gesture.view as? UIScrollView,
                   let contentRoot else { return }
             let tapInScroll = gesture.location(in: scrollView)
-            let isZoomedIn = currentZoom > 1.12
+            let isZoomedIn = scrollView.zoomScale > 1.12
             let targetZoom = isZoomedIn ? CGFloat(1) : min(doubleTapZoomScale, maxZoom)
-            guard abs(targetZoom - currentZoom) > 0.01 else { return }
-
-            // Resize content directly; UIScrollView zoom infra not used.
-            let tapInContent = scrollView.convert(tapInScroll, to: contentRoot)
-            let zoomRatio = targetZoom / max(currentZoom, 0.0001)
-            let tapInNewContent = CGPoint(
-                x: tapInContent.x * zoomRatio,
-                y: tapInContent.y * zoomRatio
-            )
+            guard abs(targetZoom - scrollView.zoomScale) > 0.01 else { return }
 
             currentZoom = targetZoom
-            applyZoomedContentSize(scrollView)
-            centerContent(in: scrollView)
-
-            // Place tap point under finger.
-            var offset = CGPoint(
-                x: tapInNewContent.x - tapInScroll.x,
-                y: tapInNewContent.y - tapInScroll.y
-            )
-            // When zoomed out (target = 1), let centering insets handle
-            // placement — offset of -inset.{left,top} lands the page
-            // origin at its inset position, which centerContent already
-            // made symmetric.
             if targetZoom <= 1.01 {
-                let inset = scrollView.contentInset
-                offset = CGPoint(x: -inset.left, y: -inset.top)
-            }
-            clampOffset(&offset, in: scrollView)
-            UIView.animate(withDuration: 0.25) {
-                scrollView.setContentOffset(offset, animated: false)
+                // Settle back to fit; centering insets place the page.
+                scrollView.setZoomScale(1, animated: true)
+            } else {
+                // Zoom toward the tap point. `convert` is transform-aware so
+                // it yields the base-coordinate point under the finger.
+                let tapInContent = scrollView.convert(tapInScroll, to: contentRoot)
+                let w = scrollView.bounds.width / targetZoom
+                let h = scrollView.bounds.height / targetZoom
+                let rect = CGRect(
+                    x: tapInContent.x - w * 0.5,
+                    y: tapInContent.y - h * 0.5,
+                    width: w,
+                    height: h
+                )
+                scrollView.zoom(to: rect, animated: true)
             }
             publishZoomBinding(targetZoom)
         }
@@ -818,8 +737,11 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         // MARK: Page swipe (only at fit zoom)
 
         @objc func handlePagePan(_ sender: UIPanGestureRecognizer) {
+            // Apply the swipe to the hosted content view, NOT `contentRoot`:
+            // `contentRoot` is the zoom view whose transform UIScrollView owns,
+            // so writing a translation transform there would wipe the zoom.
             guard let scrollView = sender.view as? UIScrollView,
-                  let pageView = contentRoot ?? host?.view,
+                  let pageView = host?.view ?? contentRoot,
                   currentZoom <= 1.08 else {
                 resetPageSlide(animated: true)
                 return
@@ -910,7 +832,7 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         }
 
         private func resetPageSlide(animated: Bool) {
-            guard let pageView = contentRoot ?? host?.view else { return }
+            guard let pageView = host?.view ?? contentRoot else { return }
             if pageView.transform.isIdentity { return }
             let changes = { pageView.transform = .identity }
             if animated {
@@ -938,12 +860,7 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
                     return false
                 }
                 let location = tap.location(in: scrollView)
-                let localScaled = scrollView.convert(location, to: contentView)
-                let zoom = max(0.0001, currentZoom)
-                let localBase = CGPoint(
-                    x: localScaled.x / zoom,
-                    y: localScaled.y / zoom
-                )
+                let localBase = scrollView.convert(location, to: contentView)
                 return toolbarRect.contains(localBase)
             }
             if gestureRecognizer === overlayPanGesture {
@@ -956,12 +873,7 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
                 let location = pan.location(in: scrollView)
                 let pageFrame = contentView.convert(contentView.bounds, to: scrollView)
                 guard pageFrame.contains(location) else { return false }
-                let localScaled = scrollView.convert(location, to: contentView)
-                let zoom = max(0.0001, currentZoom)
-                let localBase = CGPoint(
-                    x: localScaled.x / zoom,
-                    y: localScaled.y / zoom
-                )
+                let localBase = scrollView.convert(location, to: contentView)
                 for rect in overlayInteractionExclusionRects where rect.contains(localBase) {
                     return false
                 }
@@ -980,12 +892,7 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
                     let location = pinch.location(ofTouch: touchIndex, in: scrollView)
                     let pageFrame = contentView.convert(contentView.bounds, to: scrollView)
                     guard pageFrame.contains(location) else { return false }
-                    let localScaled = scrollView.convert(location, to: contentView)
-                    let zoom = max(0.0001, currentZoom)
-                    let localBase = CGPoint(
-                        x: localScaled.x / zoom,
-                        y: localScaled.y / zoom
-                    )
+                    let localBase = scrollView.convert(location, to: contentView)
                     guard targetRect.contains(localBase) else { return false }
                     for rect in overlayInteractionExclusionRects where rect.contains(localBase) {
                         return false

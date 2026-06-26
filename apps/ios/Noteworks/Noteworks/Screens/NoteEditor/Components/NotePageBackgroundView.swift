@@ -6,15 +6,18 @@
 //  Templates: blank, dots, ruled (legacy key `single-column`), grid,
 //  and Cornell. Rotation is applied on the parent page card.
 //
-//  The pattern is drawn through a UIView's `draw(_:)` (wrapped via
+//  The pattern is drawn through a `CATiledLayer`-backed UIView (wrapped via
 //  `UIViewRepresentable`) instead of SwiftUI's `Canvas`. SwiftUI's
 //  `Canvas` rasterizes into a backing texture at the layer's current
-//  `contentsScale` at the time of draw; when the outer scroll view
-//  later zooms via a CATransform3D, that backing bitmap is stretched
-//  and dots/lines go blurry. A `draw(_:)`-backed UIView honours
-//  `contentScaleFactor` — the zoom controller bumps that scale during
-//  pinch so the pattern re-rasterises at the new resolution and stays
-//  crisp.
+//  `contentsScale` at the time of draw; when the outer scroll view later
+//  zooms via a CATransform, that single bitmap is stretched and dots/lines
+//  go blurry. The whole-page zoom is photo-style (one raster, no re-render)
+//  for the ink, but the background is cheap and identity-free to redraw, so
+//  here we use a `CATiledLayer`: it renders only the visible tiles at the
+//  CURRENT on-screen scale and re-tessellates crisp tiles (with a short
+//  fade) as the page zooms. The pattern therefore stays sharp at any zoom
+//  with memory bounded to the visible area — the classic map / PDF
+//  infinite-zoom technique — rather than softening like a fixed bitmap.
 //
 
 import SwiftUI
@@ -45,20 +48,30 @@ struct NotePageBackgroundView: View {
     }
 }
 
+/// `CATiledLayer` that drops the default tile fade-in to a quick blend, so
+/// freshly re-rendered crisp tiles replace the stretched ones smoothly as
+/// the page zooms instead of popping.
+final class BackgroundTiledLayer: CATiledLayer {
+    override class func fadeDuration() -> CFTimeInterval { 0.12 }
+}
+
 /// `UIView` that draws the page pattern (dots / grid / ruled / Cornell)
-/// using `CGContext` inside `draw(_:)`. Because UIKit invokes `draw(_:)`
-/// at the layer's `contentsScale`, bumping that scale during zoom causes
-/// the pattern to re-rasterise crisply at the new resolution.
+/// using `CGContext`, backed by a `CATiledLayer`. The tiled layer renders
+/// only the visible tiles at the current on-screen scale, so as the outer
+/// scroll view zooms the page the pattern re-tessellates crisp at the new
+/// resolution (bounded memory) instead of stretching one fixed bitmap.
 final class BackgroundPatternUIView: UIView {
+    override class var layerClass: AnyClass { BackgroundTiledLayer.self }
+
     var background: NotePageBackground = .blank {
         didSet {
             guard oldValue != background else { return }
             setNeedsDisplay()
         }
     }
-    /// Pattern density multiplier — `zoomScale` from the parent. Larger
-    /// values make the spacing between dots/lines proportionally larger
-    /// so the pattern stays glued to page coordinates at every zoom.
+    /// Pattern density multiplier in PAGE coordinates. With the photo-style
+    /// page zoom this stays at 1 (the tiled layer handles zoom), but it is
+    /// kept so the spacing/inset math can still be scaled if needed.
     var patternScale: CGFloat = 1.0 {
         didSet {
             guard abs(oldValue - patternScale) > 0.0005 else { return }
@@ -80,12 +93,22 @@ final class BackgroundPatternUIView: UIView {
         backgroundColor = .clear
         isOpaque = false
         contentMode = .redraw
-        layer.drawsAsynchronously = false
         isUserInteractionEnabled = false
+        if let tiled = layer as? CATiledLayer {
+            // 512pt tiles keep the tile count low for a full page; the bias
+            // grants extra zoomed-in detail levels (2^7 = 128x headroom) so
+            // the pattern stays crisp well past the ink supersample ceiling.
+            tiled.tileSize = CGSize(width: 512, height: 512)
+            tiled.levelsOfDetail = 1
+            tiled.levelsOfDetailBias = 7
+        }
     }
 
     override func draw(_ rect: CGRect) {
         guard let cg = UIGraphicsGetCurrentContext() else { return }
+        // CATiledLayer clips `cg` to the tile being drawn; we draw the full
+        // page pattern each time and let the clip select the tile, so dots
+        // and lines stay aligned across tile boundaries.
         NotePageBackgroundDrawing.draw(
             background,
             in: bounds,

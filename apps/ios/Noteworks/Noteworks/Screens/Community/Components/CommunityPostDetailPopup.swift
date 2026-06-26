@@ -29,7 +29,8 @@ struct CommunityPostDetailPopup: View {
     @State private var commentDraft: String = ""
     @State private var isSubmittingComment: Bool = false
     @State private var attachmentPreview: PostAttachment?
-    @State private var imagePreviewURL: String?
+    @State private var isImageLightboxPresented = false
+    @State private var imageLightboxIndex = 0
     @State private var showDeleteConfirm: Bool = false
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -97,10 +98,11 @@ struct CommunityPostDetailPopup: View {
                 .zIndex(200)
             }
 
-            if let imageURL = imagePreviewURL {
+            if isImageLightboxPresented, !post.imageURLs.isEmpty {
                 ImageLightbox(
-                    urlString: imageURL,
-                    onDismiss: { imagePreviewURL = nil }
+                    urls: post.imageURLs,
+                    startIndex: imageLightboxIndex,
+                    onDismiss: { isImageLightboxPresented = false }
                 )
                 .transition(.opacity)
                 .zIndex(200)
@@ -418,8 +420,15 @@ struct CommunityPostDetailPopup: View {
             post: post,
             accessToken: accessToken,
             onOpenAttachment: { attachmentPreview = $0 },
-            onOpenImage: { imagePreviewURL = $0 }
+            onOpenImage: openImageLightbox
         )
+    }
+
+    private func openImageLightbox(url: String) {
+        let urls = post.imageURLs
+        guard !urls.isEmpty, let index = urls.firstIndex(of: url) else { return }
+        imageLightboxIndex = index
+        isImageLightboxPresented = true
     }
 
     // MARK: - Content pane
@@ -536,8 +545,8 @@ struct CommunityPostDetailPopup: View {
                 // On regular width the left preview pane already shows
                 // post images; only render the inline carousel on iPhone.
                 if isCompact {
-                    PostMediaCarousel(media: post.media) { url in
-                        imagePreviewURL = url
+                    PostMediaCarousel(media: post.media, useSwipePager: true) { url in
+                        openImageLightbox(url: url)
                     }
                 }
             }
@@ -712,11 +721,18 @@ struct CommunityPostDetailPopup: View {
 // MARK: - Image lightbox
 
 /// Full-screen image viewer triggered from the preview pane / inline
-/// carousel. Pinch-to-zoom is intentionally light here — the goal is a
-/// quick "show me the photo bigger" affordance, not a full editor.
+/// carousel. Swipe left or right to move between photos in the post.
 private struct ImageLightbox: View {
-    let urlString: String
+    let urls: [String]
     let onDismiss: () -> Void
+
+    @State private var currentIndex: Int
+
+    init(urls: [String], startIndex: Int, onDismiss: @escaping () -> Void) {
+        self.urls = urls
+        self.onDismiss = onDismiss
+        _currentIndex = State(initialValue: min(max(0, startIndex), max(0, urls.count - 1)))
+    }
 
     var body: some View {
         ZStack {
@@ -724,11 +740,27 @@ private struct ImageLightbox: View {
                 .ignoresSafeArea()
                 .onTapGesture { onDismiss() }
 
-            RemotePostImage(urlString: urlString, contentMode: .fit)
-                .padding(24)
+            TabView(selection: $currentIndex) {
+                ForEach(Array(urls.enumerated()), id: \.offset) { idx, url in
+                    RemotePostImage(urlString: url, contentMode: .fit)
+                        .padding(24)
+                        .tag(idx)
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: urls.count > 1 ? .automatic : .never))
 
             VStack {
                 HStack {
+                    if urls.count > 1 {
+                        Text("\(currentIndex + 1) / \(urls.count)")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.88))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(Capsule().fill(Color.white.opacity(0.14)))
+                            .padding(.leading, 20)
+                            .padding(.top, 20)
+                    }
                     Spacer()
                     Button(action: onDismiss) {
                         Image(systemName: "xmark")
