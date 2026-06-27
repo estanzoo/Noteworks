@@ -27,14 +27,17 @@
 //  at high zoom) rather than re-rasterising vector-crisp.
 //
 //  Knobs:
-//    - `bounces = false`, `alwaysBounceX/Y = false` → no rubber-band.
+//    - `bounces = false`, `alwaysBounceX/Y = false` → no pan rubber-band.
+//    - `bouncesZoom = true` → pinch may briefly cross the zoom limits and
+//      springs back (e.g. pinch in past fit → shrinks, then bounces back).
 //    - `minimumZoomScale = 1` (fit), `maximumZoomScale = maxZoom`.
 //    - `contentSize` is managed by UIScrollView (`base × zoomScale`), so
 //      panning is enabled only once zoomed in past the viewport.
 //
 //  Other surfaces still served by this view:
-//    - Page swipe (single-finger pan at fit zoom) via a dedicated
-//      `UIPanGestureRecognizer`.
+//    - Page swipe (single-finger horizontal pan) via a dedicated
+//      `UIPanGestureRecognizer`. Active at fit zoom, and when zoomed in
+//      once the page is panned to the horizontal content edge.
 //    - Double-tap to toggle between fit and `doubleTapZoomScale`.
 //    - Two-finger double-tap → `onTwoFingerDoubleTap` (e.g. undo).
 //    - Single-finger tap → `onPageFingerTap` (base coords).
@@ -168,7 +171,12 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         scrollView.delegate = context.coordinator
         scrollView.minimumZoomScale = 1
         scrollView.maximumZoomScale = maxZoom
-        scrollView.bouncesZoom = false
+        // Rubber-band the zoom: a pinch may briefly cross the min/max
+        // zoom limits while fingers are down, then UIScrollView animates
+        // back to the limit on release. Gives the "try to zoom out past
+        // fit → it shrinks, then bounces back" feel. (`bounces` stays
+        // false so panning at fit has no rubber-band.)
+        scrollView.bouncesZoom = true
         scrollView.bounces = false
         scrollView.alwaysBounceHorizontal = false
         scrollView.alwaysBounceVertical = false
@@ -438,6 +446,10 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
         // Page swipe state.
         private var isSlidingPage = false
         private var didFireBoundaryHaptic = false
+        /// Zoom captured at the start of a page-swipe pan. Used to keep the
+        /// page tracking the finger 1:1 even when zoomed in (the swipe lives
+        /// inside the scaled `contentRoot`).
+        private var slidePanZoom: CGFloat = 1.0
 
         // Overlay pan state.
         private var overlayPanStartLocationInContent: CGPoint = .zero
@@ -591,6 +603,21 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
             binding.wrappedValue = value
         }
 
+        /// Whether the zoomed page is scrolled hard against the horizontal
+        /// content edge in the direction of an intended page swipe. When the
+        /// content is no wider than the viewport (no horizontal scroll range)
+        /// both edges count, so a swipe can always turn the page.
+        private func isAtHorizontalEdge(_ scrollView: UIScrollView, swipingNext: Bool) -> Bool {
+            let inset = scrollView.contentInset
+            let minX = -inset.left
+            let maxX = max(minX, scrollView.contentSize.width - scrollView.bounds.width + inset.right)
+            let epsilon: CGFloat = 0.5
+            if maxX - minX <= epsilon { return true }
+            let x = scrollView.contentOffset.x
+            // Next page = swipe left = need the right edge; previous = left edge.
+            return swipingNext ? (x >= maxX - epsilon) : (x <= minX + epsilon)
+        }
+
         private func clampOffset(_ offset: inout CGPoint, in scrollView: UIScrollView) {
             let inset = scrollView.contentInset
             let content = scrollView.contentSize
@@ -734,26 +761,31 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
             onTwoFingerDoubleTap?()
         }
 
-        // MARK: Page swipe (only at fit zoom)
+        // MARK: Page swipe (fit zoom, or at the horizontal edge when zoomed)
 
         @objc func handlePagePan(_ sender: UIPanGestureRecognizer) {
             // Apply the swipe to the hosted content view, NOT `contentRoot`:
             // `contentRoot` is the zoom view whose transform UIScrollView owns,
             // so writing a translation transform there would wipe the zoom.
             guard let scrollView = sender.view as? UIScrollView,
-                  let pageView = host?.view ?? contentRoot,
-                  currentZoom <= 1.08 else {
+                  let pageView = host?.view ?? contentRoot else {
                 resetPageSlide(animated: true)
                 return
             }
 
             let translation = sender.translation(in: scrollView)
             let velocity = sender.velocity(in: scrollView)
+            // When the page is zoomed, `pageView` (the hosted content) lives
+            // inside the scaled `contentRoot`, so a translation written to its
+            // transform is multiplied by the live zoom on screen. Divide by the
+            // captured zoom so the page tracks the finger 1:1 at any zoom.
+            let zoomDivisor = max(slidePanZoom, 0.0001)
 
             switch sender.state {
             case .began:
                 isSlidingPage = false
                 didFireBoundaryHaptic = false
+                slidePanZoom = max(currentZoom, 0.0001)
             case .changed:
                 if !isSlidingPage {
                     guard abs(translation.x) > 14,
@@ -782,7 +814,7 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
                     displayedX = raw * 0.92
                     didFireBoundaryHaptic = false
                 }
-                pageView.transform = CGAffineTransform(translationX: displayedX, y: 0)
+                pageView.transform = CGAffineTransform(translationX: displayedX / zoomDivisor, y: 0)
             case .ended, .cancelled, .failed:
                 guard isSlidingPage else {
                     resetPageSlide(animated: true)
@@ -803,15 +835,54 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
                 let shouldGoNext = translation.x < -distanceThreshold || velocity.x < -velocityThreshold
                 let shouldGoPrevious = translation.x > distanceThreshold || velocity.x > velocityThreshold
                 if shouldGoNext || shouldGoPrevious {
-                    let offscreen = (shouldGoNext ? -1 : 1) * max(width, baseContentSize.width)
-                    UIView.animate(withDuration: 0.18, delay: 0, options: [.curveEaseOut]) {
-                        pageView.transform = CGAffineTransform(translationX: offscreen, y: 0)
+                    let span = max(width, baseContentSize.width)
+                    let exitX = (shouldGoNext ? -1 : 1) * span
+                    // Slide the current page out at the live zoom (divide so the
+                    // on-screen travel is a full viewport width). The incoming
+                    // page enters at fit — the page change resets zoom to 1 — so
+                    // its parked position below uses plain base coordinates.
+                    UIView.animate(withDuration: 0.16, delay: 0, options: [.curveEaseIn]) {
+                        pageView.transform = CGAffineTransform(translationX: exitX / zoomDivisor, y: 0)
                     } completion: { [weak self] _ in
-                        pageView.transform = .identity
+                        guard let self else {
+                            pageView.transform = .identity
+                            return
+                        }
+                        // Swap to the destination page's content while the
+                        // page view is parked fully OFF-screen, so the old
+                        // page is never shown centered mid-load (that was the
+                        // ~0.1s "flash of the previous page"). Then park it on
+                        // the opposite edge and slide the freshly-loaded page
+                        // in, masking the SwiftUI/PencilKit content push.
                         if shouldGoNext {
-                            self?.onSwipeNext?()
+                            self.onSwipeNext?()
                         } else {
-                            self?.onSwipePrevious?()
+                            self.onSwipePrevious?()
+                        }
+                        // Snap back to fit deterministically (the page change
+                        // also resets the zoom binding, but that round-trips
+                        // through SwiftUI). Doing it here means `contentRoot`
+                        // is at scale 1 before we park the page, so the parked
+                        // position + slide-in below use plain base coordinates.
+                        if scrollView.zoomScale > 1.0001 {
+                            scrollView.setZoomScale(1, animated: false)
+                        }
+                        self.currentZoom = 1
+                        self.slidePanZoom = 1
+                        self.publishZoomBinding(1)
+                        pageView.transform = CGAffineTransform(translationX: -exitX, y: 0)
+                        // Defer the slide-in one runloop so SwiftUI has applied
+                        // the new page content + pushed the drawing into the
+                        // still-off-screen page view before any pixel of it
+                        // becomes visible.
+                        DispatchQueue.main.async {
+                            UIView.animate(
+                                withDuration: 0.2,
+                                delay: 0,
+                                options: [.curveEaseOut]
+                            ) {
+                                pageView.transform = .identity
+                            }
                         }
                     }
                 } else {
@@ -906,9 +977,17 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
                       let scrollView = pan.view as? UIScrollView else {
                     return true
                 }
-                guard currentZoom <= 1.08 else { return false }
                 let velocity = pan.velocity(in: scrollView)
-                return abs(velocity.x) > abs(velocity.y) * 1.35
+                // Must be a clearly horizontal intent regardless of zoom.
+                guard abs(velocity.x) > abs(velocity.y) * 1.35 else { return false }
+                // At fit zoom the page swipe always owns horizontal pans.
+                if currentZoom <= 1.08 { return true }
+                // Zoomed in: only hijack the pan for a page change when the
+                // page is already scrolled to the horizontal edge in the swipe
+                // direction, so normal panning around the zoomed page keeps
+                // working everywhere else.
+                let swipingNext = velocity.x < 0
+                return isAtHorizontalEdge(scrollView, swipingNext: swipingNext)
             }
             return true
         }

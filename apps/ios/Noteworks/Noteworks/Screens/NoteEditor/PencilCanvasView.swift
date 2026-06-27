@@ -172,14 +172,22 @@ final class SupersamplingCanvasHost: UIView {
             width: bounds.width * scale,
             height: bounds.height * scale
         )
-        // `bounds` is transform-independent: size the canvas large, then
-        // shrink it back to the host's size via the transform and recenter.
+        // Apply the resize + transform ATOMICALLY with implicit animations
+        // disabled. `bounds` is transform-independent, so we size the canvas
+        // large then shrink it back via the `1/scale` transform. Without
+        // disabling actions, the intermediate `.identity` transform (canvas at
+        // full `scale×` size) animates whenever the host frame changes inside
+        // an animation context — which is exactly the "strokes balloon then
+        // snap back" glitch seen when rotating the page.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         canvas.transform = .identity
         if canvas.bounds.size != targetBounds {
             canvas.bounds = CGRect(origin: .zero, size: targetBounds)
         }
         canvas.transform = CGAffineTransform(scaleX: 1.0 / scale, y: 1.0 / scale)
         canvas.center = CGPoint(x: bounds.midX, y: bounds.midY)
+        CATransaction.commit()
     }
 }
 
