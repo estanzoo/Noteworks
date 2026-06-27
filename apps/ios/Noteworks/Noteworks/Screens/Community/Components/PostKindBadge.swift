@@ -16,17 +16,27 @@ import SwiftUI
 
 struct PostKindPill: View {
     let kind: PostKind
+    /// Icon-only chip. Used in the cramped feed-card header (3-column
+    /// grid) where a full "Discussion" label would crowd out the
+    /// author name. The detail popup keeps the full label.
+    var compact: Bool = false
 
     var body: some View {
         HStack(spacing: 4) {
             Image(systemName: kind.icon)
-                .font(.system(size: 10, weight: .semibold))
-            Text(kind.label)
-                .font(.system(size: 11, weight: .semibold))
+                .font(.system(size: compact ? 11 : 10, weight: .semibold))
+            if !compact {
+                Text(kind.label)
+                    .font(.system(size: 11, weight: .semibold))
+                    .lineLimit(1)
+            }
         }
+        // Keep the pill on one line — without this, a narrow card column
+        // squeezes "Discussion" into a stack of "Disc / ussi / on".
+        .fixedSize()
         .foregroundStyle(CommunityTheme.accent)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
+        .padding(.horizontal, compact ? 7 : 10)
+        .padding(.vertical, compact ? 6 : 5)
         .background(CommunityTheme.accent.opacity(0.1))
         .clipShape(Capsule())
         .overlay(Capsule().strokeBorder(CommunityTheme.accent.opacity(0.25), lineWidth: 1))

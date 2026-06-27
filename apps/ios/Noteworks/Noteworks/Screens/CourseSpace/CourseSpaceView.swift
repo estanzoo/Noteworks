@@ -634,77 +634,114 @@ private struct FilterOptionRow: View {
 private struct LibraryNoteCard: View {
     let note: Note
 
+    /// Measured card width. Wide cards (landscape / large iPad) get the
+    /// stacked treatment with the bubble below the page count; narrow cards
+    /// (portrait) tuck the bubble onto the date row, right-aligned, to save
+    /// vertical room.
+    @State private var cardWidth: CGFloat = 0
+    private var isWide: Bool { cardWidth > 300 }
+
+    // Bubble this note belongs to — orphan notes roll up to the default
+    // bubble. Darker border than the rest of the glass chrome so it reads
+    // with more contrast against the card.
+    @ViewBuilder
+    private var badgePill: some View {
+        if let badge = note.displayBadge {
+            Text(badge)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(textSecondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+                .background(Color.white.opacity(0.5))
+                .background(.ultraThinMaterial.opacity(0.3))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12)
+                        .strokeBorder(Color.black.opacity(0.14), lineWidth: 1)
+                }
+        }
+    }
+
+    private var dateRow: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "clock")
+                .font(.system(size: 12))
+                .foregroundStyle(textMuted)
+            Text(note.formattedDate)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(textMuted)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .truncationMode(.middle)
+        }
+    }
+
+    private var pagesRow: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "doc")
+                .font(.system(size: 12))
+                .foregroundStyle(textMuted)
+            Text("\(note.pageCount) PAGES")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(textMuted)
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Title + tag
-            HStack(alignment: .top) {
+            // Row 1: title (single line). It shrinks a little when long,
+            // then collapses with a middle ellipsis ("Quantum…physics")
+            // so it never wraps into a second row. The bookmark stays as a
+            // small trailing status chip on the same row.
+            HStack(alignment: .center, spacing: 8) {
                 Text(note.title)
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(textPrimary)
-                    .lineLimit(2)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-                Spacer(minLength: 8)
-
-                HStack(alignment: .center, spacing: 8) {
-                    // Bookmark chip — mirrors the Library mock: small
-                    // rounded square, desaturated blue fill, solid accent
-                    // bookmark immediately left of the course pill.
-                    if note.bookmarked {
-                        Image(systemName: "bookmark.fill")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(accent)
-                            .frame(width: 32, height: 32)
-                            .background(
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .fill(accent.opacity(0.14))
-                            )
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .strokeBorder(accent.opacity(0.2), lineWidth: 1)
-                            }
-                    }
-
-                    // Corner pill: every note belongs to a bubble — orphan
-                    // notes roll up to Untitled Bubble.
-                    if let badge = note.displayBadge {
-                        Text(badge)
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(textSecondary)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 4)
-                            .background(Color.white.opacity(0.4))
-                            .background(.ultraThinMaterial.opacity(0.3))
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 12)
-                                    .strokeBorder(glassBorder, lineWidth: 1)
-                            }
-                    }
+                // Bookmark chip — mirrors the Library mock: small rounded
+                // square, desaturated blue fill, solid accent bookmark.
+                if note.bookmarked {
+                    Image(systemName: "bookmark.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(accent)
+                        .frame(width: 32, height: 32)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(accent.opacity(0.14))
+                        )
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(accent.opacity(0.2), lineWidth: 1)
+                        }
                 }
             }
             .padding(.bottom, 12)
 
-            // Date
-            HStack(spacing: 6) {
-                Image(systemName: "clock")
-                    .font(.system(size: 12))
-                    .foregroundStyle(textMuted)
-                Text(note.formattedDate)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(textMuted)
-            }
-            .padding(.bottom, 4)
-
-            // Pages
-            HStack(spacing: 6) {
-                Image(systemName: "doc")
-                    .font(.system(size: 12))
-                    .foregroundStyle(textMuted)
-                Text("\(note.pageCount) PAGES")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(textMuted)
+            if isWide {
+                // Wide card: date, then pages, then the bubble below them.
+                dateRow
+                    .padding(.bottom, 4)
+                pagesRow
+                HStack(spacing: 0) {
+                    badgePill
+                    Spacer(minLength: 0)
+                }
+                .padding(.top, 12)
+            } else {
+                // Narrow card: bubble shares the date row, pinned right.
+                HStack(spacing: 8) {
+                    dateRow
+                    Spacer(minLength: 8)
+                    badgePill
+                }
+                .padding(.bottom, 4)
+                pagesRow
             }
 
             Spacer(minLength: 16)
@@ -724,6 +761,15 @@ private struct LibraryNoteCard: View {
         }
         .padding(24)
         .frame(minHeight: 200, alignment: .topLeading)
+        .background {
+            GeometryReader { geo in
+                Color.clear
+                    .onAppear { cardWidth = geo.size.width }
+                    .onChange(of: geo.size.width) { _, newValue in
+                        cardWidth = newValue
+                    }
+            }
+        }
         .background {
             // Outer gradient ring
             RoundedRectangle(cornerRadius: 24)

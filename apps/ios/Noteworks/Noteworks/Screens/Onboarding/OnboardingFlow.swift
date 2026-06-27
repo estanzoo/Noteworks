@@ -159,13 +159,13 @@ struct OnboardingFlow: View {
                     CoursesStepView(
                         data: data,
                         onSave: { codes in
-                            let safe = codes.isEmpty ? ["Untitled Bubble"] : codes
+                            let safe = codes.isEmpty ? [NotesStore.initialGuestBubbleName] : codes
                             appState.notesStore.replaceBubbleNames(safe)
                             appState.tutorialCoordinator.pendingAutoStart = true
                             Task { await appState.refreshProfile() }
                         },
                         onSkip: {
-                            appState.notesStore.replaceBubbleNames(["Untitled Bubble"])
+                            appState.notesStore.replaceBubbleNames([NotesStore.initialGuestBubbleName])
                             appState.tutorialCoordinator.pendingAutoStart = true
                             Task { await appState.refreshProfile() }
                         },

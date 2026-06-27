@@ -22,9 +22,12 @@ struct ProfileHeroCard: View {
     /// plenty of room (e.g. iPhone landscape, iPad split view).
     @State private var availableWidth: CGFloat = 1024
 
-    /// Below this card-width we collapse to the stacked layout. Tuned so the
-    /// right column has room for the AT A GLANCE pill bar + BIO field.
-    private let horizontalThreshold: CGFloat = 720
+    /// Below this card-width we collapse to the stacked layout. The side-by-
+    /// side layout has to fit the avatar sidebar (~180), the AT A GLANCE pill
+    /// bar (which is `fixedSize`, ~470), and still leave the name column real
+    /// room. Below ~900 the name gets starved to near-zero width and wraps one
+    /// letter per line (iPad portrait), so we stack instead.
+    private let horizontalThreshold: CGFloat = 900
     private var isCompact: Bool { availableWidth < horizontalThreshold }
 
     private var trimmedHeroBio: String {
@@ -39,7 +42,20 @@ struct ProfileHeroCard: View {
         GlassCard(padding: 24, cornerRadius: 24) {
             Group {
                 if isCompact {
-                    VStack(alignment: .leading, spacing: 20) { sidebar; mainContent }
+                    // Keep the name beside the photo (like the wide layout) and
+                    // stack the description, AT A GLANCE, BIO, and plan chips in
+                    // that right column so they all fill the space next to the
+                    // avatar.
+                    HStack(alignment: .top, spacing: 18) {
+                        sidebar
+                        VStack(alignment: .leading, spacing: 14) {
+                            nameBlock
+                            atAGlanceBlock
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            bioBlock
+                            planChips
+                        }
+                    }
                 } else {
                     HStack(alignment: .top, spacing: 28) {
                         sidebar
@@ -148,56 +164,53 @@ struct ProfileHeroCard: View {
 
     private var mainContent: some View {
         VStack(alignment: .leading, spacing: 16) {
-            // Name + major·school + at-a-glance pills
-            if isCompact {
-                VStack(alignment: .leading, spacing: 14) {
-                    nameBlock
-                    atAGlanceBlock
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            } else {
-                HStack(alignment: .top, spacing: 16) {
-                    nameBlock
-                    Spacer(minLength: 8)
-                    atAGlanceBlock
-                        .fixedSize(horizontal: true, vertical: false)
-                }
+            HStack(alignment: .top, spacing: 16) {
+                nameBlock
+                Spacer(minLength: 8)
+                atAGlanceBlock
+                    .fixedSize(horizontal: true, vertical: false)
             }
 
-            // Bio — mirrors `.profile-hero-about` (JSX L7928): light glass strip
-            // with 16pt radius, white 0.46 border, and 12/14 padding.
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text("BIO")
-                    .font(.system(size: 11, weight: .bold))
-                    .tracking(0.08 * 11)
-                    .foregroundStyle(ProfileTheme.textMuted)
-
-                Text(trimmedHeroBio.isEmpty ? heroBioPlaceholder : trimmedHeroBio)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(trimmedHeroBio.isEmpty ? ProfileTheme.textMuted : ProfileTheme.textSecondary)
-                    .lineLimit(2)
-                    .truncationMode(.tail)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(Color.white.opacity(0.26))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.46), lineWidth: 1)
-            )
-
-            // Plan / credits chips
-            HStack(spacing: 8) {
-                ProfileAccentChip(text: viewModel.profile.subscription.plan, emphasized: true)
-                ProfileAccentChip(text: "\(viewModel.profile.credits.balance) Credits Available")
-                Spacer(minLength: 0)
-            }
+            bioBlock
+            planChips
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Bio — mirrors `.profile-hero-about` (JSX L7928): light glass strip
+    /// with 16pt radius, white 0.46 border, and 12/14 padding.
+    private var bioBlock: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text("BIO")
+                .font(.system(size: 11, weight: .bold))
+                .tracking(0.08 * 11)
+                .foregroundStyle(ProfileTheme.textMuted)
+
+            Text(trimmedHeroBio.isEmpty ? heroBioPlaceholder : trimmedHeroBio)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(trimmedHeroBio.isEmpty ? ProfileTheme.textMuted : ProfileTheme.textSecondary)
+                .lineLimit(2)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color.white.opacity(0.26))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.46), lineWidth: 1)
+        )
+    }
+
+    private var planChips: some View {
+        HStack(spacing: 8) {
+            ProfileAccentChip(text: viewModel.profile.subscription.plan, emphasized: true)
+            ProfileAccentChip(text: "\(viewModel.profile.credits.balance) Credits Available")
+            Spacer(minLength: 0)
+        }
     }
 
     private var nameBlock: some View {

@@ -287,7 +287,7 @@ struct ProfileView: View {
     private var regularLayout: some View {
         HStack(alignment: .top, spacing: 20) {
             sidebar
-                .frame(width: 260)
+                .frame(width: 200)
 
             Rectangle()
                 .fill(Color.black.opacity(0.04))
