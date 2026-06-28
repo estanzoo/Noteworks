@@ -342,7 +342,7 @@ struct CoursesStepView: View {
                         .tracking(-0.5)
                         .foregroundStyle(OnboardingTheme.textPrimary)
 
-                    Text("Your Home will start with only one Untitled Bubble. You can add or edit courses later in Settings, About You, Edit Course List.")
+                    Text("Your Home will start with only one \(NotesStore.initialGuestBubbleName) bubble. You can add or edit courses later in Settings, About You, Edit Course List.")
                         .font(.system(size: 13.5, weight: .semibold))
                         .foregroundStyle(OnboardingTheme.textSecondary)
                         .lineSpacing(2)
@@ -633,7 +633,7 @@ private struct CourseRowCard: View {
     }
 
     private var previewLabel: String {
-        row.bubbleLabel(for: displayMode) ?? "Untitled Bubble"
+        row.bubbleLabel(for: displayMode) ?? NotesStore.initialGuestBubbleName
     }
 
     var body: some View {

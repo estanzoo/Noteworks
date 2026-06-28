@@ -125,7 +125,7 @@ struct HomeView: View {
                 }
             },
             message: { _ in
-                Text("Notes in this bubble will move to Untitled Bubble.")
+                Text("Notes in this bubble will move to \(NotesStore.initialGuestBubbleName).")
             }
         )
         .onAppear {

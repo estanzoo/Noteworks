@@ -66,7 +66,7 @@ struct BubbleEditorDialog: View {
     }
 
     private var previewLabel: String {
-        courseDraft.bubbleLabel(for: displayMode) ?? "Untitled Bubble"
+        courseDraft.bubbleLabel(for: displayMode) ?? NotesStore.initialGuestBubbleName
     }
 
     var body: some View {

@@ -730,14 +730,16 @@ private struct PostCardView: View {
                         Text(post.authorName)
                             .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(CommunityTheme.textPrimary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
                         Text(relativeTime(post.createdAt))
                             .font(.system(size: 12))
                             .foregroundStyle(CommunityTheme.textMuted)
-                            .lineSpacing(2)
+                            .lineLimit(1)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                    PostKindPill(kind: post.postKind)
+                    PostKindPill(kind: post.postKind, compact: true)
                 }
                 .padding(.bottom, 16)
 
@@ -768,13 +770,18 @@ private struct PostCardView: View {
                 HStack(alignment: .center) {
                     if !post.hashtags.isEmpty {
                         HStack(spacing: 6) {
-                            ForEach(post.hashtags.prefix(3), id: \.self) { tag in
+                            ForEach(post.hashtags.prefix(2), id: \.self) { tag in
                                 Button {
                                     onHashtagTap(tag)
                                 } label: {
                                     Text("#\(tag)")
                                         .font(.system(size: 12, weight: .medium))
                                         .foregroundStyle(CommunityTheme.textMuted)
+                                        // One line per tag — a narrow card
+                                        // otherwise wraps "#group-study" into
+                                        // a "#gr / oup- / stud / y" stack.
+                                        .lineLimit(1)
+                                        .truncationMode(.tail)
                                         .padding(.horizontal, 10)
                                         .padding(.vertical, 4)
                                         .background(Color.black.opacity(0.04))
@@ -783,9 +790,10 @@ private struct PostCardView: View {
                                 .buttonStyle(.plain)
                             }
                         }
+                        .layoutPriority(1)
                     }
 
-                    Spacer()
+                    Spacer(minLength: 8)
 
                     HStack(spacing: 6) {
                         HStack(spacing: 4) {
