@@ -109,6 +109,20 @@ final class LocalNotesPersistence {
     private var pendingSaveWorkItem: DispatchWorkItem?
     private let saveDebounceSeconds: TimeInterval = 0.25
 
+    // MARK: - Decoded-drawing cache (adjacent-page preload)
+
+    /// Decoded `PKDrawing`s kept warm so a swipe to an adjacent page is an
+    /// in-memory hit instead of a main-thread `Data(contentsOf:)` +
+    /// `PKDrawing(data:)` decode. Keyed by `"<noteId>/<zeroBasedPage>"`.
+    /// Guarded by `cacheLock` because prefetch decodes happen on `queue`.
+    private let cacheLock = NSLock()
+    private var drawingCache: [String: PKDrawing] = [:]
+    /// FIFO insertion order so the cache stays memory-bounded.
+    private var drawingCacheOrder: [String] = []
+    /// Keys with a prefetch decode in flight — dedupes redundant reads.
+    private var inFlightPrefetch: Set<String> = []
+    private let maxDrawingCacheEntries = 8
+
     // MARK: - Init
 
     private init() {}
@@ -362,12 +376,20 @@ final class LocalNotesPersistence {
     }
 
     func loadDrawing(for noteId: String, page: Int) -> PKDrawing? {
+        let key = cacheKey(noteId: noteId, page: page)
+        cacheLock.lock()
+        let cached = drawingCache[key]
+        cacheLock.unlock()
+        if let cached { return cached }
+
         guard let userId = activeUserId else { return nil }
         let url = drawingURL(for: userId, noteId: noteId, page: page)
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         do {
             let data = try Data(contentsOf: url)
-            return try PKDrawing(data: data)
+            let decoded = try PKDrawing(data: data)
+            storeInCache(decoded, forKey: key)
+            return decoded
         } catch {
             #if DEBUG
             print("[NotesStore] Failed to load drawing \(url.lastPathComponent): \(error)")
@@ -380,8 +402,12 @@ final class LocalNotesPersistence {
         guard let userId = activeUserId else { return }
         ensureDrawingFolderExists(userId: userId, noteId: noteId)
         let url = drawingURL(for: userId, noteId: noteId, page: page)
+        let key = cacheKey(noteId: noteId, page: page)
         let data = drawing.dataRepresentation()
-        queue.async {
+        // Keep the cache current with the bytes we're about to persist. Done
+        // on `queue` so it serializes after any in-flight prefetch read for
+        // the same page (which would otherwise overwrite us with stale data).
+        queue.async { [weak self] in
             do {
                 try data.write(to: url, options: [.atomic])
             } catch {
@@ -389,11 +415,79 @@ final class LocalNotesPersistence {
                 print("[NotesStore] Failed to write drawing \(url.lastPathComponent): \(error)")
                 #endif
             }
+            self?.storeInCache(drawing, forKey: key)
+        }
+    }
+
+    // MARK: - Drawing cache helpers
+
+    private func cacheKey(noteId: String, page: Int) -> String {
+        "\(noteId)/\(page)"
+    }
+
+    private func storeInCache(_ drawing: PKDrawing, forKey key: String) {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        if drawingCache[key] == nil {
+            drawingCacheOrder.append(key)
+        }
+        drawingCache[key] = drawing
+        while drawingCacheOrder.count > maxDrawingCacheEntries {
+            let evicted = drawingCacheOrder.removeFirst()
+            drawingCache.removeValue(forKey: evicted)
+        }
+    }
+
+    /// Decodes a page's drawing off the main thread and warms the cache so a
+    /// later swipe to it is instant. No-op when already cached or in flight.
+    /// `page` is the same zero-based index `loadDrawing` / `saveDrawing` use.
+    func prefetchDrawing(for noteId: String, page: Int) {
+        guard let userId = activeUserId else { return }
+        let key = cacheKey(noteId: noteId, page: page)
+        cacheLock.lock()
+        let alreadyWarm = drawingCache[key] != nil || inFlightPrefetch.contains(key)
+        if alreadyWarm {
+            cacheLock.unlock()
+            return
+        }
+        inFlightPrefetch.insert(key)
+        cacheLock.unlock()
+
+        let url = drawingURL(for: userId, noteId: noteId, page: page)
+        queue.async { [weak self] in
+            guard let self else { return }
+            defer {
+                self.cacheLock.lock()
+                self.inFlightPrefetch.remove(key)
+                self.cacheLock.unlock()
+            }
+            // A page with no file on disk is a valid empty page — cache the
+            // empty drawing so the swipe still skips the file-existence probe.
+            var decoded = PKDrawing()
+            if FileManager.default.fileExists(atPath: url.path),
+               let data = try? Data(contentsOf: url),
+               let drawing = try? PKDrawing(data: data) {
+                decoded = drawing
+            }
+            self.storeInCache(decoded, forKey: key)
+        }
+    }
+
+    /// Drops every cached page for a note. Called whenever drawing files are
+    /// renumbered / moved / removed so a swipe can't resurrect stale ink.
+    func invalidateDrawingCache(for noteId: String) {
+        let prefix = "\(noteId)/"
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        drawingCacheOrder.removeAll { $0.hasPrefix(prefix) }
+        for key in drawingCache.keys where key.hasPrefix(prefix) {
+            drawingCache.removeValue(forKey: key)
         }
     }
 
     func deleteDrawing(for noteId: String, page: Int) {
         guard let userId = activeUserId else { return }
+        invalidateDrawingCache(for: noteId)
         let url = drawingURL(for: userId, noteId: noteId, page: page)
         queue.async {
             try? FileManager.default.removeItem(at: url)
@@ -402,6 +496,7 @@ final class LocalNotesPersistence {
 
     func deleteAllDrawings(for noteId: String) {
         guard let userId = activeUserId else { return }
+        invalidateDrawingCache(for: noteId)
         let folder = drawingFolder(for: userId, noteId: noteId)
         let legacy = legacyPerNoteDrawingURL(for: userId, noteId: noteId)
         queue.async {
@@ -416,6 +511,7 @@ final class LocalNotesPersistence {
     /// so a sign-out racing with the dispatched work cannot redirect us.
     func shiftDrawings(for noteId: String, fromIndex: Int, by delta: Int) {
         guard delta != 0, let userId = activeUserId else { return }
+        invalidateDrawingCache(for: noteId)
         ensureDrawingFolderExists(userId: userId, noteId: noteId)
         let folder = drawingFolder(for: userId, noteId: noteId)
         let fm = FileManager.default
@@ -442,6 +538,7 @@ final class LocalNotesPersistence {
     /// folder. No-op if the source file doesn't exist.
     func copyDrawing(for noteId: String, fromIndex: Int, toIndex: Int) {
         guard let userId = activeUserId else { return }
+        invalidateDrawingCache(for: noteId)
         let src = drawingURL(for: userId, noteId: noteId, page: fromIndex)
         let dst = drawingURL(for: userId, noteId: noteId, page: toIndex)
         queue.async {
@@ -456,6 +553,7 @@ final class LocalNotesPersistence {
     /// values are zero-based page indices (`oldZeroBased` → `newZeroBased`).
     func remapDrawings(for noteId: String, oldZeroToNewZero: [Int: Int]) {
         guard let userId = activeUserId else { return }
+        invalidateDrawingCache(for: noteId)
         ensureDrawingFolderExists(userId: userId, noteId: noteId)
         let folder = drawingFolder(for: userId, noteId: noteId)
         queue.async {
