@@ -1189,13 +1189,6 @@ final class NotesStore: ObservableObject {
         persistence.loadDrawing(for: noteId, page: page - 1)
     }
 
-    /// Warms the decoded-drawing cache for a page (1-based) off the main
-    /// thread so a subsequent swipe to it loads instantly instead of
-    /// blocking on a disk read + `PKDrawing` decode.
-    func prefetchDrawing(for noteId: String, page: Int) {
-        persistence.prefetchDrawing(for: noteId, page: page - 1)
-    }
-
     func saveDrawing(_ drawing: PKDrawing, for noteId: String, page: Int) {
         persistence.saveDrawing(drawing, for: noteId, page: page - 1)
         if let idx = notes.firstIndex(where: { $0.id == noteId }) {

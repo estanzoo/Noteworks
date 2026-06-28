@@ -31,6 +31,62 @@
 import SwiftUI
 import UIKit
 import PencilKit
+import os
+
+// MARK: - Ink drift debug (TestFlight / Console)
+
+/// Set to `true` to emit `[InkCanvas]` lines while testing stroke drift.
+/// Filter on subsystem `com.noteworks.inkcanvas` in Console.app / Xcode.
+enum InkCanvasDebug {
+    static var isEnabled = true
+    private static let log = Logger(subsystem: "com.noteworks.inkcanvas", category: "drift")
+
+    static func log(_ message: @autoclosure () -> String) {
+        guard isEnabled else { return }
+        let text = message()
+        log.info("\(text, privacy: .public)")
+    }
+
+    /// Dumps the geometry that decides where PencilKit places wet vs. dry
+    /// ink: the canvas's own scroll state (offset/inset/contentSize), its
+    /// bounds + transform, the supersample host bounds, and the canvas
+    /// origin in window space.
+    static func dump(_ tag: String, canvas: PKCanvasView) {
+        guard isEnabled else { return }
+        let host = canvas.superview
+        let originInWindow = canvas.superview?.convert(canvas.frame.origin, to: nil) ?? .zero
+        let t = canvas.transform
+        var outer = "none"
+        var ancestor: UIView? = canvas.superview
+        while let a = ancestor {
+            if let sv = a as? UIScrollView, !(a is PKCanvasView) {
+                outer = "offset=\(fmt(sv.contentOffset)) inset=\(fmt(sv.contentInset)) zoom=\(fmt(sv.zoomScale)) bounds=\(fmt(sv.bounds))"
+                break
+            }
+            ancestor = a.superview
+        }
+        log(
+            "\(tag) "
+            + "canvasBounds=\(fmt(canvas.bounds)) "
+            + "canvasFrame=\(fmt(canvas.frame)) "
+            + "transform=(a:\(fmt(t.a)) d:\(fmt(t.d)) tx:\(fmt(t.tx)) ty:\(fmt(t.ty))) "
+            + "contentOffset=\(fmt(canvas.contentOffset)) "
+            + "contentInset=\(fmt(canvas.contentInset)) "
+            + "contentSize=\(fmt(canvas.contentSize)) "
+            + "zoom=\(fmt(canvas.zoomScale)) "
+            + "hostBounds=\(fmt(host?.bounds ?? .zero)) "
+            + "drawingBounds=\(fmt(canvas.drawing.bounds)) "
+            + "originInWindow=\(fmt(originInWindow)) "
+            + "outerScroll=[\(outer)]"
+        )
+    }
+
+    static func fmt(_ v: CGFloat) -> String { String(format: "%.1f", v) }
+    static func fmt(_ p: CGPoint) -> String { "(\(fmt(p.x)),\(fmt(p.y)))" }
+    static func fmt(_ s: CGSize) -> String { "(\(fmt(s.width))x\(fmt(s.height)))" }
+    static func fmt(_ i: UIEdgeInsets) -> String { "(t:\(fmt(i.top)) l:\(fmt(i.left)) b:\(fmt(i.bottom)) r:\(fmt(i.right)))" }
+    static func fmt(_ r: CGRect) -> String { "[\(fmt(r.origin)) \(fmt(r.size))]" }
+}
 
 /// Canvas that ignores finger hit-testing so taps reach stickers below
 /// while Apple Pencil still draws on this layer.
@@ -180,6 +236,12 @@ final class SupersamplingCanvasHost: UIView {
         }
         canvas.transform = CGAffineTransform(scaleX: 1.0 / scale, y: 1.0 / scale)
         canvas.center = CGPoint(x: bounds.midX, y: bounds.midY)
+        InkCanvasDebug.log(
+            "host.layoutSubviews hostBounds=\(InkCanvasDebug.fmt(bounds)) "
+            + "renderScale=\(InkCanvasDebug.fmt(scale)) "
+            + "canvasBounds=\(InkCanvasDebug.fmt(canvas.bounds)) "
+            + "canvasCenter=\(InkCanvasDebug.fmt(canvas.center))"
+        )
     }
 }
 
@@ -263,6 +325,16 @@ struct PencilCanvasView: UIViewRepresentable {
         canvasView.minimumZoomScale = 1
         canvasView.maximumZoomScale = 1
         canvasView.bouncesZoom = false
+        // PKCanvasView is itself a UIScrollView. Left on `.automatic`, it
+        // folds the (orientation-dependent) safe-area insets into its
+        // `adjustedContentInset`, which shifts where live (wet) ink lands
+        // relative to committed ink — the diagonal drift that only shows in
+        // one orientation. Pin it so the canvas coordinate space is stable.
+        canvasView.contentInsetAdjustmentBehavior = .never
+        if #available(iOS 13.0, *) {
+            canvasView.automaticallyAdjustsScrollIndicatorInsets = false
+        }
+        canvasView.contentInset = .zero
 
         let pencil = UIPencilInteraction()
         pencil.delegate = context.coordinator
@@ -400,6 +472,7 @@ struct PencilCanvasView: UIViewRepresentable {
             )
             let previousDrawing = lastKnownBaseDrawing ?? baseDrawing
             lastKnownBaseDrawing = baseDrawing
+            if isDrawing { InkCanvasDebug.dump("CHANGE", canvas: canvasView) }
             if parent.drawing != baseDrawing {
                 parent.drawing = baseDrawing
             }
@@ -408,10 +481,13 @@ struct PencilCanvasView: UIViewRepresentable {
 
         func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
             isDrawing = true
+            InkCanvasDebug.log("appliedZoom=\(InkCanvasDebug.fmt(appliedZoom))")
+            InkCanvasDebug.dump("BEGIN", canvas: canvasView)
         }
 
         func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
             isDrawing = false
+            InkCanvasDebug.dump("END", canvas: canvasView)
         }
     }
 }

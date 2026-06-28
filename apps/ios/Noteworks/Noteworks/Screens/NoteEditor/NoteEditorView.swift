@@ -1588,14 +1588,37 @@ struct NoteEditorView: View {
     /// Reserved space above and below the page when fitting at zoom 1.
     private static let pageVerticalInset: CGFloat = 32
 
-    /// Fixed supersample factor for the ink layer. The page scales like a
-    /// photo (no per-zoom re-render), so the canvas is rendered at this
-    /// many times its display resolution to keep handwriting crisp while
-    /// zoomed in. Strokes stay sharp up to ~this zoom; beyond it they
-    /// soften like an image. Higher = crisper but more memory. PencilKit
-    /// rasterises lazily in tiles, so the cost scales with inked area, not
-    /// the full supersampled page.
-    private static let pageRenderSupersample: CGFloat = 5.0
+    /// Maximum ink supersample factor. The canvas is rendered at
+    /// `inkRenderScale` (see below) times its display resolution to keep
+    /// handwriting crisp when zoomed in. PencilKit rasterises lazily in
+    /// tiles, so the cost scales with inked area, not the full page.
+    ///
+    /// IMPORTANT — why this is dynamic, not fixed: a constant supersample
+    /// leaves the `PKCanvasView` with a permanent `1/factor` transform, and
+    /// PencilKit's live (wet) ink preview doesn't honour that transform, so
+    /// strokes drift mid-stroke and snap back on lift (worse the larger the
+    /// canvas — i.e. portrait). Instead we track the *settled* page zoom so
+    /// the supersample matches the zoom (at fit: 1× / identity transform; up
+    /// to the cap: `factor` cancels the scroll view's zoom for a net-identity
+    /// transform). The zoom binding only publishes on zoom-end, so this
+    /// re-rasterises once per pinch (crisp), never mid-gesture.
+    ///
+    /// Capped at 4 because the drift is governed by the canvas's OWN
+    /// transform magnitude: at `1/4 = 0.25` and above, PencilKit's wet ink
+    /// stays put; below it (factor > ~4) the live preview drifts, worse the
+    /// smaller the transform — and a net-identity outer zoom does NOT rescue
+    /// it. Past 4× the supersample holds at 4 (safe transform) and the extra
+    /// magnification comes from the scroll view's photo-style zoom (which
+    /// never drifts), so ink merely softens gently beyond 4× instead of
+    /// drifting.
+    private static let pageRenderSupersample: CGFloat = 4.0
+
+    /// Ink supersample factor for the current settled zoom: 1 at fit, rising
+    /// with zoom up to `pageRenderSupersample`. Keeps the canvas's transform
+    /// in the drift-free range so live ink never drifts.
+    private var inkRenderScale: CGFloat {
+        min(max(canvasZoom, 1), Self.pageRenderSupersample)
+    }
 
     private var canvasArea: some View {
         GeometryReader { geometry in
@@ -1610,6 +1633,13 @@ struct NoteEditorView: View {
                 scrollContentSize: scrollContentSize,
                 rotation: rotation
             )
+            // Ink is stored in a width-independent canonical space and scaled
+            // to this on-screen page width for display. Report the width so
+            // the view model re-derives the live drawing on rotation.
+            .onAppear { viewModel.setDisplayPageWidth(logicalPageSize.width) }
+            .onChange(of: logicalPageSize.width) { _, width in
+                viewModel.setDisplayPageWidth(width)
+            }
         }
     }
 
@@ -1768,7 +1798,7 @@ struct NoteEditorView: View {
                     drawing: $viewModel.drawing,
                     drawingPushGeneration: viewModel.drawingPushGeneration,
                     tool: viewModel.pkTool,
-                    zoomScale: Self.pageRenderSupersample,
+                    zoomScale: inkRenderScale,
                     drawingPolicy: .pencilOnly,
                     // Keep the canvas in the responder chain for every tool
                     // so finger routing stays consistent — disabling it for

@@ -349,12 +349,89 @@ final class NoteEditorViewModel: ObservableObject {
 
     // MARK: - Canvas state
 
-    /// The drawing currently bound to the canvas. Bound to
-    /// `PencilCanvasView` so PKCanvasView pushes strokes here and we push
-    /// page swaps back into PKCanvasView.
+    /// The drawing currently bound to the canvas, in **on-screen display
+    /// coordinates** (scaled to the current logical page width). The canvas
+    /// renders this 1:1 — the only configuration where PencilKit's live
+    /// (wet) ink doesn't drift away from the committed ink. Orientation
+    /// independence is NOT done by transforming the canvas; instead this
+    /// display drawing is derived from / converted to a width-independent
+    /// **canonical** drawing (`canonicalInkWidth`-based) at the persistence,
+    /// PDF, and load boundaries, and re-derived once whenever the on-screen
+    /// page width changes (`setDisplayPageWidth`).
     @Published var drawing = PKDrawing()
     @Published var noteTitle = "Untitled Note"
     @Published var subject: String?
+
+    /// Width-independent page width that on-disk drawings and PDF export
+    /// use (matches `PDFStorageService.pdfLogicalPageSize`). Strokes are
+    /// persisted in this space so they round-trip identically regardless of
+    /// device orientation or viewport size.
+    private var canonicalInkWidth: CGFloat { PDFStorageService.pdfLogicalPageSize.width }
+
+    /// On-screen logical page width the live `drawing` is currently scaled
+    /// to. `0` before the view first reports a width / before any load.
+    private var drawingCoordWidth: CGFloat = 0
+
+    /// Latest on-screen logical page width reported by the view. Drives the
+    /// canonical→display scale applied to `drawing`.
+    private var displayPageWidth: CGFloat = 0
+
+    /// The live `drawing` mapped back into canonical (width-independent)
+    /// coordinates — used for persistence and every PDF/export path so
+    /// strokes always land in the same space as on-disk pages.
+    var canonicalLiveDrawing: PKDrawing {
+        canonicalDrawing(fromDisplay: drawing)
+    }
+
+    private func canonicalDrawing(fromDisplay display: PKDrawing) -> PKDrawing {
+        guard drawingCoordWidth > 0 else { return display }
+        let factor = canonicalInkWidth / drawingCoordWidth
+        guard abs(factor - 1) > 0.0001 else { return display }
+        return display.transformed(using: CGAffineTransform(scaleX: factor, y: factor))
+    }
+
+    /// Scales a canonical drawing into the current on-screen display width.
+    /// Returns the display drawing plus the width it is expressed in (the
+    /// canonical width when no display width is known yet, so a later
+    /// `setDisplayPageWidth` can finish the scaling).
+    private func displayDrawing(fromCanonical canonical: PKDrawing) -> (drawing: PKDrawing, width: CGFloat) {
+        guard displayPageWidth > 0 else { return (canonical, canonicalInkWidth) }
+        let factor = displayPageWidth / canonicalInkWidth
+        guard abs(factor - 1) > 0.0001 else { return (canonical, displayPageWidth) }
+        let scaled = canonical.transformed(using: CGAffineTransform(scaleX: factor, y: factor))
+        return (scaled, displayPageWidth)
+    }
+
+    /// Reports the current on-screen logical page width from the view. When
+    /// it changes (rotation / page aspect change) the in-memory display
+    /// drawing is rescaled and re-pushed into the canvas exactly once — the
+    /// same drift-free path a page load takes. The canonical (persisted)
+    /// strokes are unchanged, so disk + PDF stay orientation-independent.
+    func setDisplayPageWidth(_ width: CGFloat) {
+        guard width > 0 else { return }
+        InkCanvasDebug.log(
+            "setDisplayPageWidth width=\(InkCanvasDebug.fmt(width)) "
+            + "drawingCoordWidth=\(InkCanvasDebug.fmt(drawingCoordWidth)) "
+            + "canonical=\(InkCanvasDebug.fmt(canonicalInkWidth)) hasLoaded=\(hasLoaded)"
+        )
+        displayPageWidth = width
+        // Before the page has loaded, just remember the width — `loadDrawing`
+        // will scale the canonical strokes into it.
+        guard hasLoaded else { return }
+        guard drawingCoordWidth > 0, abs(width - drawingCoordWidth) > 0.5 else { return }
+        // Persist any in-flight stroke (canonical, at the current width)
+        // before we bump the generation, which would otherwise drop it.
+        flushPendingSave()
+        let factor = width / drawingCoordWidth
+        drawingGeneration += 1
+        drawingPushGeneration += 1
+        skipNextDrawingPersist = true
+        drawing = drawing.transformed(using: CGAffineTransform(scaleX: factor, y: factor))
+        drawingCoordWidth = width
+        // Undo snapshots live in display coordinates for the previous width;
+        // drop them so a later undo can't restore mis-scaled ink.
+        clearPageEditHistory()
+    }
 
     // MARK: - Page state
 
@@ -710,24 +787,16 @@ final class NoteEditorViewModel: ObservableObject {
 
     private func loadDrawing(for page: Int) {
         guard let id = noteId, let store else { return }
-        let saved = store.loadDrawing(for: id, page: page) ?? PKDrawing()
+        // On disk strokes live in canonical (width-independent) space; scale
+        // them into the current on-screen width for the canvas binding.
+        let savedCanonical = store.loadDrawing(for: id, page: page) ?? PKDrawing()
+        let (display, width) = displayDrawing(fromCanonical: savedCanonical)
         drawingGeneration += 1
         drawingPushGeneration += 1
         skipNextDrawingPersist = true
-        drawing = saved
+        drawingCoordWidth = width
+        drawing = display
         clearPageEditHistory()
-        prefetchAdjacentDrawings(around: page)
-    }
-
-    /// Decodes the pages on either side of `page` in the background so a
-    /// swipe to them is an in-memory cache hit (no main-thread disk read +
-    /// `PKDrawing` decode, which is what makes a freshly-swiped page stall
-    /// and its strokes pop in a beat late).
-    private func prefetchAdjacentDrawings(around page: Int) {
-        guard let id = noteId, let store else { return }
-        for neighbor in [page - 1, page + 1] where neighbor >= 1 && neighbor <= totalPages {
-            store.prefetchDrawing(for: id, page: neighbor)
-        }
     }
 
     /// Called from the view's `onChange(of: viewModel.drawing)`. Debounces
@@ -740,7 +809,10 @@ final class NoteEditorViewModel: ObservableObject {
             skipNextDrawingPersist = false
             return
         }
-        let snapshot = drawing
+        // Persist in canonical (width-independent) coordinates so the page
+        // re-loads correctly in any orientation. Capture now using the
+        // width the live drawing is currently scaled to.
+        let snapshot = canonicalLiveDrawing
         let pageAtSchedule = currentPage
         let generationAtSchedule = drawingGeneration
         saveDrawingTask?.cancel()
@@ -922,13 +994,13 @@ final class NoteEditorViewModel: ObservableObject {
     @MainActor
     func exportSelectedPagesPDF(store: NotesStore, pages: [Int]) -> Data {
         guard let id = noteId, let note = store.note(id: id) else {
-            return pdfService.exportDrawingToPDF(drawing)
+            return pdfService.exportDrawingToPDF(canonicalLiveDrawing)
         }
         return pdfService.exportNoteToPDF(
             note: note,
             store: store,
             livePage: currentPage,
-            liveDrawing: drawing,
+            liveDrawing: canonicalLiveDrawing,
             pageNumbers: pages
         )
     }
@@ -1920,7 +1992,7 @@ final class NoteEditorViewModel: ObservableObject {
             note: note,
             store: store,
             livePage: note.id == noteId ? currentPage : nil,
-            liveDrawing: note.id == noteId ? drawing : nil
+            liveDrawing: note.id == noteId ? canonicalLiveDrawing : nil
         )
     }
 
@@ -2218,7 +2290,7 @@ final class NoteEditorViewModel: ObservableObject {
         saveDrawingTask?.cancel()
         saveDrawingTask = nil
         guard hasLoaded, let id = noteId, let store else { return }
-        store.saveDrawing(drawing, for: id, page: currentPage)
+        store.saveDrawing(canonicalLiveDrawing, for: id, page: currentPage)
     }
 
     // MARK: - Upload
@@ -2243,7 +2315,7 @@ final class NoteEditorViewModel: ObservableObject {
                 note: note,
                 store: store,
                 livePage: currentPage,
-                liveDrawing: drawing,
+                liveDrawing: canonicalLiveDrawing,
                 noteId: noteId,
                 filename: filename,
                 courseId: note.courseId,
@@ -2282,13 +2354,13 @@ final class NoteEditorViewModel: ObservableObject {
     @MainActor
     func exportPDFLocally(store: NotesStore) -> Data {
         guard let id = noteId, let note = store.note(id: id) else {
-            return pdfService.exportDrawingToPDF(drawing)
+            return pdfService.exportDrawingToPDF(canonicalLiveDrawing)
         }
         return pdfService.exportNoteToPDF(
             note: note,
             store: store,
             livePage: currentPage,
-            liveDrawing: drawing
+            liveDrawing: canonicalLiveDrawing
         )
     }
 }
