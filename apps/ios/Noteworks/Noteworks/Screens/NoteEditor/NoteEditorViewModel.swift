@@ -716,6 +716,18 @@ final class NoteEditorViewModel: ObservableObject {
         skipNextDrawingPersist = true
         drawing = saved
         clearPageEditHistory()
+        prefetchAdjacentDrawings(around: page)
+    }
+
+    /// Decodes the pages on either side of `page` in the background so a
+    /// swipe to them is an in-memory cache hit (no main-thread disk read +
+    /// `PKDrawing` decode, which is what makes a freshly-swiped page stall
+    /// and its strokes pop in a beat late).
+    private func prefetchAdjacentDrawings(around page: Int) {
+        guard let id = noteId, let store else { return }
+        for neighbor in [page - 1, page + 1] where neighbor >= 1 && neighbor <= totalPages {
+            store.prefetchDrawing(for: id, page: neighbor)
+        }
     }
 
     /// Called from the view's `onChange(of: viewModel.drawing)`. Debounces
