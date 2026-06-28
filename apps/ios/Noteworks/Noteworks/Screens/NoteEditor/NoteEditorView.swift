@@ -1687,7 +1687,15 @@ struct NoteEditorView: View {
             ) {
                 pageCard(logicalPageSize: zoomedPageSize, rotation: rotation)
             }
-            .id("\(viewModel.noteId ?? "new")-\(viewModel.currentPage)")
+            // Identity is tied to the NOTE only, not the page. Switching
+            // pages must NOT rebuild this scroll view / PKCanvasView — that
+            // teardown + fresh-canvas re-rasterise is the per-swipe "reload".
+            // Instead the page's drawing is swapped in place via
+            // `drawingPushGeneration` (see PencilCanvasView), the background
+            // pattern + overlays re-render through the hosted SwiftUI tree,
+            // and the scroll view re-fits via `pageContentStamp`. The canvas
+            // stays alive across the whole note, so swiping never reloads.
+            .id(viewModel.noteId ?? "new")
             .frame(width: geometry.size.width, height: geometry.size.height)
 
             if viewModel.showNewPageFlash {
