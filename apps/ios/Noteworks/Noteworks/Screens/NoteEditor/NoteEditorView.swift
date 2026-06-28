@@ -1588,14 +1588,19 @@ struct NoteEditorView: View {
     /// Reserved space above and below the page when fitting at zoom 1.
     private static let pageVerticalInset: CGFloat = 32
 
-    /// Fixed supersample factor for the ink layer. The page scales like a
-    /// photo (no per-zoom re-render), so the canvas is rendered at this
-    /// many times its display resolution to keep handwriting crisp while
-    /// zoomed in. Strokes stay sharp up to ~this zoom; beyond it they
-    /// soften like an image. Higher = crisper but more memory. PencilKit
-    /// rasterises lazily in tiles, so the cost scales with inked area, not
-    /// the full supersampled page.
-    private static let pageRenderSupersample: CGFloat = 5.0
+    /// Fixed ink supersample factor. The canvas is rendered at this many
+    /// times its display resolution so handwriting stays crisp when the page
+    /// is zoomed in (the page scales photo-style, no per-zoom re-render).
+    /// PencilKit rasterises lazily in tiles, so the cost scales with inked
+    /// area, not the full supersampled page.
+    ///
+    /// Held at 4 (was 5): the drift is governed by the canvas's `1/factor`
+    /// transform — at `1/4 = 0.25` PencilKit's live (wet) ink preview stays
+    /// put, but at `1/5 = 0.2` (and smaller) it drifts mid-stroke and snaps
+    /// back on lift, worse on larger canvases (portrait). 4 keeps the
+    /// transform in the drift-free range while preserving high stroke
+    /// quality up to 4× zoom.
+    private static let pageRenderSupersample: CGFloat = 4.0
 
     private var canvasArea: some View {
         GeometryReader { geometry in
@@ -1610,6 +1615,13 @@ struct NoteEditorView: View {
                 scrollContentSize: scrollContentSize,
                 rotation: rotation
             )
+            // Ink is stored in a width-independent canonical space and scaled
+            // to this on-screen page width for display. Report the width so
+            // the view model re-derives the live drawing on rotation.
+            .onAppear { viewModel.setDisplayPageWidth(logicalPageSize.width) }
+            .onChange(of: logicalPageSize.width) { _, width in
+                viewModel.setDisplayPageWidth(width)
+            }
         }
     }
 

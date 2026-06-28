@@ -557,7 +557,7 @@ private struct PageThumbnailPreview: View {
             store: store,
             pageNumber: pageNumber,
             livePage: viewModel.currentPage,
-            liveDrawing: viewModel.drawing,
+            liveDrawing: viewModel.canonicalLiveDrawing,
             targetSize: targetSize
         )
 
