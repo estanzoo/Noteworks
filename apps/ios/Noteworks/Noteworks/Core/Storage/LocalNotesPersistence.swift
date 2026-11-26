@@ -38,8 +38,11 @@ final class LocalNotesPersistence {
 
     // MARK: - Roots
 
+    /// Test seam: when set, replaces `Documents/` as the root of every path.
+    private let rootURLOverride: URL?
+
     private var documentsURL: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        rootURLOverride ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     }
 
     private var usersRootURL: URL {
@@ -111,7 +114,19 @@ final class LocalNotesPersistence {
 
     // MARK: - Init
 
-    private init() {}
+    /// Test seam: `rootURL` replaces `Documents/` as the storage root so a
+    /// test can use its own temporary directory. Production code uses
+    /// `.shared`, which passes `nil` and keeps the `Documents/` root.
+    init(rootURL: URL? = nil) {
+        self.rootURLOverride = rootURL
+    }
+
+    /// Test seam: blocks until every write already queued (drawings,
+    /// overlay images, immediate snapshots) has finished. A debounced
+    /// snapshot save that has not fired yet is not waited for.
+    func waitForPendingWrites() {
+        queue.sync {}
+    }
 
     // MARK: - User lifecycle
 
