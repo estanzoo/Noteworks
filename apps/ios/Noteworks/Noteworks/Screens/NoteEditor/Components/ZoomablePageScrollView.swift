@@ -53,17 +53,25 @@ import UIKit
 import PencilKit
 import os
 
-// MARK: - Pinch zoom debug (TestFlight / Console)
+// MARK: - Pinch zoom debug (DEBUG builds only)
 
-/// Set to `true` to emit `[PageZoom]` lines in Xcode / Console.app while
-/// testing pinch. Filter on subsystem `com.noteworks.pagezoom`.
+/// Emits `[PageZoom]` pinch lines. Off by default; flip `isEnabled` to
+/// `true` in a DEBUG build while testing pinch. Filter on subsystem
+/// `com.noteworks.pagezoom`. Compiles to a no-op in release builds.
 enum PageZoomDebug {
-    static var isEnabled = true
-    private static let log = Logger(subsystem: "com.noteworks.pagezoom", category: "pinch")
+    #if DEBUG
+    static var isEnabled = false
+    private static let logger = Logger(subsystem: "com.noteworks.pagezoom", category: "pinch")
+    #else
+    static let isEnabled = false
+    #endif
 
-    static func zoom(_ message: String) {
+    static func zoom(_ message: @autoclosure () -> String) {
+        #if DEBUG
         guard isEnabled else { return }
-        log.info("\(message, privacy: .public)")
+        let text = message()
+        logger.info("\(text, privacy: .public)")
+        #endif
     }
 }
 
@@ -558,7 +566,7 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
 
         func scrollViewWillBeginZooming(_ scrollView: UIScrollView, with view: UIView?) {
             isZooming = true
-            PageZoomDebug.zoom("willBegin currentZoom=\(fmt(currentZoom))")
+            PageZoomDebug.zoom("willBegin currentZoom=\(DebugFormat.fmt(currentZoom))")
         }
 
         func scrollViewDidZoom(_ scrollView: UIScrollView) {
@@ -584,7 +592,7 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
             isZooming = false
             centerContent(in: scrollView)
             publishZoomBinding(scale)
-            PageZoomDebug.zoom("didEnd zoomScale=\(fmt(scale))")
+            PageZoomDebug.zoom("didEnd zoomScale=\(DebugFormat.fmt(scale))")
         }
 
         // MARK: UIScrollViewDelegate (scroll)
@@ -991,8 +999,6 @@ struct ZoomablePageScrollView<Content: View>: UIViewRepresentable {
             }
             return true
         }
-
-        private func fmt(_ value: CGFloat) -> String { String(format: "%.2f", value) }
     }
 }
 
@@ -1034,5 +1040,3 @@ final class PinchPassthroughContentView: UIView {
         return nil
     }
 }
-
-private func fmt(_ value: CGFloat) -> String { String(format: "%.2f", value) }

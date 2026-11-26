@@ -507,7 +507,7 @@ struct NoteEditorView: View {
                 canvasLayoutSettleNonce &+= 1
             }
         }
-        .onChange(of: viewModel.drawing) { _, _ in
+        .onChange(of: viewModel.displayDrawing) { _, _ in
             viewModel.handleDrawingChange()
         }
         .onChange(of: viewModel.noteTitle) { _, newValue in
@@ -1588,18 +1588,25 @@ struct NoteEditorView: View {
     /// Reserved space above and below the page when fitting at zoom 1.
     private static let pageVerticalInset: CGFloat = 32
 
-    /// Fixed ink supersample factor. The canvas is rendered at this many
-    /// times its display resolution so handwriting stays crisp when the page
-    /// is zoomed in (the page scales photo-style, no per-zoom re-render).
-    /// PencilKit rasterises lazily in tiles, so the cost scales with inked
-    /// area, not the full supersampled page.
+    /// Fixed ink supersample factor `S`: the ratio of canvas space to
+    /// display space (see `PageInkSpace`). `PencilCanvasView` scales the
+    /// view model's display-space drawing by `S`, hosts the canvas at `S×`
+    /// its on-screen bounds and shrinks it back with a `1/S` view transform,
+    /// so handwriting stays crisp when the page is zoomed in (the page
+    /// scales photo-style, no per-zoom re-render). PencilKit rasterises
+    /// lazily in tiles, so the cost scales with inked area, not the full
+    /// supersampled page.
     ///
-    /// Held at 4 (was 5): the drift is governed by the canvas's `1/factor`
-    /// transform — at `1/4 = 0.25` PencilKit's live (wet) ink preview stays
-    /// put, but at `1/5 = 0.2` (and smaller) it drifts mid-stroke and snaps
-    /// back on lift, worse on larger canvases (portrait). 4 keeps the
-    /// transform in the drift-free range while preserving high stroke
-    /// quality up to 4× zoom.
+    /// Wet-ink drift (the single place this rationale lives): PencilKit's
+    /// live (wet) ink preview can drift mid-stroke and snap back on lift.
+    /// Two changes target it together: the `1/S` transform is held at
+    /// `1/4 = 0.25`, where the preview was observed to stay put (at
+    /// `1/5 = 0.2` and smaller it drifted, worse on larger portrait
+    /// canvases), and the canvas uses `contentInsetAdjustmentBehavior =
+    /// .never`. The view model also keeps the live drawing in display space,
+    /// so rotation rescales the drawing rather than the canvas transform.
+    /// Which of these is decisive is not yet confirmed on device; change
+    /// `S` or the inset behaviour only after a device test.
     private static let pageRenderSupersample: CGFloat = 4.0
 
     private var canvasArea: some View {
@@ -1615,9 +1622,9 @@ struct NoteEditorView: View {
                 scrollContentSize: scrollContentSize,
                 rotation: rotation
             )
-            // Ink is stored in a width-independent canonical space and scaled
-            // to this on-screen page width for display. Report the width so
-            // the view model re-derives the live drawing on rotation.
+            // Ink is stored in canonical space (`PageInkSpace`) and scaled to
+            // this on-screen page width for display. Report the width so the
+            // view model re-derives the live drawing on rotation.
             .onAppear { viewModel.setDisplayPageWidth(logicalPageSize.width) }
             .onChange(of: logicalPageSize.width) { _, width in
                 viewModel.setDisplayPageWidth(width)
@@ -1785,7 +1792,7 @@ struct NoteEditorView: View {
                     )
                 }
                 PencilCanvasView(
-                    drawing: $viewModel.drawing,
+                    drawing: $viewModel.displayDrawing,
                     drawingPushGeneration: viewModel.drawingPushGeneration,
                     tool: viewModel.pkTool,
                     zoomScale: Self.pageRenderSupersample,

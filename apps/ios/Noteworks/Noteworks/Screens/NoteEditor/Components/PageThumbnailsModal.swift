@@ -552,12 +552,16 @@ private struct PageThumbnailPreview: View {
             height: sheetSize.height * pixelScale
         )
 
+        // `canonicalLiveDrawing` transforms the whole live drawing on every
+        // access, and `renderPageImage` only reads it for `livePage`, so
+        // compute it only for the current page's thumbnail.
+        let livePage = viewModel.currentPage
         let rendered = PDFStorageService.shared.renderPageImage(
             note: note,
             store: store,
             pageNumber: pageNumber,
-            livePage: viewModel.currentPage,
-            liveDrawing: viewModel.canonicalLiveDrawing,
+            livePage: livePage,
+            liveDrawing: pageNumber == livePage ? viewModel.canonicalLiveDrawing : nil,
             targetSize: targetSize
         )
 

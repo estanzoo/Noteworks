@@ -33,6 +33,20 @@ struct NoteEditorPageHistory {
         redoStack.removeAll()
     }
 
+    /// Applies `transform` to the drawing of every undo and redo snapshot.
+    /// Snapshot drawings are in display space, so when the display width
+    /// changes (rotation) they are rescaled by the same factor as the live
+    /// drawing instead of being dropped. Overlays are width-independent
+    /// and stay untouched.
+    mutating func transformDrawings(_ transform: (PKDrawing) -> PKDrawing) {
+        for index in undoStack.indices {
+            undoStack[index].drawing = transform(undoStack[index].drawing)
+        }
+        for index in redoStack.indices {
+            redoStack[index].drawing = transform(redoStack[index].drawing)
+        }
+    }
+
     /// Push `snapshot` (the state *before* a mutation) onto the undo stack.
     mutating func record(before snapshot: NoteEditorPageSnapshot) {
         undoStack.append(snapshot)
