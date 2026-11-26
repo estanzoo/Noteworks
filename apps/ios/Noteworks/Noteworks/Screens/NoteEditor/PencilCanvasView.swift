@@ -33,18 +33,27 @@ import UIKit
 import PencilKit
 import os
 
-// MARK: - Ink drift debug (TestFlight / Console)
+// MARK: - Ink drift debug (DEBUG builds only)
 
-/// Set to `true` to emit `[InkCanvas]` lines while testing stroke drift.
+/// Emits `[InkCanvas]` stroke-drift lines. Off by default; flip
+/// `isEnabled` to `true` in a DEBUG build while testing stroke drift.
 /// Filter on subsystem `com.noteworks.inkcanvas` in Console.app / Xcode.
+/// In release builds every entry point compiles to a no-op, and message
+/// strings are autoclosures, so no formatting or view walking happens.
 enum InkCanvasDebug {
-    static var isEnabled = true
-    private static let log = Logger(subsystem: "com.noteworks.inkcanvas", category: "drift")
+    #if DEBUG
+    static var isEnabled = false
+    private static let logger = Logger(subsystem: "com.noteworks.inkcanvas", category: "drift")
+    #else
+    static let isEnabled = false
+    #endif
 
     static func log(_ message: @autoclosure () -> String) {
+        #if DEBUG
         guard isEnabled else { return }
         let text = message()
-        log.info("\(text, privacy: .public)")
+        logger.info("\(text, privacy: .public)")
+        #endif
     }
 
     /// Dumps the geometry that decides where PencilKit places wet vs. dry
@@ -52,7 +61,9 @@ enum InkCanvasDebug {
     /// bounds + transform, the supersample host bounds, and the canvas
     /// origin in window space.
     static func dump(_ tag: String, canvas: PKCanvasView) {
+        #if DEBUG
         guard isEnabled else { return }
+        typealias F = DebugFormat
         let host = canvas.superview
         let originInWindow = canvas.superview?.convert(canvas.frame.origin, to: nil) ?? .zero
         let t = canvas.transform
@@ -60,32 +71,30 @@ enum InkCanvasDebug {
         var ancestor: UIView? = canvas.superview
         while let a = ancestor {
             if let sv = a as? UIScrollView, !(a is PKCanvasView) {
-                outer = "offset=\(fmt(sv.contentOffset)) inset=\(fmt(sv.contentInset)) zoom=\(fmt(sv.zoomScale)) bounds=\(fmt(sv.bounds))"
+                outer = "offset=\(F.fmt(sv.contentOffset)) inset=\(F.fmt(sv.contentInset)) zoom=\(F.fmt(sv.zoomScale)) bounds=\(F.fmt(sv.bounds))"
                 break
             }
             ancestor = a.superview
         }
         log(
             "\(tag) "
-            + "canvasBounds=\(fmt(canvas.bounds)) "
-            + "canvasFrame=\(fmt(canvas.frame)) "
-            + "transform=(a:\(fmt(t.a)) d:\(fmt(t.d)) tx:\(fmt(t.tx)) ty:\(fmt(t.ty))) "
-            + "contentOffset=\(fmt(canvas.contentOffset)) "
-            + "contentInset=\(fmt(canvas.contentInset)) "
-            + "contentSize=\(fmt(canvas.contentSize)) "
-            + "zoom=\(fmt(canvas.zoomScale)) "
-            + "hostBounds=\(fmt(host?.bounds ?? .zero)) "
-            + "drawingBounds=\(fmt(canvas.drawing.bounds)) "
-            + "originInWindow=\(fmt(originInWindow)) "
+            + "canvasBounds=\(F.fmt(canvas.bounds)) "
+            + "canvasFrame=\(F.fmt(canvas.frame)) "
+            + "transform=(a:\(F.fmt(t.a)) d:\(F.fmt(t.d)) tx:\(F.fmt(t.tx)) ty:\(F.fmt(t.ty))) "
+            + "contentOffset=\(F.fmt(canvas.contentOffset)) "
+            + "contentInset=\(F.fmt(canvas.contentInset)) "
+            + "contentSize=\(F.fmt(canvas.contentSize)) "
+            + "zoom=\(F.fmt(canvas.zoomScale)) "
+            + "hostBounds=\(F.fmt(host?.bounds ?? .zero)) "
+            + "drawingBounds=\(F.fmt(canvas.drawing.bounds)) "
+            + "originInWindow=\(F.fmt(originInWindow)) "
             + "outerScroll=[\(outer)]"
         )
+        #endif
     }
 
-    static func fmt(_ v: CGFloat) -> String { String(format: "%.1f", v) }
-    static func fmt(_ p: CGPoint) -> String { "(\(fmt(p.x)),\(fmt(p.y)))" }
-    static func fmt(_ s: CGSize) -> String { "(\(fmt(s.width))x\(fmt(s.height)))" }
-    static func fmt(_ i: UIEdgeInsets) -> String { "(t:\(fmt(i.top)) l:\(fmt(i.left)) b:\(fmt(i.bottom)) r:\(fmt(i.right)))" }
-    static func fmt(_ r: CGRect) -> String { "[\(fmt(r.origin)) \(fmt(r.size))]" }
+    /// Kept for existing callers; forwards to the shared `DebugFormat`.
+    static func fmt(_ v: CGFloat) -> String { DebugFormat.fmt(v) }
 }
 
 /// Canvas that ignores finger hit-testing so taps reach stickers below
@@ -333,10 +342,6 @@ struct PencilCanvasView: UIViewRepresentable {
         // relative to committed ink — the diagonal drift that only shows in
         // one orientation. Pin it so the canvas coordinate space is stable.
         canvasView.contentInsetAdjustmentBehavior = .never
-        if #available(iOS 13.0, *) {
-            canvasView.automaticallyAdjustsScrollIndicatorInsets = false
-        }
-        canvasView.contentInset = .zero
 
         let pencil = UIPencilInteraction()
         pencil.delegate = context.coordinator
