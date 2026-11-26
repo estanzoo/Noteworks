@@ -349,88 +349,102 @@ final class NoteEditorViewModel: ObservableObject {
 
     // MARK: - Canvas state
 
-    /// The drawing currently bound to the canvas, in **on-screen display
-    /// coordinates** (scaled to the current logical page width). The canvas
-    /// renders this 1:1 — the only configuration where PencilKit's live
-    /// (wet) ink doesn't drift away from the committed ink. Orientation
-    /// independence is NOT done by transforming the canvas; instead this
-    /// display drawing is derived from / converted to a width-independent
-    /// **canonical** drawing (`canonicalInkWidth`-based) at the persistence,
-    /// PDF, and load boundaries, and re-derived once whenever the on-screen
-    /// page width changes (`setDisplayPageWidth`).
-    @Published var drawing = PKDrawing()
+    /// The live page ink in **display space**: scaled to the on-screen
+    /// logical page width (`drawingScaledToWidth`). This is the drawing
+    /// bound to `PencilCanvasView`, which scales it again into canvas space
+    /// (display × `NoteEditorView.pageRenderSupersample`) and shows it
+    /// through a `1/S` view transform. See `PageInkSpace` for the three ink
+    /// spaces, and `NoteEditorView.pageRenderSupersample` for the drift
+    /// rationale.
+    ///
+    /// Never persist or export this drawing directly: disk, PDF and
+    /// thumbnails take canonical ink, via `canonicalLiveDrawing`. The
+    /// display drawing is derived from canonical ink on load
+    /// (`loadDrawing`) and re-derived once when the on-screen page width
+    /// changes (`setDisplayPageWidth`).
+    @Published var displayDrawing = PKDrawing()
     @Published var noteTitle = "Untitled Note"
     @Published var subject: String?
 
-    /// Width-independent page width that on-disk drawings and PDF export
-    /// use (matches `PDFStorageService.pdfLogicalPageSize`). Strokes are
-    /// persisted in this space so they round-trip identically regardless of
-    /// device orientation or viewport size.
-    private var canonicalInkWidth: CGFloat { PDFStorageService.pdfLogicalPageSize.width }
+    /// The width `displayDrawing` is actually scaled to. This is the only
+    /// width that display↔canonical conversions may use. It equals
+    /// `PageInkSpace.canonicalWidth` when a page loads before the view has
+    /// reported a width, and `0` before any load.
+    private var drawingScaledToWidth: CGFloat = 0
 
-    /// On-screen logical page width the live `drawing` is currently scaled
-    /// to. `0` before the view first reports a width / before any load.
-    private var drawingCoordWidth: CGFloat = 0
+    /// Latest on-screen logical page width reported by the view. It is the
+    /// target width for the next load or rescale, and can run ahead of
+    /// `drawingScaledToWidth` (for example before the page has loaded).
+    /// Never use it to convert the live drawing.
+    private var reportedPageWidth: CGFloat = 0
 
-    /// Latest on-screen logical page width reported by the view. Drives the
-    /// canonical→display scale applied to `drawing`.
-    private var displayPageWidth: CGFloat = 0
-
-    /// The live `drawing` mapped back into canonical (width-independent)
-    /// coordinates — used for persistence and every PDF/export path so
-    /// strokes always land in the same space as on-disk pages.
+    /// The live `displayDrawing` mapped into canonical space: the drawing
+    /// for persistence and every PDF, thumbnail and upload path.
     var canonicalLiveDrawing: PKDrawing {
-        canonicalDrawing(fromDisplay: drawing)
+        PageInkSpace.toCanonical(displayDrawing, fromDisplayWidth: drawingScaledToWidth)
     }
 
-    private func canonicalDrawing(fromDisplay display: PKDrawing) -> PKDrawing {
-        guard drawingCoordWidth > 0 else { return display }
-        let factor = canonicalInkWidth / drawingCoordWidth
-        guard abs(factor - 1) > 0.0001 else { return display }
-        return display.transformed(using: CGAffineTransform(scaleX: factor, y: factor))
-    }
-
-    /// Scales a canonical drawing into the current on-screen display width.
-    /// Returns the display drawing plus the width it is expressed in (the
-    /// canonical width when no display width is known yet, so a later
-    /// `setDisplayPageWidth` can finish the scaling).
-    private func displayDrawing(fromCanonical canonical: PKDrawing) -> (drawing: PKDrawing, width: CGFloat) {
-        guard displayPageWidth > 0 else { return (canonical, canonicalInkWidth) }
-        let factor = displayPageWidth / canonicalInkWidth
-        guard abs(factor - 1) > 0.0001 else { return (canonical, displayPageWidth) }
-        let scaled = canonical.transformed(using: CGAffineTransform(scaleX: factor, y: factor))
-        return (scaled, displayPageWidth)
+    /// Scales a canonical drawing to the reported on-screen width. Returns
+    /// the display drawing plus the width it is expressed in: the canonical
+    /// width when no width is reported yet, so a later
+    /// `setDisplayPageWidth` can finish the scaling.
+    private func scaleToReportedWidth(canonical: PKDrawing) -> (drawing: PKDrawing, width: CGFloat) {
+        guard reportedPageWidth > 0 else { return (canonical, PageInkSpace.canonicalWidth) }
+        return (PageInkSpace.fromCanonical(canonical, toDisplayWidth: reportedPageWidth), reportedPageWidth)
     }
 
     /// Reports the current on-screen logical page width from the view. When
     /// it changes (rotation / page aspect change) the in-memory display
     /// drawing is rescaled and re-pushed into the canvas exactly once — the
-    /// same drift-free path a page load takes. The canonical (persisted)
-    /// strokes are unchanged, so disk + PDF stay orientation-independent.
+    /// same path a page load takes. The undo/redo snapshots are rescaled by
+    /// the same factor so history survives rotation. The canonical
+    /// (persisted) strokes are unchanged, so disk + PDF stay
+    /// orientation-independent.
     func setDisplayPageWidth(_ width: CGFloat) {
         guard width > 0 else { return }
         InkCanvasDebug.log(
             "setDisplayPageWidth width=\(InkCanvasDebug.fmt(width)) "
-            + "drawingCoordWidth=\(InkCanvasDebug.fmt(drawingCoordWidth)) "
-            + "canonical=\(InkCanvasDebug.fmt(canonicalInkWidth)) hasLoaded=\(hasLoaded)"
+            + "drawingCoordWidth=\(InkCanvasDebug.fmt(drawingScaledToWidth)) "
+            + "canonical=\(InkCanvasDebug.fmt(PageInkSpace.canonicalWidth)) hasLoaded=\(hasLoaded)"
         )
-        displayPageWidth = width
+        reportedPageWidth = width
         // Before the page has loaded, just remember the width — `loadDrawing`
         // will scale the canonical strokes into it.
         guard hasLoaded else { return }
-        guard drawingCoordWidth > 0, abs(width - drawingCoordWidth) > 0.5 else { return }
+        guard drawingScaledToWidth > 0, abs(width - drawingScaledToWidth) > 0.5 else { return }
         // Persist any in-flight stroke (canonical, at the current width)
         // before we bump the generation, which would otherwise drop it.
         flushPendingSave()
-        let factor = width / drawingCoordWidth
+        let oldWidth = drawingScaledToWidth
+        let rescale = { (drawing: PKDrawing) in
+            PageInkSpace.rescale(drawing, fromWidth: oldWidth, toWidth: width)
+        }
+        replaceCanvasDrawing(rescale(displayDrawing), scaledToWidth: width, clearHistory: false)
+        // Undo snapshots are display-space at the old width; rescale them
+        // with the live drawing so a later undo restores correctly scaled ink.
+        pageEditHistory.transformDrawings(rescale)
+    }
+
+    /// Replaces the canvas drawing as one step. It invalidates pending
+    /// saves (`drawingGeneration`), forces `PencilCanvasView` to push the
+    /// new drawing (`drawingPushGeneration`), and skips persisting the
+    /// assignment itself (`skipNextDrawingPersist`). These flags only work
+    /// when set together, so every deliberate replacement goes through here.
+    /// - Parameters:
+    ///   - scaledToWidth: the display width `drawing` is in, or `nil` when
+    ///     it is unchanged.
+    ///   - clearHistory: drops the page's undo/redo history afterwards.
+    private func replaceCanvasDrawing(
+        _ drawing: PKDrawing,
+        scaledToWidth width: CGFloat?,
+        clearHistory: Bool
+    ) {
         drawingGeneration += 1
         drawingPushGeneration += 1
         skipNextDrawingPersist = true
-        drawing = drawing.transformed(using: CGAffineTransform(scaleX: factor, y: factor))
-        drawingCoordWidth = width
-        // Undo snapshots live in display coordinates for the previous width;
-        // drop them so a later undo can't restore mis-scaled ink.
-        clearPageEditHistory()
+        if let width { drawingScaledToWidth = width }
+        displayDrawing = drawing
+        if clearHistory { clearPageEditHistory() }
     }
 
     // MARK: - Page state
@@ -790,16 +804,11 @@ final class NoteEditorViewModel: ObservableObject {
         // On disk strokes live in canonical (width-independent) space; scale
         // them into the current on-screen width for the canvas binding.
         let savedCanonical = store.loadDrawing(for: id, page: page) ?? PKDrawing()
-        let (display, width) = displayDrawing(fromCanonical: savedCanonical)
-        drawingGeneration += 1
-        drawingPushGeneration += 1
-        skipNextDrawingPersist = true
-        drawingCoordWidth = width
-        drawing = display
-        clearPageEditHistory()
+        let (display, width) = scaleToReportedWidth(canonical: savedCanonical)
+        replaceCanvasDrawing(display, scaledToWidth: width, clearHistory: true)
     }
 
-    /// Called from the view's `onChange(of: viewModel.drawing)`. Debounces
+    /// Called from the view's `onChange(of: viewModel.displayDrawing)`. Debounces
     /// 250ms so a flurry of strokes coalesces into one disk write. Captures
     /// the current page + generation so a late-firing save never writes to
     /// the wrong page after a flip.
@@ -810,9 +819,14 @@ final class NoteEditorViewModel: ObservableObject {
             return
         }
         // Persist in canonical (width-independent) coordinates so the page
-        // re-loads correctly in any orientation. Capture now using the
-        // width the live drawing is currently scaled to.
-        let snapshot = canonicalLiveDrawing
+        // re-loads correctly in any orientation. Capture the display drawing
+        // (a free copy-on-write copy) and the width it is scaled to now, and
+        // convert only in the debounced task, so changes that a later change
+        // cancels never pay for the transform. A width change bumps
+        // `drawingGeneration` (`setDisplayPageWidth`), so the captured width
+        // is never stale when the conversion runs.
+        let displaySnapshot = displayDrawing
+        let widthAtSchedule = drawingScaledToWidth
         let pageAtSchedule = currentPage
         let generationAtSchedule = drawingGeneration
         saveDrawingTask?.cancel()
@@ -822,6 +836,7 @@ final class NoteEditorViewModel: ObservableObject {
             await MainActor.run {
                 guard let self else { return }
                 guard self.drawingGeneration == generationAtSchedule else { return }
+                let snapshot = PageInkSpace.toCanonical(displaySnapshot, fromDisplayWidth: widthAtSchedule)
                 store.saveDrawing(snapshot, for: id, page: pageAtSchedule)
                 self.flashStatus("Synced just now")
             }
@@ -1042,17 +1057,11 @@ final class NoteEditorViewModel: ObservableObject {
         guard hasLoaded, let id = noteId, let store else { return }
         clearPageArmed = false
         if let before = makePageSnapshot(store: store) {
-            drawingGeneration += 1
-            drawingPushGeneration += 1
-            skipNextDrawingPersist = true
-            drawing = PKDrawing()
+            replaceCanvasDrawing(PKDrawing(), scaledToWidth: nil, clearHistory: false)
             store.clearCurrentPage(noteId: id)
             recordPageMutation(before: before, store: store)
         } else {
-            drawingGeneration += 1
-            drawingPushGeneration += 1
-            skipNextDrawingPersist = true
-            drawing = PKDrawing()
+            replaceCanvasDrawing(PKDrawing(), scaledToWidth: nil, clearHistory: false)
             store.clearCurrentPage(noteId: id)
         }
         flashStatus("Page cleared")
@@ -2085,7 +2094,7 @@ final class NoteEditorViewModel: ObservableObject {
             imageData[filename] = data
         }
         return NoteEditorPageSnapshot(
-            drawing: drawing,
+            drawing: displayDrawing,
             overlays: overlays,
             overlayImageData: imageData
         )
@@ -2105,7 +2114,7 @@ final class NoteEditorViewModel: ObservableObject {
 
     /// Registers a completed PencilKit stroke (or erase) step.
     func handleLiveDrawingChange(from previousDrawing: PKDrawing, store: NotesStore) {
-        guard previousDrawing != drawing else { return }
+        guard previousDrawing != displayDrawing else { return }
         var before = makePageSnapshot(store: store) ?? NoteEditorPageSnapshot(
             drawing: previousDrawing,
             overlays: [],
@@ -2145,10 +2154,7 @@ final class NoteEditorViewModel: ObservableObject {
             in: noteId,
             restoringImageData: snapshot.overlayImageData
         )
-        drawingGeneration += 1
-        drawingPushGeneration += 1
-        skipNextDrawingPersist = true
-        drawing = snapshot.drawing
+        replaceCanvasDrawing(snapshot.drawing, scaledToWidth: nil, clearHistory: false)
         canvas?.undoManager?.removeAllActions()
         syncPageEditHistoryUI()
     }
